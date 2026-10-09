@@ -2,7 +2,7 @@ build/
 build-*/
 sdkconfig
 sdkconfig.old
-bench/
+results/
 backups/
 managed_components/
 dependencies.lock

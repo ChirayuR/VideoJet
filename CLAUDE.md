@@ -8,7 +8,11 @@ Use this file as an ongoing file, and optimise your usage.
 
 ---
 
-**Target: ESP32-S3 only** (user, 2026-10-10). P4 is out of scope; P4 facts below are reference only.
+**VideoJet is an ESP-IDF component library: fast H.264 (constrained baseline) decode on the ESP32-S3, and nothing else.**
+- The head-unit software-on-S3 display is a **separate consumer project**: the USB display device plus crop/convert/rotate/display on the bar.
+  Nothing display-, USB- or protocol-related goes in this repo. `bench/` and `host/` are test apparatus. (user, 2026-10-10)
+- Target is the ESP32-S3 only. The P4 is out of scope; P4 facts below are reference only.
+- Spec: `docs/superpowers/specs/2026-10-10-videojet-design.md`. Plans live in `docs/superpowers/plans/`.
 
 ## Working conventions
 - Ponytail + caveman + superpowers (brainstorm → spec → plan → build).
@@ -18,7 +22,8 @@ Use this file as an ongoing file, and optimise your usage.
 - Meta-harness drives optimisation (M3). The scorer is the board bench (fps). Hard floor: every frame hash matches the golden.
 - **Read the related projects' notes before asking the user anything** (see Related).
 
-## Use case (settled in the head-unit project, do not re-ask)
+## Consumer context: why the workload looks like this (settled in the head-unit project, do not re-ask)
+This belongs to the separate head-unit software-on-S3 project. It defines VideoJet's target stream.
 Phone (AA) → Open Headunit (head-unit software) on the G86 head unit (or S24 Self Mode) → AA **second screen**
 (AUXILIARY: map or turn card, or CLUSTER) → **head-unit software USB display protocol v1** → ESP32-S3 decodes → 640×172 bar.
 - Spec: the head-unit project `origin/feat/second-screen-outputs`, `tools/second-screen/USB-DISPLAY-PROTOCOL.md`.
@@ -38,7 +43,8 @@ Phone (AA) → Open Headunit (head-unit software) on the G86 head unit (or S24 S
 Waveshare ESP32-S3-Touch-LCD-3.49 **V2** (the bar board, still flashed with the board firmware).
 S3 rev v0.2, 240 MHz, 8 MB octal PSRAM @80 MHz, 16 MB QIO flash, USB-Serial/JTAG on /dev/ttyACM0.
 Panel AXS15231B 172×640 portrait (UI landscape 640×172), QSPI on SPI3 at 40 MHz.
-Hard display constraints (read `the consumer project/docs/display-touch-log.md` before touching the display):
+VideoJet's bench never drives the panel; the S3 only decodes. The panel constraints below are for the consumer project
+(read `the consumer project/docs/display-touch-log.md` there):
 - No RASET over QSPI: frames always written from row 0. CASET works (= UI rows); partial TX measured not worth it.
 - MADCTL rotation impossible → rotate in software, fused with the RGB565 byteswap, into the band.
 - PSRAM is NOT a valid SPI DMA source here → bands live in internal DMA RAM.
@@ -54,10 +60,14 @@ No sudo. Host has x264 CLI, gst `avdec_h264` (reference decoder), numpy/PIL. No 
 adb: use `~/Android/Sdk/platform-tools/adb` (v37), not `/usr/bin/adb`.
 
 ## Jet lessons that transfer
-- Ring of internal-SRAM DMA bands with the converter writing straight into them.
-- One fused pass: YUV→RGB565 + byteswap + crop + rotate. PIE: 16 B-aligned dst, 8 px blocks,
-  scalar tails (PIE silently rounds addresses down), hand loops in asm, exhaustive scalar-vs-SIMD tests.
-- Two cores split by row bands with an adaptive boundary; worker below the display task's priority.
+- Consumer project: a ring of internal-SRAM DMA bands with the converter writing straight into them.
+  Also one fused pass doing YUV→RGB565 + byteswap + crop + rotate.
+- PIE rules, for both the library and the consumer:
+  - 16 B-aligned dst; work in 8 px blocks.
+  - Scalar tails: PIE silently rounds addresses down.
+  - Hand-written loops in asm.
+  - Exhaustive scalar-vs-SIMD tests.
+- Two cores split by row bands with an adaptive boundary. The worker runs below the caller's priority.
 - Hot tables `DRAM_ATTR`, hot code `IRAM_ATTR`, cold data in PSRAM.
 - A/B/B/A runs with warmup, accepted only if output hashes match.
 - Measured on this board (bar Jet spike): internal-SRAM FB 27.9 ms vs PSRAM 33.7 ms. PIE fill gave
@@ -87,4 +97,7 @@ h264bsd: Android's Hantro baseline decoder, Apache-2.0, plain C (github.com/onea
 - `$WORK/the consumer project` (CLAUDE.md, docs/) + its memory dir.
 
 ## Status
-- 2026-10-10: brainstorming. Context gathered; approach not yet approved; no spec yet.
+- 2026-10-10: the spec is approved.
+  - M1 plan: `docs/superpowers/plans/2026-10-10-videojet-m1-eval-harness.md`. It runs through subagent-driven development.
+  - The ledger lives in `.superpowers/sdd/`, branch `m1-eval-harness`.
+  - Board flash backup: `backups/board_flash_4MB.bin`.

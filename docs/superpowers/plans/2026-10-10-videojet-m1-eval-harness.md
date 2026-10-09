@@ -18,7 +18,9 @@
 
 ## Global Constraints
 
-- Target: Waveshare ESP32-S3-Touch-LCD-3.49 **V2** on `/dev/ttyACM0`. No display use in M1.
+- VideoJet is a decode-only ESP-IDF component library. The bench app in `bench/` is test apparatus.
+  Nothing display-, USB- or protocol-related belongs in this repo; that is the separate consumer project.
+- Bench board: Waveshare ESP32-S3-Touch-LCD-3.49 **V2** on `/dev/ttyACM0`.
 - ESP-IDF v5.4.2: `source "$IDF_PATH/export.sh"`. IDF python: `$IDF_PY` (has pyserial).
 - No sudo. There is no system ffmpeg; use `imageio-ffmpeg`'s bundled binary.
 - h264bsd source: `https://github.com/oneam/h264bsd` at commit `42bcb5d753ad86d84903354bf3c68423c28adb7b`, Apache-2.0.
@@ -47,9 +49,9 @@
 | `tools/gen_streams.py` | synthetic AA-like streams + goldens |
 | `tools/pack_streams.py` | streams → `build-host/streams.bin` container |
 | `tools/flash_streams.sh` | writes the container to the `streams` partition |
-| `tools/bench.py` | reset board, parse `VJ` lines, `bench/results.jsonl` |
-| `CMakeLists.txt`, `partitions.csv`, `sdkconfig.defaults` | IDF project |
-| `main/{CMakeLists.txt,bench_main.c}` | board bench app |
+| `tools/bench.py` | reset board, parse `VJ` lines, `results/bench.jsonl` |
+| `bench/{CMakeLists.txt,partitions.csv,sdkconfig.defaults}` | bench IDF app; pulls the library from `../components` |
+| `bench/main/{CMakeLists.txt,bench_main.c}` | board bench app (test apparatus, not part of the library) |
 | `components/h264bsd/src/vj_prof.h` | per-stage cycle counters (Task 6, compiled out by default) |
 | `streams/search/*`, `streams/heldout/*` | `.h264` + `.golden` pairs |
 | `docs/bench-log.md` | human-readable results, one row per experiment |
@@ -257,7 +259,7 @@ Expected: FAIL (`No rule to make target 'vjdec.c'`).
 `host/vjdec.c`:
 ```c
 /* vjdec in.h264 [out.yuv] : decode with h264bsd, print one vj_hash per output frame.
- * Mirrors the board bench loop (main/bench_main.c) so host and board agree frame for frame. */
+ * Mirrors the board bench loop (bench/main/bench_main.c) so host and board agree frame for frame. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -633,11 +635,12 @@ git commit -m "test: JVT baseline conformance streams as held-out correctness se
 ### Task 4: Board bench firmware, stream container, capture tool
 
 **Files:**
-- Create: `CMakeLists.txt`, `partitions.csv`, `sdkconfig.defaults`
+- Create: `bench/CMakeLists.txt`, `bench/partitions.csv`, `bench/sdkconfig.defaults`
 - Create: `components/h264bsd/CMakeLists.txt`
-- Create: `main/CMakeLists.txt`, `main/bench_main.c`
+- Create: `bench/main/CMakeLists.txt`, `bench/main/bench_main.c`
 - Create: `tools/pack_streams.py`, `tools/flash_streams.sh`, `tools/bench.py`
-- Modify: `.gitignore` (create): `build/`, `build-*/`, `sdkconfig`, `sdkconfig.old`, `bench/`, `backups/`, `managed_components/`
+- Modify: `host/vjdec.c` (comment only: it mirrors `bench/main/bench_main.c`)
+- `.gitignore` already exists (controller setup); it ignores `build/`, `build-*/`, `sdkconfig`, `results/`, `backups/`, `managed_components/`
 
 **Interfaces:**
 - Consumes: `h264bsd` component, `vj_hash.h`, and `streams/**` with goldens (Tasks 1–3).
@@ -647,7 +650,7 @@ git commit -m "test: JVT baseline conformance streams as held-out correctness se
     - `VJ run=<r> set=<search|heldout> stream=<name> frames=<got>/<want> fail=<k> first_fail=<i|-1> idr_us=<t> p_mean_us=<t> p50_us=<t> p95_us=<t> max_us=<t> fps=<x.xx> int_min=<bytes> psram_min=<bytes>`
     - `VJ search_done` after the search set, `VJ done` after the held-out set.
     - `VJ ... error=<what>` on failure.
-  - `tools/bench.py --label L [--set search|all]` returns 0 only if every stream passes, and appends to `bench/results.jsonl`.
+  - `tools/bench.py --label L [--set search|all]` returns 0 only if every stream passes, and appends to `results/bench.jsonl`.
   - Container `build-host/streams.bin`: `"VJS1"`, u32 count, count × `<24s5I>` entries `{name, set, data_off, data_len, frames, golden_off}`, then 16-byte-aligned blobs (golden = frames × u32 LE).
 
 - [ ] **Step 1: Confirm the backup exists**
@@ -657,14 +660,16 @@ Expected: a 4194304-byte file. If it is missing, STOP and ask the controller. Ne
 
 - [ ] **Step 2: Write the IDF project files**
 
-`CMakeLists.txt`:
+`bench/CMakeLists.txt`:
 ```cmake
 cmake_minimum_required(VERSION 3.16)
+# The bench is a consumer of the library components, exactly like a real app would be.
+set(EXTRA_COMPONENT_DIRS ${CMAKE_CURRENT_LIST_DIR}/../components)
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
-project(videojet)
+project(videojet_bench)
 ```
 
-`partitions.csv`:
+`bench/partitions.csv`:
 ```
 # Name,   Type, SubType, Offset,   Size
 nvs,      data, nvs,     0x9000,   0x6000
@@ -673,7 +678,7 @@ factory,  app,  factory, 0x10000,  0x300000
 streams,  data, 0x40,    0x310000, 0xCF0000
 ```
 
-`sdkconfig.defaults`: the M1 baseline. IDF defaults plus `-O2`, 240 MHz, octal PSRAM. Cache and placement tuning are later ladder steps, so do not add them here.
+`bench/sdkconfig.defaults`: the M1 baseline. IDF defaults plus `-O2`, 240 MHz, octal PSRAM. Cache and placement tuning are later ladder steps, so do not add them here.
 ```
 CONFIG_IDF_TARGET="esp32s3"
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
@@ -699,7 +704,7 @@ idf_component_register(SRCS ${srcs} INCLUDE_DIRS "src")
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-error -D_ERROR_PRINT)
 ```
 
-`main/CMakeLists.txt`:
+`bench/main/CMakeLists.txt`:
 ```cmake
 idf_component_register(SRCS "bench_main.c" INCLUDE_DIRS "."
                        PRIV_REQUIRES h264bsd vj_hash esp_partition esp_timer spi_flash)
@@ -707,7 +712,7 @@ idf_component_register(SRCS "bench_main.c" INCLUDE_DIRS "."
 
 - [ ] **Step 3: Write the bench app**
 
-`main/bench_main.c`:
+`bench/main/bench_main.c`:
 ```c
 /* VideoJet board bench: decode every stream in the `streams` partition, time each frame,
  * check each frame's hash against its golden, print one "VJ ..." line per stream.
@@ -868,7 +873,7 @@ void app_main(void)
 Run:
 ```bash
 source "$IDF_PATH/export.sh"
-idf.py set-target esp32s3 && idf.py build
+idf.py -C bench set-target esp32s3 && idf.py -C bench build
 ```
 Expected: `Project build complete`.
 
@@ -883,7 +888,7 @@ GCC 14 may reject vendored code, for example over implicit function declarations
 
 Layout, little-endian: b"VJS1", u32 count, count x <24s5I> {name, set, data_off, data_len, frames,
 golden_off}, then 16-byte-aligned blobs. Golden = frames x u32 (vj_hash per frame).
-Must match vj_entry_t in main/bench_main.c."""
+Must match vj_entry_t in bench/main/bench_main.c."""
 import struct
 from pathlib import Path
 
@@ -945,7 +950,7 @@ esptool.py --chip esp32s3 -p "${PORT:-/dev/ttyACM0}" -b 921600 write_flash 0x310
 
 Run with the IDF python (it has pyserial):
   $IDF_PY tools/bench.py --label baseline [--set all]
-Appends one JSON line to bench/results.jsonl. Exit 0 only if every stream is complete,
+Appends one JSON line to results/bench.jsonl. Exit 0 only if every stream is complete,
 error-free and matches every golden hash (the correctness floor)."""
 import argparse
 import json
@@ -1000,7 +1005,7 @@ def main():
     for r in rows:
         got, want = r.get("frames", "0/1").split("/")
         ok = ok and r.get("fail") == "0" and got == want
-    out = ROOT / "bench" / "results.jsonl"
+    out = ROOT / "results" / "bench.jsonl"
     out.parent.mkdir(exist_ok=True)
     with out.open("a") as f:
         f.write(json.dumps({"label": a.label, "time": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -1027,7 +1032,7 @@ Run:
 chmod +x tools/*.sh tools/*.py
 python3 tools/pack_streams.py
 tools/flash_streams.sh
-source "$IDF_PATH/export.sh" && idf.py -p /dev/ttyACM0 flash
+source "$IDF_PATH/export.sh" && idf.py -C bench -p /dev/ttyACM0 flash
 $IDF_PY tools/bench.py --label m1-smoke --set all
 ```
 Expected:
@@ -1039,7 +1044,7 @@ If the console shows nothing, the board may have latched. Unplug it for 5 s, the
 - [ ] **Step 8: Commit**
 
 ```bash
-git add CMakeLists.txt partitions.csv sdkconfig.defaults .gitignore components/h264bsd/CMakeLists.txt main tools/pack_streams.py tools/flash_streams.sh tools/bench.py
+git add bench components/h264bsd/CMakeLists.txt host/vjdec.c tools/pack_streams.py tools/flash_streams.sh tools/bench.py
 git commit -m "feat: board bench app, stream container, capture tool"
 ```
 
@@ -1066,7 +1071,7 @@ Expected: `PASS` both times.
 
 - [ ] **Step 2: Write the log**
 
-`docs/bench-log.md`. Fill every cell from `bench/results.jsonl`, using the mean of the 4 fps values per stream (2 runs × 2 invocations):
+`docs/bench-log.md`. Fill every cell from `results/bench.jsonl`, using the mean of the 4 fps values per stream (2 runs × 2 invocations):
 ```markdown
 # Bench log
 
@@ -1093,7 +1098,7 @@ git commit -m "docs: M1 baseline and noise floor"
 **Files:**
 - Create: `components/h264bsd/src/vj_prof.h`
 - Modify: `components/h264bsd/src/h264bsd_slice_data.c` (calls at ~:175 and ~:185), `components/h264bsd/src/h264bsd_macroblock_layer.c` (calls at ~:1028 and ~:1123), `components/h264bsd/src/h264bsd_decoder.c` (call at ~:475)
-- Modify: `components/h264bsd/CMakeLists.txt`, `components/h264bsd/README.md`, `main/bench_main.c`
+- Modify: `components/h264bsd/CMakeLists.txt`, `components/h264bsd/README.md`, `bench/main/bench_main.c`
 
 **Interfaces:**
 - Consumes: Task 4 bench.
@@ -1108,7 +1113,7 @@ git commit -m "docs: M1 baseline and noise floor"
 ```c
 #pragma once
 /* Per-stage cycle counters, profile builds only:
- *   idf.py -B build-prof -DVJ_PROFILE=1 build
+ *   idf.py -C bench -B bench/build-prof -DVJ_PROFILE=1 build
  * Compiled out otherwise, so timed builds are not perturbed. CCOUNT is per core: decode on one core. */
 #if defined(VJ_PROFILE) && defined(ESP_PLATFORM)
 #include <stdint.h>
@@ -1147,7 +1152,7 @@ Under "Local changes" in `components/h264bsd/README.md`, add:
 
 - [ ] **Step 3: Report from the bench**
 
-In `main/bench_main.c`:
+In `bench/main/bench_main.c`:
 - Add `#include "vj_prof.h"` after the other includes.
 - At file scope, add:
 ```c
@@ -1177,7 +1182,7 @@ uint64_t vj_prof[VJP_N];
 
 - [ ] **Step 4: Check that timed builds are unchanged**
 
-Run: `make -C host check && idf.py build`
+Run: `make -C host check && idf.py -C bench build`
 Expected:
 - `make` prints all PASS.
 - The default build succeeds and is byte-identical in behaviour: no `VJP` lines on the board.
@@ -1186,9 +1191,9 @@ Expected:
 
 Run:
 ```bash
-idf.py -B build-prof -DVJ_PROFILE=1 build && idf.py -B build-prof -p /dev/ttyACM0 flash
+idf.py -C bench -B "$PWD/bench/build-prof" -DVJ_PROFILE=1 build && idf.py -C bench -B "$PWD/bench/build-prof" -p /dev/ttyACM0 flash
 $IDF_PY tools/bench.py --label baseline-prof --set search
-idf.py -p /dev/ttyACM0 flash   # restore the timed baseline firmware
+idf.py -C bench -p /dev/ttyACM0 flash   # restore the timed baseline firmware
 ```
 Expected:
 - `PASS`, with `VJP` lines for each search stream.
@@ -1200,6 +1205,6 @@ Add a "baseline profile" table to `docs/bench-log.md`: per-frame µs per stage f
 - [ ] **Step 6: Commit**
 
 ```bash
-git add components/h264bsd main/bench_main.c docs/bench-log.md
+git add components/h264bsd bench/main/bench_main.c docs/bench-log.md
 git commit -m "feat: VJ_PROFILE per-stage cycle counters + baseline profile"
 ```
