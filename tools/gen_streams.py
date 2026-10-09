@@ -58,7 +58,7 @@ def make_map(seed, dark):
 
 
 def map_frames(seed, dark, vw, vh):
-    """Heading-up camera following the route, ~2 px/frame, like AA's map while riding."""
+    """Heading-up camera following the route, ~3 px/frame, like AA's map while riding."""
     m = make_map(seed, dark)
     ink = (255, 255, 255) if dark else (20, 20, 20)
     ox, oy = vw / 2, vh * 0.7  # camera anchor inside the view
@@ -84,7 +84,8 @@ def card_frames():
     for i in range(N):
         im = Image.new("RGB", (PW, PH), (24, 28, 34))
         d = ImageDraw.Draw(im)
-        arrow = [(70, 30), (110, 70), (85, 70), (85, 140), (55, 140), (55, 70), (30, 70)]
+        # right-turn arrow; from 5 s it is mirrored into a left turn (x -> 140 - x)
+        arrow = [(40, 140), (40, 52), (77, 52), (77, 36), (99, 66), (77, 96), (77, 80), (68, 80), (68, 140)]
         if (i // 150) % 2:
             arrow = [(140 - x, y) for x, y in arrow]
         d.polygon(arrow, fill=(255, 255, 255))
@@ -122,18 +123,31 @@ def encode(frames, out, kbps, extra=()):
     """x264 tuned like a phone's HW encoder for AA: constrained baseline, 1 ref, one IDR, CBR."""
     out.parent.mkdir(parents=True, exist_ok=True)
     cmd = ["x264", "--demuxer", "y4m", "--profile", "baseline", "--level", "3.1", "--preset", "veryfast",
-           "--tune", "zerolatency", "--threads", "1", "--keyint", "600", "--min-keyint", "600",
+           "--tune", "zerolatency", "--threads", "1", "--keyint", "infinite",
            "--scenecut", "0", "--ref", "1", "--bframes", "0", "--bitrate", str(kbps),
            "--vbv-maxrate", str(kbps), "--vbv-bufsize", str(kbps), "--colormatrix", "bt470bg",
-           "--range", "tv", "--quiet", "--no-progress", *extra, "-o", str(out), "-"]
+           "--range", "tv", "--log-level", "warning", "--no-progress", "--cpu-independent",
+           *extra, "-o", str(out), "-"]
     p = subprocess.Popen(cmd, stdin=subprocess.PIPE)
-    p.stdin.write(f"YUV4MPEG2 W{W} H{H} F{FPS}:1 Ip A1:1 C420jpeg\n".encode())
-    for fr in frames:
-        p.stdin.write(b"FRAME\n" + to_i420(fr))
-    p.stdin.close()
+    try:
+        p.stdin.write(f"YUV4MPEG2 W{W} H{H} F{FPS}:1 Ip A1:1 C420jpeg\n".encode())
+        for fr in frames:
+            p.stdin.write(b"FRAME\n" + to_i420(fr))
+        p.stdin.close()
+    except BrokenPipeError:
+        pass  # x264 exited early; its status is checked below
     if p.wait():
         sys.exit(f"x264 failed for {out}")
     subprocess.run([str(ROOT / "tools" / "golden.sh"), str(out), str(W), str(H)], check=True)
+    check_golden(out)
+
+
+def check_golden(out):
+    """The golden must hold one hash per frame: N lines, or the run fails."""
+    gold = out.with_suffix(".golden")
+    n = len(gold.read_text().splitlines())
+    if n != N:
+        sys.exit(f"{gold}: {n} golden lines, expected {N}")
 
 
 def main():
