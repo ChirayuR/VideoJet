@@ -21,6 +21,7 @@ typedef struct {
     uint32_t set; /* 0 = search, 1 = held-out */
     uint32_t data_off, data_len, frames, golden_off;
 } vj_entry_t; /* 44 bytes, matches "<24s5I" in tools/pack_streams.py */
+_Static_assert(sizeof(vj_entry_t) == 44, "must match <24s5I> in tools/pack_streams.py");
 
 static int cmp_i64(const void *a, const void *b)
 {
@@ -98,6 +99,8 @@ static void run_stream(const esp_partition_t *part, const vj_entry_t *e, int run
         t0 = esp_timer_get_time();
     }
 
+    /* Stats: t0 is taken before the first decode, so idr_us includes SPS/PPS parsing and DPB
+     * allocation. p95 is floor-rank s[m * 95 / 100]: it equals max_us for 20 or fewer P-frames. */
     int64_t idr_us = n ? t[0] : 0, sum = 0;
     uint32_t m = n > 1 ? n - 1 : 0;
     int64_t *s = t + 1; /* P-frame times */
