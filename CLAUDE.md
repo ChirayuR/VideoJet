@@ -58,6 +58,13 @@ Pins + boot order: `the consumer project/bar/firmware/main/{board_pins.h,display
 ESP-IDF v5.4.2 at `$IDF_PATH` (`source export.sh`), env `$IDF_ENV`.
 No sudo. Host has x264 CLI, gst `avdec_h264` (reference decoder), numpy/PIL. No ffmpeg.
 adb: use `~/Android/Sdk/platform-tools/adb` (v37), not `/usr/bin/adb`.
+Toolchain traps (found in M1):
+- Xtensa `uint32_t` is `unsigned long`. Pass h264bsd's `u32` (`unsigned int`) to its out-params, or GCC 14 errors.
+  Host builds never catch this.
+- IDF's `-Werror=all` beats `-Wno-error`. Relax one tag at a time with `-Wno-error=<tag>`.
+- esptool/idf.py progress floods output. Pipe through `tr '\r' '\n' | grep -v '%)' | tail`.
+- Board loop: `tools/flash_streams.sh` (only when streams change), then `idf.py -C bench -p /dev/ttyACM0 flash`,
+  then `$IDF_PY tools/bench.py --label X --set search`.
 
 ## Jet lessons that transfer
 - Consumer project: a ring of internal-SRAM DMA bands with the converter writing straight into them.
@@ -101,3 +108,18 @@ h264bsd: Android's Hantro baseline decoder, Apache-2.0, plain C (github.com/onea
   - M1 plan: `docs/superpowers/plans/2026-10-10-videojet-m1-eval-harness.md`. It runs through subagent-driven development.
   - The ledger lives in `.superpowers/sdd/`, branch `m1-eval-harness`.
   - Board flash backup: `backups/board_flash_4MB.bin`.
+    It covers only the first 960 KB of the old `basemap` area, but that area was erased (0xFF) anyway.
+- 2026-10-10 baseline, unmodified h264bsd on the S3, decode-only (M1 smoke run). Noise is ≤0.02 fps within one boot,
+  but **bimodal ~0.4–0.7 % across boots**: it follows the boot log line `MSPI Timing: PSRAM timing tuning index` (4 or 5).
+  So compare candidates A/B/B/A across resets and record that index.
+
+  | Stream | fps | ms/frame |
+  |---|---|---|
+  | aux_card | 17.24 | 58 |
+  | aux_map | 9.73 | 103 |
+  | full_map | 5.62 | 178 |
+  | aux_map_dark | 9.32 | 107 |
+  | test_640x360 | 12.98 | |
+  | JVT (QCIF) | 57–63 | |
+
+  A near-static card still costs ~9k cycles per skipped MB, so skip elision is the first lever.
