@@ -13,6 +13,9 @@ Use this file as an ongoing file, and optimise your usage.
 ## Working conventions
 - Ponytail + caveman + superpowers (brainstorm → spec → plan → build).
 - Agents: Haiku 5.5 / Sonnet 5.5 for search, research, mechanical work. Opus 5.5 max effort for planning.
+  Escalate to an **Opus agent when capability is the bottleneck**: BLOCKED, a fix loop past round 3, or deep-judgment
+  work (PIE asm, decoder internals, meta-harness proposers). **If Opus is blocked, escalate to a an external consult agent.**
+- Meta-harness drives optimisation (M3). The scorer is the board bench (fps). Hard floor: every frame hash matches the golden.
 - **Read the related projects' notes before asking the user anything** (see Related).
 
 ## Use case (settled in the head-unit project, do not re-ask)

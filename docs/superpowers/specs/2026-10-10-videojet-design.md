@@ -25,7 +25,8 @@ Boundaries, each swappable and measured on its own:
 - `main`: bench app. Runs streams from the `streams` partition and prints one `VJ ...` result line per stream.
 
 ## Correctness floor (never traded)
-- Per-frame hash (FNV-1a 32 over 32-bit words of the cropped Y, U and V rows, one shared C function) must equal the golden.
+- Per-frame hash (FNV-1a-style 32-bit word hash with an xorshift `h ^= h >> 15` after each multiply, over the cropped Y, U and V rows; one shared C function, `vj_hash.h`) must equal the golden.
+  The gate (`make -C host check`) fails on zero streams, empty or orphan goldens, and decoder errors.
   The golden comes from the ffmpeg decode of the same stream, for every stream and every frame.
 - A SIMD kernel must equal its C reference exactly, including alignment and tail cases.
 - The crop origin is configurable. AUX is said to be top-left; confirm it on a real capture.
