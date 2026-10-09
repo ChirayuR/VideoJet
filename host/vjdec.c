@@ -1,5 +1,6 @@
 /* vjdec in.h264 [out.yuv] : decode with h264bsd, print one vj_hash per output frame.
- * Mirrors the board bench loop (main/bench_main.c) so host and board agree frame for frame. */
+ * Mirrors the board bench loop (bench/main/bench_main.c) so host and board agree frame for frame:
+ * change one, change the other. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
