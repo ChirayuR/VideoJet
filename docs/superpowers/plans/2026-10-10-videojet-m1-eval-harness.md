@@ -58,6 +58,14 @@
 
 ### Task 1: Vendored decoder, shared hash, host check
 
+> **Done (7c9c628..c2c5351).** Fix round 1 superseded these listings:
+> - `vj_hash.h` gained an xorshift.
+> - The gate moved to `host/check.sh`; it fails on zero, empty or orphan goldens and on decoder errors.
+> - `golden.sh` uses `-vf 'format=yuv420p|yuvj420p'` and writes atomically.
+> - `vjhash_raw` validates its input.
+>
+> The committed files are authoritative; do not copy the code below.
+
 **Files:**
 - Create: `components/h264bsd/src/*` (copy), `components/h264bsd/LICENSE.md` (copy), `components/h264bsd/README.md`
 - Create: `components/vj_hash/include/vj_hash.h`, `components/vj_hash/CMakeLists.txt`
@@ -350,7 +358,7 @@ Expected: `PASS ../streams/heldout/test_640x360.h264`, exit 0.
 
 If it reports FAIL, debug before going on:
 1. Run `build-host/vjdec streams/heldout/test_640x360.h264 /tmp/x.yuv`.
-2. Run `"$ff" -v error -i streams/heldout/test_640x360.h264 -fps_mode passthrough -f rawvideo -pix_fmt yuv420p /tmp/ref.yuv`.
+2. Run `"$ff" -v error -i streams/heldout/test_640x360.h264 -fps_mode passthrough -vf 'format=yuv420p|yuvj420p' -f rawvideo /tmp/ref.yuv`.
 3. Run `cmp /tmp/x.yuv /tmp/ref.yuv`. The first differing byte offset divided by 345600 is the first bad frame.
 
 - [ ] **Step 9: Commit**
