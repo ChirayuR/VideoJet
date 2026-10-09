@@ -1050,45 +1050,87 @@ git commit -m "feat: board bench app, stream container, capture tool"
 
 ---
 
-### Task 5: Baseline numbers and noise floor
+### Task 5: Baseline numbers and noise floor (re-scoped by ruling R11)
+
+> Why re-scoped: Task 4 found fps is **bimodal across boots**. It follows the boot-time line
+> `MSPI Timing: PSRAM timing tuning index: N` (4 vs 5, about 0.4–0.7 % apart), while within one boot the noise is ≤0.02 fps.
+> M3 compares candidates across reflashes and resets, so the scorer must record that index.
+> A hung candidate must also not burn the full 30-minute timeout.
 
 **Files:**
+- Modify: `tools/bench.py`, `tools/test_bench.py`
 - Create: `docs/bench-log.md`
 
 **Interfaces:**
-- Consumes: `tools/bench.py`, the baseline firmware from Task 4.
-- Produces: the incumbent's numbers, which every later candidate is compared against, and the run-to-run noise %.
+- Consumes: `tools/bench.py` as left by Task 4 fix round 1 (`a98bce2`):
+  - a pure `score()` plus `capture()`
+  - `tools/test_bench.py` with fake-port/fake-clock tests
+  - the jsonl record with `reasons`
 
-- [ ] **Step 1: Two identical runs (A/A)**
+  Read both files before changing them.
+- Produces:
+  - every jsonl record gains `psram_tuning` (int, or `null` when the boot line was not seen);
+  - the printed summary shows `psram_tuning=<n>`;
+  - `--idle-timeout` (default 180 s): after `VJ start`, no `VJ` line for that long → FAIL with reason `no VJ output for <n> s`.
 
-Run, with the same firmware and no rebuild:
+- [ ] **Step 1: Write the failing tests**
+
+In `tools/test_bench.py`, add these cases, matching the file's existing style (plain asserts):
+- (a) Pre-start output containing `I (353) MSPI Timing: PSRAM timing tuning index: 10` yields `psram_tuning == 10`.
+- (b) No such line yields `None`.
+- (c) The last such line before `VJ start` wins; lines after `VJ start` are ignored.
+- (d) Using the existing fake clock/port: a gap longer than the idle timeout after `VJ start` gives FAIL with the idle reason.
+- (e) Gaps shorter than the idle timeout between rows still PASS.
+
+Run: `python3 tools/test_bench.py`. Expected: the new cases fail, the old ones pass.
+
+- [ ] **Step 2: Implement**
+
+In `capture()`:
+- Remember the value of the last regex match `PSRAM timing tuning index: (\d+)` seen before `VJ start`.
+- Track the time of the last `VJ` line, and FAIL when `--idle-timeout` elapses with no new one.
+
+Plumb `psram_tuning` into the jsonl record and the summary. Keep `score()` pure.
+
+Run: `python3 tools/test_bench.py`. Expected: all pass.
+
+- [ ] **Step 3: Baseline across resets**
+
+Each invocation resets the board. The firmware is unchanged from Task 4 (`a98bce2`), so there is no reflash:
 ```bash
 PY=$IDF_PY
-$PY tools/bench.py --label baseline-A1 --set search
-$PY tools/bench.py --label baseline-A2 --set search
+for i in 1 2 3 4; do $PY tools/bench.py --label baseline-r$i --set search || break; done
 ```
-Expected: `PASS` both times.
+Expected: 4 × `PASS`, each printing a `psram_tuning=` value.
 
-- [ ] **Step 2: Write the log**
+If all 4 boots land on the same tuning index, run 2 more (up to 8 in total) to try to observe both modes. Report what was seen.
 
-`docs/bench-log.md`. Fill every cell from `results/bench.jsonl`, using the mean of the 4 fps values per stream (2 runs × 2 invocations):
+- [ ] **Step 4: Write the log**
+
+`docs/bench-log.md`. Fill every value from `results/bench.jsonl`, records `baseline-r*`:
 ```markdown
 # Bench log
 
-fps = frames / total decode time, decode-only (no display) unless noted. Board: Waveshare 3.49 V2,
-S3 240 MHz, octal PSRAM 80 MHz. Each row = mean of 4 runs. Correctness floor: every hash passes.
+fps = frames / total decode time, decode-only. Board: Waveshare 3.49 V2, S3 240 MHz, octal PSRAM 80 MHz.
+Correctness floor: every hash passes. Search set only. Each value is the mean over the run's rows.
 
-| date | label | aux_map fps | aux_card fps | full_map fps | aux_map IDR ms / P p95 ms | int_min KB | notes |
-|---|---|---|---|---|---|---|---|
-| 2026-10-10 | baseline (unmodified h264bsd, IDF defaults + -O2) | … | … | … | … / … | … | noise A/A: ±x.x % |
+## Noise
+- within one boot: max |run0 − run1| fps per stream = …
+- across boots: PSRAM tuning index observed = {…}; per-index mean fps per stream below; spread = … %
+- rule for M3: compare candidates A/B/B/A across resets, and only within the same tuning index (or report both).
+
+## Results
+| date | label | tuning | aux_map fps | aux_card fps | full_map fps | aux_map IDR ms / P p95 ms | int_min KB | notes |
+|---|---|---|---|---|---|---|---|---|
+| 2026-10-10 | baseline (unmodified h264bsd, IDF defaults + -O2) | 4 | … | … | … | … / … | … | n boots |
+| 2026-10-10 | baseline (same binary) | 5 | … | … | … | … / … | … | n boots |
 ```
-Noise % = max over streams of |mean(A1) − mean(A2)| / mean × 100.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add docs/bench-log.md
-git commit -m "docs: M1 baseline and noise floor"
+git add tools/bench.py tools/test_bench.py docs/bench-log.md
+git commit -m "feat: scorer records PSRAM tuning index + idle timeout; M1 baseline and noise floor"
 ```
 
 ---
