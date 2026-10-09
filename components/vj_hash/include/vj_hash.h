@@ -1,7 +1,10 @@
 #pragma once
 /* The one frame hash in VideoJet: ffmpeg goldens, host decoder and board bench all use it.
- * FNV-1a 32 over little-endian 32-bit words of each plane row; a row's tail bytes
- * (width % 4) are folded in one at a time. Planes in order Y, U, V (I420). */
+ * An FNV-1a-style hash over little-endian 32-bit words of each plane row, with an xorshift
+ * (h ^= h >> 15) after every multiply. NOT standard FNV-1a: a bare multiply only carries
+ * differences upward, so a difference confined to one byte lane (e.g. the top byte) would
+ * never reach the low bits. A row's tail bytes (width % 4) are folded in one at a time the
+ * same way. Planes in order Y, U, V (I420). */
 #include <stddef.h>
 #include <stdint.h>
 
@@ -15,9 +18,12 @@ static inline uint32_t vj_hash_row(uint32_t h, const uint8_t *p, size_t n)
         uint32_t w = (uint32_t)p[i] | (uint32_t)p[i + 1] << 8 |
                      (uint32_t)p[i + 2] << 16 | (uint32_t)p[i + 3] << 24;
         h = (h ^ w) * VJ_FNV_PRIME;
+        h ^= h >> 15;
     }
-    for (; i < n; i++)
+    for (; i < n; i++) {
         h = (h ^ p[i]) * VJ_FNV_PRIME;
+        h ^= h >> 15;
+    }
     return h;
 }
 
