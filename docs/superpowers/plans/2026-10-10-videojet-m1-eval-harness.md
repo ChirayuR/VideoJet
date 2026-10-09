@@ -1073,6 +1073,17 @@ git commit -m "feat: board bench app, stream container, capture tool"
   - the printed summary shows `psram_tuning=<n>`;
   - `--idle-timeout` (default 180 s): after `VJ start`, no `VJ` line for that long → FAIL with reason `no VJ output for <n> s`.
 
+> **Also fold in, by ruling R12** (Task 4 re-review minors; same functions, all fail-safe today):
+> - `capture()` must ignore stop/error markers that arrive before the first `VJ start`. Today a stale `VJ search_done` or `VJ error=` from a previous run ends the capture early.
+> - A pre-start `VJ error=no_streams` must be carried into `reasons` and the jsonl, not just "no `VJ start` line".
+> - The fake port in `tools/test_bench.py` must count `close()` calls, with a test that the reconnect path closes the old handle.
+> - Score rows against the exact firmware format. Today `fps` is only checked as a finite float above 0, so a dropped byte (`fps=1724`) would slip through.
+>   - `fps` must match `\d+\.\d\d`.
+>   - The integer fields (`idr_us p_mean_us p50_us p95_us max_us int_min psram_min fail`) must be plain integers. `first_fail` must be an integer or `-1`.
+>   - A malformed row is a FAIL reason.
+>
+> Add one test per item in Step 1.
+
 - [ ] **Step 1: Write the failing tests**
 
 In `tools/test_bench.py`, add these cases, matching the file's existing style (plain asserts):
