@@ -1,0 +1,87 @@
+We are going to build a video renderer inspired by CubeCoders Jet renderer.
+
+Test it on hardware on esp32s3.
+
+With the goal of optimising as many frames decoded per second as possible.
+
+Use this file as an ongoing file, and optimise your usage.
+
+---
+
+**Target: ESP32-S3 only** (user, 2026-10-10). P4 is out of scope; P4 facts below are reference only.
+
+## Working conventions
+- Ponytail + caveman + superpowers (brainstorm → spec → plan → build).
+- Agents: Haiku 5.5 / Sonnet 5.5 for search, research, mechanical work. Opus 5.5 max effort for planning.
+- **Read the related projects' notes before asking the user anything** (see Related).
+
+## Use case (settled in the head-unit project, do not re-ask)
+Phone (AA) → Open Headunit (head-unit software) on the G86 head unit (or S24 Self Mode) → AA **second screen**
+(AUXILIARY: map or turn card, or CLUSTER) → **head-unit software USB display protocol v1** → ESP32-S3 decodes → 640×172 bar.
+- Spec: the head-unit project `origin/feat/second-screen-outputs`, `tools/second-screen/USB-DISPLAY-PROTOCOL.md`.
+  Vendor iface FF/4F/44 (found by triple, not VID/PID). GET_INFO → `DISP`, w, h, dpi, max fps, flags.
+  Bulk OUT = 16 B frame header (len, ts ms, flags bit0 IDR / bit1 SPS-PPS) + Annex-B AU, ≤16 KiB transfers.
+  Optional IN endpoint: byte 0x01 = keyframe request (host turns it into a focus cycle, ≤1 per 5 s).
+  Byte vectors: `tools/second-screen/pi-receiver/test_ohud_protocol.py`.
+- What head-unit software asks AA for, for a 640×172 panel (`AuxDisplayProfilePolicy`): **H.264 baseline 800×480,
+  margins 160 right × 308 bottom, 30 fps fixed**, density from GET_INFO. The picture is the top-left 640×172;
+  the rest is blank. Crop, never scale. Active area = 40×11 MBs = 440 of 1500.
+- Must keep up with 30 fps: host queue is 90 AUs / 4 MiB, overflow → drops to the next keyframe.
+- The branch is NOT in head-unit software main or the rig branch (`the rig branch`). Upstream force-pushes it.
+- Real test streams: head-unit software "Network stream" output = raw H.264 on TCP :5000
+  (`adb forward tcp:5000 tcp:5000` then `nc 127.0.0.1 5000 > aux.h264`).
+
+## Bench board
+Waveshare ESP32-S3-Touch-LCD-3.49 **V2** (the bar board, still flashed with the board firmware).
+S3 rev v0.2, 240 MHz, 8 MB octal PSRAM @80 MHz, 16 MB QIO flash, USB-Serial/JTAG on /dev/ttyACM0.
+Panel AXS15231B 172×640 portrait (UI landscape 640×172), QSPI on SPI3 at 40 MHz.
+Hard display constraints (read `the consumer project/docs/display-touch-log.md` before touching the display):
+- No RASET over QSPI: frames always written from row 0. CASET works (= UI rows); partial TX measured not worth it.
+- MADCTL rotation impossible → rotate in software, fused with the RGB565 byteswap, into the band.
+- PSRAM is NOT a valid SPI DMA source here → bands live in internal DMA RAM.
+- Full frame 220 KB ≈ 13 ms (85 % bus eff). 80 MHz QSPI corrupts pixels, don't.
+- `esp_lcd` draw_bitmap measured effectively synchronous on this IO (no overlap won by ping-pong).
+- Backlight = TCA9554 ch1 (inverted PWM), LCD reset = ch5. `disp_on_off` is inverted, never call it.
+- Panel can latch a bad state across warm reset → 5 s power cycle.
+Pins + boot order: `the consumer project/bar/firmware/main/{board_pins.h,display.c}` (reuse, don't re-derive).
+
+## Toolchain
+ESP-IDF v5.4.2 at `$IDF_PATH` (`source export.sh`), env `$IDF_ENV`.
+No sudo. Host has x264 CLI, gst `avdec_h264` (reference decoder), numpy/PIL. No ffmpeg.
+adb: use `~/Android/Sdk/platform-tools/adb` (v37), not `/usr/bin/adb`.
+
+## Jet lessons that transfer
+- Ring of internal-SRAM DMA bands with the converter writing straight into them.
+- One fused pass: YUV→RGB565 + byteswap + crop + rotate. PIE: 16 B-aligned dst, 8 px blocks,
+  scalar tails (PIE silently rounds addresses down), hand loops in asm, exhaustive scalar-vs-SIMD tests.
+- Two cores split by row bands with an adaptive boundary; worker below the display task's priority.
+- Hot tables `DRAM_ATTR`, hot code `IRAM_ATTR`, cold data in PSRAM.
+- A/B/B/A runs with warmup, accepted only if output hashes match.
+- Measured on this board (bar Jet spike): internal-SRAM FB 27.9 ms vs PSRAM 33.7 ms. PIE fill gave
+  zero gain. Small allocs eat internal SRAM → `heap_caps_malloc_extmem_enable()`.
+- Jet sdkconfig: `-O2` (PERF), DCACHE 64 KB / 64 B line, ICACHE 32 KB, PSRAM OCT 80M,
+  `SPIRAM_MALLOC_ALWAYSINTERNAL=16384`, `RESERVE_INTERNAL=32768`. P4: 360 MHz, PSRAM 200M, L2 256 KB / 128 B.
+
+## Candidate decoder core
+h264bsd: Android's Hantro baseline decoder, Apache-2.0, plain C (github.com/oneam/h264bsd).
+
+## Research facts (2026-10-10, sources in session; [E] = estimate)
+- Espressif `esp_h264` SW decoder = **tinyH264 = closed h264bsd fork**, prebuilt `.a`, no source. Constrained
+  baseline, I/P only, Annex-B in, I420 out. README: S3R8 640×480 9 fps (11 dual-task), 320×192 23/27;
+  P4 640×480 25/31, 720p 7/10. ≈22 k cycles/MB on S3 (content unknown) [E].
+- P4 has HW H.264 **encoder** only, no HW decoder. P4 HW JPEG decodes 800×480 at 253 fps. PPA SRM does
+  YUV420→RGB565 plus rotate/scale.
+- Only AA-on-MCU prior art: payalneg/esp32p4-android-auto (GPL-3.0, don't copy code). P4 800×480 full frame:
+  decode 28 ms, I420 shuffle 17, PPA 16 → ~15 fps serial, ~22 fps ceiling with 2 cores.
+- AA: every frame is a reference (a drop corrupts until the next IDR). IDR comes every ~10–69 s, or <3 s
+  after a video-focus cycle. YUV full vs limited range varies by phone → honour the SPS VUI flag.
+  Margins on the MAIN display are centred; head-unit software says AUX is top-left → verify on a real capture, keep the crop origin configurable.
+- S3 PIE YUV420→RGB565 starting point: bitbank2/JPEGDEC `src/s3_simd_420.S` (Apache-2.0, ~8 instr/px) [E].
+  S3 LCD_CAM YUV→RGB HW is for RGB/i80 panels only, so it can't drive our QSPI panel.
+
+## Related (read first)
+- `$WORK/the head-unit project` + `~/.claude/projects/-home-chirayu-example-Desktop-Random-the head-unit project/memory/`
+- `$WORK/the consumer project` (CLAUDE.md, docs/) + its memory dir.
+
+## Status
+- 2026-10-10: brainstorming. Context gathered; approach not yet approved; no spec yet.

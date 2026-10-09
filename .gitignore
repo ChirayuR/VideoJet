@@ -1,0 +1,10 @@
+build/
+build-*/
+sdkconfig
+sdkconfig.old
+bench/
+backups/
+managed_components/
+dependencies.lock
+.superpowers/
+__pycache__/
