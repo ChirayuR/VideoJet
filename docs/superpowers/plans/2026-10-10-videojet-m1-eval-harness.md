@@ -579,17 +579,17 @@ git commit -m "feat: synthetic AA-like test streams with ffmpeg goldens"
 
 **Interfaces:**
 - Consumes: `tools/golden.sh`, `make -C host check` (Task 1).
-- Produces: extra held-out streams. These exercise multiple slices, non-reference frames, multiple IDRs and missing VUI.
+- Produces: extra held-out streams. These add POC type 0, 3–5 reference frames, non-reference pictures, multiple IDRs and missing VUI (each is 1 slice/picture; `aux_map_dark` covers multi-slice).
 
 - [ ] **Step 1: Download into a fresh untrusted directory**
 
-The suite is at `https://www.itu.int/wftp3/av-arch/jvt-site/draft_conformance/`. Each stream is a `.zip` holding the bitstream plus reference YUV.
+The suite is at `https://www.itu.int/wftp3/av-arch/jvt-site/draft_conformance/AVCv1/` (the root lists only subdirectories). Each stream is a `.zip` holding the bitstream plus reference YUV.
 
 ```bash
 D=$SCRATCH/jvt_dl
 mkdir -p "$D" && cd "$D"
 for n in BA1_Sony_D BA2_Sony_F BA_MW_D BANM_MW_D MIDR_MW_D NRF_MW_E; do
-  curl -fsSLO "https://www.itu.int/wftp3/av-arch/jvt-site/draft_conformance/$n.zip" || echo "MISSING $n"
+  curl -fsSLO "https://www.itu.int/wftp3/av-arch/jvt-site/draft_conformance/AVCv1/$n.zip" || echo "MISSING $n"
 done
 ls -la
 ```
