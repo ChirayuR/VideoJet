@@ -41,4 +41,29 @@ with tempfile.TemporaryDirectory() as d:
 
     assert cli() == 0                # inside the default ±5 %
     assert cli("--tol", "0.6") == 1  # outside an explicit ±0.6 %
+    assert cli("--gain", "0.3") == 0  # +3 % on both streams: floor holds, gain reached (M1-style rows: fps token)
+    assert cli("--gain", "5") == 1    # +3 % never reaches +5 %
+    assert cli("--gain", "0.3", "--tol", "5") == 2  # mutually exclusive (argparse usage error)
+
+
+def trec(label, tuning, rows):
+    return {"label": label, "psram_tuning": tuning, "ok": True, "prof": [], "rows": rows}
+
+
+def trow(stream, total_us, fps="0.00", frames=300):
+    return {"stream": stream, "frames": f"{frames}/{frames}", "total_us": str(total_us), "fps": fps}
+
+
+# exact fps from total_us: +0.310 % exact, but the 2-decimal tokens (30.09 vs 30.00) give 0.29999 %
+assert compare.compare(trec("r", 5, [trow("s", 9_969_096, "30.09")]),
+                       [trec("b", 5, [trow("s", 10_000_000, "30.00")])], None, gain=0.3)[0]
+# --gain: one stream +11 %, the other -0.4 % -> rejected
+assert not compare.compare(trec("r", 5, [trow("a", 9_000_000), trow("b", 10_040_000)]),
+                           [trec("b", 5, [trow("a", 10_000_000), trow("b", 10_000_000)])], None, gain=0.3)[0]
+# --gain: +0.1 % only -> rejected (no stream reaches +0.3 %)
+assert not compare.compare(trec("r", 5, [trow("a", 9_990_000)]),
+                           [trec("b", 5, [trow("a", 10_000_000)])], None, gain=0.3)[0]
+# --gain: a +0.5 % stream with the other at -0.2 % (above the -0.3 % floor) -> accepted
+assert compare.compare(trec("r", 5, [trow("a", 9_950_249), trow("b", 10_020_040)]),
+                       [trec("b", 5, [trow("a", 10_000_000), trow("b", 10_000_000)])], None, gain=0.3)[0]
 print("test_compare: all passed")
