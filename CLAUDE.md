@@ -110,8 +110,10 @@ h264bsd: Android's Hantro baseline decoder, Apache-2.0, plain C (github.com/onea
   - Board flash backup: `backups/board_flash_4MB.bin`.
     It covers only the first 960 KB of the old `basemap` area, but that area was erased (0xFF) anyway.
 - 2026-10-10 baseline, unmodified h264bsd on the S3, decode-only (M1 smoke run). Noise is ≤0.02 fps within one boot,
-  but **bimodal ~0.4–0.7 % across boots**: it follows the boot log line `MSPI Timing: PSRAM timing tuning index` (4 or 5).
-  So compare candidates A/B/B/A across resets and record that index.
+  but **bimodal ~0.4–0.7 % across boots**: it follows the boot log line `MSPI Timing: PSRAM timing tuning index`.
+  Indices 4 and 10 gave identical fast numbers; 5 is ~0.4–0.7 % slower and is the common one (12 of 15 resets).
+  So compare candidates A/B/B/A across resets, and only within the same speed class. `bench.py` records `psram_tuning`.
+  The official baseline (8 boots) is in `docs/bench-log.md`.
 
   | Stream | fps | ms/frame |
   |---|---|---|
