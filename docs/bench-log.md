@@ -53,7 +53,8 @@ carries `total_us`, the exact sum of the timed µs, and fps is computed from it,
   - Likely cause: the default 16 KB I-cache is smaller than the hot decode code, so which functions share cache lines decides
     the fps. This is a hypothesis; nothing here tested it.
   - The within-index noise above (about 0.0022 %) is same-binary, same-speed-class noise, i.e. how well one binary repeats.
-    The build-to-build noise floor is unknown: it has not been measured with a pinned layout.
+    The build-to-build noise floor was unknown until M3 step 0 pinned the layout: with the code in IRAM it is at most 0.11 %
+    (M3 step 0 section below).
 - rule for M3: compare candidates A/B/B/A across resets, and only within the same tuning index (or report both).
   An A/B pair from boots at different indexes can fake a 0.4–0.7 % gain or loss. `bench.py` cannot choose the index:
   every reset draws it afresh, so a boot at the odd index has to be re-run, or compared only with its own index.
@@ -62,9 +63,10 @@ carries `total_us`, the exact sum of the timed µs, and fps is computed from it,
     (`tools/compare.py`, default `--tol 5`; ruling R1 of the M2 plan, Global Constraints in
     `docs/superpowers/plans/2026-10-10-videojet-m2-library-api.md`). M1's ≤ 0.6 % sits inside the layout band above: the
     first M2 build (Task 1, vendored decoder untouched) measured +0.62 % on aux_map and +0.71 % on full_map and missed it.
-  - M3 step 0, blocking: pin hot-code placement (libvideojet in IRAM via a linker fragment, and/or a 32 KB I-cache), then
-    re-measure the build-to-build noise floor with deliberate layout perturbations (`-falign-functions=64`, for example). The
-    ≥ 1 % bar, M1's "accept a win only at ≥ 1 %", is void until then.
+  - M3 step 0 (done, M3 step 0 section below): libvideojet's code is pinned in IRAM and the noise was re-measured with
+    deliberate layout perturbations (`-falign-functions=64`, a +0x26c shift): layout noise at most 0.11 %, same binary at most
+    0.004 % (0.0019 % on the 7 step-0 boots). M3's bar is ±0.3 %: every search stream at least −0.3 % and one at least +0.3 %, from exact fps, within one speed
+    class. M1's ≥ 1 % bar stays void.
 
 ## Results
 | date | label | tuning | aux_map fps | aux_card fps | full_map fps | aux_map IDR ms / P p95 ms | int_min KB | notes |
@@ -91,7 +93,8 @@ rm -rf bench/build-prof
 idf.py -C bench -B "$PWD/bench/build-prof" -DSDKCONFIG="$PWD/bench/build-prof/sdkconfig" \
   -DSDKCONFIG_DEFAULTS="$PWD/bench/sdkconfig.defaults;$PWD/bench/sdkconfig.profile" build
 ```
-It is flashed with the same `-B`, run with
+It is flashed with esptool `write_flash @flash_args` from `bench/build-prof` (not `idf.py -B ... flash`, which rebuilds from
+the current tree), run with
 `tools/bench.py --label baseline-prof --set search --profile --elf bench/build-prof/videojet_bench.elf` (bench.py now
 refuses a `VJP` line without `--profile`, and checks the boot log's ELF SHA256 against `--elf`), then the default build
 flashed back. Each stage is a CCOUNT delta around one call, summed over the stream's 300 frames
@@ -245,3 +248,109 @@ has to measure the decode task's stack high-water mark per stream (`docs/superpo
 
 The spec's library budget is ≤ 100 KB of internal RAM. M3 step 0 would move libvideojet's `.text` into IRAM, which adds 50,981 B
 of internal RAM: 13,544 B + 50,981 B = 64,525 B, under 100 KB whether KB is 1000 or 1024 B, excluding the unmeasured stack.
+(M3 step 0 below measured it: 50,831 B of IRAM, 64,375 B with the heap.)
+
+## M3 step 0 (decoder code in IRAM, 64 KB / 64 B D-cache)
+M3's first task was the "blocking" item of the Noise section: pin where the decoder's code runs, and take what the cache
+configuration gives. No decoder logic changed. Three edits:
+- `components/videojet/linker.lf` (new), registered with `LDFRAGMENTS` in the component's `CMakeLists.txt`, and the Kconfig switch
+  `CONFIG_VJ_IRAM` (default y): with it every `noflash_text` section of `libvideojet.a`, that is all of the library's code, is
+  linked into IRAM; with `VJ_IRAM=n` it stays in flash (`* (default)`).
+- `bench/sdkconfig.defaults`: `CONFIG_ESP32S3_DATA_CACHE_64KB=y` and `CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y`. The I-cache stays 16 KB.
+- The consumer README gains a "Recommended config" section; CLAUDE.md gains the flash trap (`idf.py -B dir flash` rebuilds).
+
+The firmware is the step-0 tree, built fresh (`-DSDKCONFIG=bench/build/sdkconfig`) and flashed with `esptool write_flash
+@flash_args`: ELF SHA256 `e8596983135d…`. Its boot log's `App version` reads `30da81f-dirty`, because that field is taken when the
+build is configured, before the commit: the ELF SHA is the identity. Checked before the board ran:
+- Placement, `xtensa-esp32s3-elf-nm`: `h264bsdDecode` 0x4038249c, `h264bsdFilterPicture` 0x4038687c, `vj_decode_au` 0x403821f8. All in
+  IRAM (0x4037xxxx–0x403Dxxxx), none in flash (0x42xxxxxx).
+- `sdkconfig`: `CONFIG_ESP32S3_DATA_CACHE_64KB=y`, `CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y`, `CONFIG_VJ_IRAM=y`.
+- Host gate, `make -C host check`: `test_api: all passed`, 11 of 11 streams PASS (the host build does not see the change).
+- The other branches build, and were not flashed: with `CONFIG_VJ_IRAM=n` (an overlay, in a scratch dir) the same three symbols sit at
+  0x42008f10 / 0x4200d368 / 0x42008c6c and `libvideojet.a` has 0 B of IRAM; the `sdkconfig.profile` build links with the code in
+  IRAM (51,013 B of IRAM, 32 B of DRAM).
+
+### Spike (what the config is built on)
+The spike (branch `spike/step0`, a throwaway worktree) measured each lever alone. Its records, `spike-e0` to `spike-e14` (there is no
+`spike-e13`) and `spike-best-prof`, are in that worktree's gitignored `results/bench.jsonl`: they are not versioned, and the new baseline
+below reproduces the adopted row. Slow class (idx 5) throughout; Δ against M2 in the same class (`m2-final-all`, exact 17.1052 / 9.6680 /
+5.5758 fps), fps as printed to 2 decimals:
+
+| config | record | aux_card / aux_map / full_map fps | Δ % | int_min B |
+|---|---|---|---|---|
+| M2: code in flash, 16 KB I-cache, 32 KB D-cache with 32 B lines | `m2-final-all` | 17.11 / 9.67 / 5.58 | n/a | 354,639 |
+| libvideojet code in IRAM | `spike-e1` | 17.30 / 10.77 / 6.72 | +1.1 / +11.4 / +20.6 | 303,695 |
+| code in flash, 32 KB I-cache | `spike-e4` | 17.28 / 10.69 / 6.68 | +1.0 / +10.6 / +19.9 | 338,255 |
+| **IRAM + D-cache 64 KB / 64 B lines (adopted)** | `spike-e6` | **22.21 / 12.72 / 7.68** | **+29.8 / +31.5 / +37.8** | 271,699 |
+| code in flash, 32 KB I-cache + D-cache 64 KB / 64 B | `spike-e7` (its idx-5 record) | 22.17 / 12.60 / 7.63 | +29.6 / +30.4 / +36.8 | 306,259 |
+| IRAM + D-cache 32 KB / 64 B lines | `spike-e9` | 20.64 / 12.00 / 7.21 | +20.7 / +24.1 / +29.3 | 303,695 |
+
+- The 64 B D-cache line is the largest lever and costs no RAM: `spike-e9` against `spike-e1` (IRAM, 32 KB D-cache) is +19.3 / +11.4 / +7.2 %. The
+  doubled D-cache size alone (`spike-e10`: 64 KB, 32 B lines) gave +4.7 / +4.0 / +4.7 % over `spike-e1`; on top of 64 B lines (`spike-e6`
+  against `spike-e9`) it gives +7.6 / +6.0 / +6.6 % for 31,996 B of heap (303,695 − 271,699 B of `int_min`).
+- All of libvideojet fit in IRAM without a linker error: 50,837 B on the spike's sources, 50,831 B in the step-0 build (the spike branched
+  before `f72f591`).
+- Code in flash with a 32 KB I-cache lands within 1 % of IRAM (`spike-e7` against `spike-e6`: −0.17 / −0.89 / −0.68 %) for 16 KB of RAM instead
+  of 51 KB; the library defaults to IRAM because it removes the placement noise (next section).
+- The M2 row prints 17.11 aux_card; the plan's table printed 17.12, the M1 baseline's value. The Δ column is computed from exact fps.
+- The profile at the adopted config (`spike-best-prof`, a `VJ_PROFILE` build, µs per frame) is in the M3 plan, "Step 0 facts".
+
+### Noise
+- Same binary, same class: the 7 `m3-base-*` boots below, exact fps from `total_us`. The boot means of the 5 boots at idx 5 differ by at most
+  0.0019 / 0.0011 / 0.0007 % (aux_card / aux_map / full_map), those of the 2 boots at idx 10 by at most 0.0008 / 0.0005 / 0.0002 %, and run 0
+  against run 1 of one boot by at most 0.0001 %. All of it is under the 0.004 % the acceptance bar assumes.
+- Speed class: idx 10 over idx 5 with the same ELF is +0.510 / +0.336 / +0.231 % (M1's gap was 0.70 / 0.49 / 0.36 %). Compare within a
+  class only. The 7 boots drew idx 5 five times, idx 10 twice and idx 4 never.
+- Layout, with the code in IRAM (spike, idx 5, Δ against the unperturbed record, aux_card / aux_map / full_map):
+  - `spike-e3` against `spike-e1`: a 300-nop function linked ahead of the library moves every libvideojet symbol by +0x26c:
+    −0.0003 / −0.0002 / −0.0001 %.
+  - `spike-e2` against `spike-e1`: `-falign-functions=64` on the component: −0.02 / −0.09 / −0.09 %.
+  - `spike-e12` and `spike-e11b` against `spike-e6`, the adopted config under the layout variants of spike commit `6c966d1`:
+    −0.0014 / −0.0007 / −0.0006 % and −0.02 / −0.11 / −0.11 %.
+  - So with the code in IRAM **layout noise is at most 0.11 %**, where M2's code in flash moved between −4.3 % and +1.25 %. The profile
+    build (`spike-best-prof`: counters and layout together) is −0.31 / −0.20 / −0.15 % against `spike-e6`.
+- M3's acceptance bar (plan, Global Constraints), from exact fps against the same-class baseline below: every search stream at least −0.3 %
+  and one at least +0.3 %. That is 2.7 times the worst layout noise and over 150 times the measured same-binary noise (0.0019 %).
+
+### New baseline
+Records `m3-base-1` to `m3-base-7`: search set, 6 rows each, every hash passes, ELF `e85969831…`, versioned unmodified in
+`docs/baseline-m3.jsonl` (the file `tools/compare.py --baseline` takes, and the one M3's scorer reads). The stop rule was two passing boots per
+speed class or 10 boots: it took 7 to draw idx 10 twice. fps is exact, frames·10⁶/total_us, averaged over the class's rows. `int_min`,
+`int_used` and `psram_used` are the same in every row of every boot.
+
+| class | records | aux_card fps | aux_map fps | full_map fps | ms/frame (aux_card / aux_map / full_map) | int_min B | int_used B | psram_used B |
+|---|---|---|---|---|---|---|---|---|
+| slow (idx 5) | `m3-base-1`, `-2`, `-3`, `-5`, `-6` | 22.2074 | 12.7163 | 7.6810 | 45.03 / 78.64 / 130.19 | 271,699 | 13,544 | 1,507,340 |
+| fast (idx 10) | `m3-base-4`, `-7` | 22.3206 | 12.7590 | 7.6987 | 44.80 / 78.38 / 129.89 | 271,699 | 13,544 | 1,507,340 |
+
+- Against M2 in the same class: slow +29.83 / +31.53 / +37.75 % (`m2-final-all`), fast +29.57 / +31.34 / +37.59 % (`m2-t3-final`, idx 4).
+- Against the spike: the slow class is `spike-e6` within 0.0006 %, a rebuild one commit later. The fast class, 22.3206 / 12.7590 / 7.6987, is
+  +0.02 / +0.11 / +0.11 % over `spike-e11` (idx 10, one of the layout variants above), the same band as the layout noise.
+- No idx 4 boot was drawn; indexes 4 and 10 are one speed class (M1, Noise above), and `tools/compare.py` treats them so.
+- Sanity check, `python3 tools/compare.py m3-base-1 --baseline docs/baseline-m3.jsonl --tol 0.3` (printed 2-decimal fps; not a gate):
+  ```
+  aux_card                    22.21 vs    22.21 fps (slow)  -0.00 %  ok
+  aux_map                     12.72 vs    12.72 fps (slow)  +0.00 %  ok
+  full_map                     7.68 vs     7.68 fps (slow)  -0.00 %  ok
+  PASS
+  ```
+
+### Cost axes after step 0 (800x480)
+`$IDF_PY -m esp_idf_size --archives bench/build/videojet_bench.map` on the step-0 ELF; the M2 column is the table in M2 above.
+
+| axis | M2 | step 0 |
+|---|---|---|
+| internal RAM, decoder heap (`int_used`) | 13,544 B | 13,544 B |
+| internal RAM, static: IRAM / DRAM of `libvideojet.a` | 0 B / 0 B | 50,831 B / 0 B |
+| **library internal RAM (heap + IRAM + DRAM; plan budget ≤ 100 KB)** | 13,544 B | **64,375 B** (13,544 + 50,831) |
+| internal RAM, stack of the calling task | not measured | not measured |
+| PSRAM (`psram_used`) | 1,507,340 B | 1,507,340 B |
+| flash, `libvideojet.a` code + rodata | 58,071 B | 7,090 B of rodata; the code is stored in the image and copied to IRAM at boot |
+| `int_min` (bench, boot-wide) | 354,639 B | 271,699 B |
+| D-cache (the consumer's config, reported apart from the library) | 32 KB, 32 B lines | 64 KB, 64 B lines |
+
+- `int_min` fell by 82,940 B: 50,944 B for the IRAM code (the heap starts that much higher: `.dram0.dummy` 41,984 B → 92,928 B between a
+  `VJ_IRAM=n` and a `VJ_IRAM=y` build, and `spike-e0` → `spike-e1` 354,639 → 303,695 B) and 31,996 B for the D-cache (`spike-e9` → `spike-e6`).
+  Three measures of the IRAM cost agree to within 149 B: the archive's own 50,831 B, `.iram0.text` growing 50,980 B, and the heap losing
+  50,944 B. The last is what the library costs the heap; the differences were not broken down.
+- The whole image is 258,666 B (M2: 258,798 B). The stack is still unmeasured by any axis.

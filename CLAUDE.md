@@ -72,22 +72,30 @@ Toolchain traps (found in M1):
 - A component's `file(GLOB ... CONFIGURE_DEPENDS ...)` is a CMake error in IDF's requirements scan (script mode). Guard it
   with `if(CMAKE_BUILD_EARLY_EXPANSION)` (plain glob) / `else()` (see `components/videojet/CMakeLists.txt`).
 - esptool/idf.py progress floods output. Pipe through `tr '\r' '\n' | grep -v '%)' | tail`.
-- Board loop: `tools/flash_streams.sh` (only when streams change), then `idf.py -C bench -p /dev/ttyACM0 flash`,
+- **`idf.py -B dir flash` rebuilds from the current tree** (the M3 spike measured the wrong tree that way): flash
+  `@flash_args` from the build dir with esptool, never `idf.py ... flash`. Also, the in-tree `bench/sdkconfig` (gitignored)
+  predates the 64 KB / 64 B D-cache and overrides `sdkconfig.defaults`: always build with `-DSDKCONFIG=<dir>/sdkconfig`.
+- Board loop: `tools/flash_streams.sh` (only when streams change), then build fresh and flash exactly that build:
+  ```
+  rm -rf bench/build && idf.py -C bench -B "$PWD/bench/build" -DSDKCONFIG="$PWD/bench/build/sdkconfig" build
+  (cd bench/build && $IDF_PY -m esptool --chip esp32s3 -p /dev/ttyACM0 -b 921600 write_flash @flash_args)
+  ```
   then `$IDF_PY tools/bench.py --label X --set search`, with `IDF_PY=/path/to/idf-python-env/bin/python`
   (it has pyserial). `bench.py` FAILs unless the boot log's ELF SHA256 matches `bench/build/videojet_bench.elf`
   (`--elf PATH` for another build dir): flash what you built. `--set all` adds the held-out streams (about 8 min).
   A `VJ` row ends `... fps int_min psram_min total_us int_used psram_used`: the exact timed µs and the decoder's
   internal-RAM / PSRAM heap high-water bytes, stack not counted (grammar in `tools/bench.py`).
-  `python3 tools/compare.py LABEL` checks a search-set record against the M1 baseline in the same speed class (±5 %); it
-  cannot pass a `--set all` record, whose held-out streams have no baseline.
+  `python3 tools/compare.py LABEL` checks a search-set record against the M1 baseline in the same speed class (±5 %);
+  `--baseline docs/baseline-m3.jsonl --tol 0.3` checks it against the M3 baseline. It cannot pass a `--set all` record,
+  whose held-out streams have no baseline.
   A `CONFIG_VJ_PROFILE` image needs
-  `--profile --elf bench/build-prof/videojet_bench.elf`. Build it with the overlay, so the timed `bench/sdkconfig` never
+  `--profile --elf bench/build-prof/videojet_bench.elf`. Build it with the overlay, so the timed build's sdkconfig never
   sees the switch, and reflash the timed build afterwards:
   ```
   rm -rf bench/build-prof
   idf.py -C bench -B "$PWD/bench/build-prof" -DSDKCONFIG="$PWD/bench/build-prof/sdkconfig" \
     -DSDKCONFIG_DEFAULTS="$PWD/bench/sdkconfig.defaults;$PWD/bench/sdkconfig.profile" build
-  idf.py -C bench -B "$PWD/bench/build-prof" -p /dev/ttyACM0 flash
+  (cd bench/build-prof && $IDF_PY -m esptool --chip esp32s3 -p /dev/ttyACM0 -b 921600 write_flash @flash_args)
   ```
 
 ## Jet lessons that transfer
@@ -136,8 +144,23 @@ h264bsd: Android's Hantro baseline decoder, Apache-2.0, plain C (github.com/onea
 - `$WORK/the consumer project` (CLAUDE.md, docs/) + its memory dir.
 
 ## Status
+- 2026-10-10: **M3 step 0 done** on branch `m3-speed` (Task 1 of `docs/superpowers/plans/2026-10-10-videojet-m3-speed.md`).
+  Next: Task 2 (the one-command scorer, which reads `docs/baseline-m3.jsonl`), then the candidate ladder.
+  - Changed: libvideojet's code runs from IRAM (`components/videojet/linker.lf`, `CONFIG_VJ_IRAM`, default y, 50,831 B of internal
+    RAM) and the bench builds with a 64 KB / 64 B-line D-cache (`bench/sdkconfig.defaults`). No decoder logic changed; the
+    consumer README has a "Recommended config" section.
+  - New M3 baseline, exact fps (frames·10⁶/total_us), 7 boots all PASS, ELF `e85969831…`, records `m3-base-*` in
+    `docs/baseline-m3.jsonl`, aux_card / aux_map / full_map:
+    - slow class (idx 5, 5 boots): 22.2074 / 12.7163 / 7.6810 fps = 45.03 / 78.64 / 130.19 ms/frame;
+    - fast class (idx 10, 2 boots, no idx 4 drawn): 22.3206 / 12.7590 / 7.6987 fps = 44.80 / 78.38 / 129.89 ms/frame;
+    - +29.8 / +31.5 / +37.8 % over M2 in the slow class (`docs/bench-log.md`, M3 step 0).
+  - Noise now: layout at most 0.11 %, same binary at most 0.0019 % (measured on the 7 boots; the bar assumed 0.004 %), class gap
+    +0.51 / +0.34 / +0.23 %. M3's bar: every search stream ≥ −0.3 % and one ≥ +0.3 %, within one class.
+  - Cost axes: heap `int_used` 13,544 B + IRAM 50,831 B = 64,375 B of library internal RAM (budget ≤ 100 KB, stack still
+    unmeasured); `psram_used` 1,507,340 B unchanged; bench `int_min` 271,699 B (IRAM 50,944 B and the bigger D-cache 31,996 B).
+  - New trap: `idf.py -B dir flash` rebuilds from the current tree; flash `@flash_args` (Toolchain traps).
 - 2026-10-10: **M2 complete** on branch `m2-library-api` (`19c1a23..89bd8c9`, then the docs commit `d7e3516` and its fix
-  round). Next: M3 step 0 (see the layout bullet below), then the meta-harness search.
+  round). Next was M3 step 0 (done, first entry above), then the meta-harness search.
   - Delivered: the public API, one component with a private decoder, Kconfig `VJ_PROFILE` / `VJ_ERROR_PRINT`, library-owned
     memory placement, the consumer README, and a bench that reports exact `total_us` and the decoder's `int_used` / `psram_used`.
   - The final fix wave `f72f591` (an AU that leaves a picture unfinished returns VJ_ERR_STREAM) is board-verified:
@@ -187,5 +210,5 @@ h264bsd: Android's Hantro baseline decoder, Apache-2.0, plain C (github.com/onea
   - Likely cause: the default 16 KB I-cache is smaller than the hot decode code.
   - Consequence: any rebuild that moves code has landed anywhere in that band so far. M2 acceptance was ±5 %
     (`compare.py --tol 5`).
-  - The ≥1 % bar of M1 is void until **M3 step 0** (blocking): pin hot-code placement (libvideojet in IRAM via a
-    linker fragment, and/or a 32 KB I-cache), then re-measure the build-to-build noise floor.
+  - Resolved by **M3 step 0** (first Status entry): libvideojet runs from IRAM (`CONFIG_VJ_IRAM`), and layout noise is now at most 0.11 %
+    (same binary at most 0.004 %). M1's ≥1 % bar stays void; M3's bar is ±0.3 % (plan, Global Constraints).

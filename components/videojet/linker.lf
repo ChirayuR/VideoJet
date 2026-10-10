@@ -1,0 +1,7 @@
+[mapping:videojet]
+archive: libvideojet.a
+entries:
+    if VJ_IRAM = y:
+        * (noflash_text)
+    else:
+        * (default)
