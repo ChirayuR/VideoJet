@@ -56,3 +56,36 @@ are the review's.
   - The profile's `inter` = MV prediction + motion compensation + residual add/clip + write-out.
 - **Corpus tooling when real captures arrive:** `pack_streams` name truncation, collision and zero-stream checks; the ffmpeg
   version recorded beside the goldens; rebuild `vjhash_raw` before `golden.sh`; `CFLAGS` passed explicitly to host builds.
+
+## Parked M1 doc nits (fold into M2's bench-log rewrite)
+- In `bench-log.md`, the "98 of 100 rows" and "84 search rows" counts only held through `timed-restore-check`. `bench.jsonl` has grown since.
+- The `baseline-prof` and `timed-restore-check` binaries are not named in git.
+- "within 0.002 %" should read 0.0022 %.
+- The `streams/heldout/README.md` feature list describes the JVT set as a whole, not each stream:
+  - refs per stream are 1/5/4/1/4/3;
+  - only NRF_MW_E has non-reference pictures;
+  - BA1 and BA2 each have a single IDR.
+
+## Decisions taken during M1 (controller rulings; the full process ledger was deleted with the workspace)
+- R1. `.gitignore` was created at setup, before the first commit, so `backups/` never enters git.
+- R2. The decode loop is duplicated between `host/vjdec.c` and the bench app.
+  - A shared API would be premature.
+  - Host and board hash equality already cross-checks the two copies.
+  - If wrong: an API change has to be edited in two places.
+- R3–R5. Every Task 1 gate hole was fixed at once: vacuous pass, header dependencies, full-range goldens, the hash xorshift, input validation, and the vjdec exit status.
+- R6. `aux_card` was kept as generated: a skip-heavy best case at about 51 kb/s. Real captures will recalibrate it.
+- R7. The user narrowed scope: VideoJet is a decode-only library.
+  - The bench moved to `bench/` and results to `results/`.
+  - M2 became library packaging; the display work moved to the consumer project.
+- R8. Every corpus-affecting fix landed in one regeneration before the baseline was measured: `--cpu-independent`, a real turn flip, `--keyint infinite` plus a frame-count assert.
+- R9. The JVT streams are correctness-only. Keep them out of held-out fps aggregates and out of 30 fps headroom arguments.
+- R10–R12. `bench.py` was hardened as the M3 scorer:
+  - full grid check, fail-fast, visible board errors;
+  - a pure `score()` with tests;
+  - PSRAM tuning index and idle timeout;
+  - exact row format.
+- R13. The final fix wave added firmware identity (ELF SHA), the container staleness check, glob dependencies, the baseline snapshot, the layout-noise acceptance rules, and this document.
+  - The I2 timer change is deferred to M2's bench rewrite, so M1's numbers stay consistent with M1's code.
+- R14. M1 doc-precision nits are parked (see above).
+- R15. The frozen M1 plan's profile command lacks `--profile --elf`. CLAUDE.md and `bench-log` carry the correct command.
+  - The identity check needs INFO-level boot logs, so M3 must not lower the log level.

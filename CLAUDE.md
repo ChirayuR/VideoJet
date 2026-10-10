@@ -20,6 +20,9 @@ Use this file as an ongoing file, and optimise your usage.
   Escalate to an **Opus agent when capability is the bottleneck**: BLOCKED, a fix loop past round 3, or deep-judgment
   work (PIE asm, decoder internals, meta-harness proposers). **If Opus is blocked, escalate to a an external consult agent.**
 - Meta-harness drives optimisation (M3). The scorer is the board bench (fps). Hard floor: every frame hash matches the golden.
+- Deferred work and every M1 decision live in `docs/superpowers/m1-carryover.md`. Read it before planning M2 or M3.
+  The scorer identifies the firmware from the INFO-level boot log (`ELF file SHA256`), so never lower the log level.
+  Profile runs need `--profile --elf bench/build-prof/videojet_bench.elf`.
 - **Read the related projects' notes before asking the user anything** (see Related).
 
 ## Consumer context: why the workload looks like this (settled in the head-unit project, do not re-ask)
@@ -109,6 +112,10 @@ h264bsd: Android's Hantro baseline decoder, Apache-2.0, plain C (github.com/onea
 - `$WORK/the consumer project` (CLAUDE.md, docs/) + its memory dir.
 
 ## Status
+- 2026-10-10: **M1 complete** on branch `m1-eval-harness` (`7c9c628..3c174ad`).
+  - What it delivered: the eval harness, a hardened scorer and the baseline + profile.
+  - Review: the final review came back clean after one fix wave.
+  - Next: M2 (library API + packaging), then M3 (meta-harness search).
 - 2026-10-10: the spec is approved.
   - M1 plan: `docs/superpowers/plans/2026-10-10-videojet-m1-eval-harness.md`. It runs through subagent-driven development.
   - The ledger lives in `.superpowers/sdd/`, branch `m1-eval-harness`.
