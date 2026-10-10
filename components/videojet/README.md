@@ -49,8 +49,8 @@ vj_decoder_destroy(dec);
   (1500 MBs x 216 B). Each extra reference frame adds 589,828 B. IDF's heap rounds every block up to its size class, so
   the PSRAM figure is 2.1 % above the sum of the structure sizes. Internal RAM includes 5 B per macroblock for skip
   elision and `changed_mb` (7,500 B here; each of its two blocks moves to PSRAM above 16 KiB). On top of the heap,
-  `CONFIG_VJ_IRAM` (the default) puts the decoder's code, 51,662 B (link map), in internal RAM:
-  21,136 + 51,662 = 72,798 B in all, excluding the stack.
+  `CONFIG_VJ_IRAM` (the default) puts the decoder's code (51,722 B IRAM) and tables (7,090 B DRAM, link map) in internal
+  RAM: 21,136 + 58,812 = 79,948 B in all, excluding the stack.
 - Stack: decoding runs on the stack of the task that calls `vj_decode_au()`. The stack it needs has not been measured; only a
   16 KiB task stack (the bench's) has been tested.
 - The library places its own buffers, whatever your `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL`: above 16 KiB PSRAM first, below it
@@ -66,9 +66,10 @@ aux_card / aux_map / full_map (800x480) from 17.11 / 9.67 / 5.58 fps (M2: code i
   code in IRAM it gained +19 / +11 / +7 %.
 - **D-cache 64 KB** (`CONFIG_ESP32S3_DATA_CACHE_64KB=y`): another +8 / +6 / +7 % on top of the 64 B line, for 32 KB of
   internal RAM (31,996 B less heap, measured).
-- **Decoder code in IRAM** (`CONFIG_VJ_IRAM=y`, the default): 51,662 B of internal RAM. It gained +1 / +11 / +21 % over flash
+- **Decoder code and tables in internal RAM** (`CONFIG_VJ_IRAM=y`, the default): 51,722 B IRAM + 7,090 B DRAM. The
+  tables in DRAM gained +0.7 / +1.4 / +2.0 % on their own (in flash they cost up to ~2,350 cache misses per frame). It gained +1 / +11 / +21 % over flash
   code with the default 16 KB I-cache, and with it, moving the code changed fps by at most 0.11 % on the bench. The alternative, for
-  16 KB of internal RAM instead of 52 KB: `CONFIG_VJ_IRAM=n` with `CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y`, which stayed within
+  16 KB of internal RAM instead of 59 KB: `CONFIG_VJ_IRAM=n` with `CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y`, which stayed within
   1 % of IRAM on the bench's code layout (flash code has no layout pin, so treat it as an estimate) (22.17 / 12.60 / 7.63).
 - With 64 B lines, a PSRAM buffer that DMA reads or writes needs 64 B alignment in address and size
   (`CONFIG_ESP32S3_DATA_CACHE_LINE_SIZE`; for example `heap_caps_aligned_alloc(64, n, MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA)`
@@ -95,7 +96,7 @@ aux_card / aux_map / full_map (800x480) from 17.11 / 9.67 / 5.58 fps (M2: code i
   until the next IDR.
 
 ## 6. Kconfig (menu "VideoJet")
-- `CONFIG_VJ_IRAM` (default y): run the decoder from IRAM, 51,662 B of internal RAM (section 4).
+- `CONFIG_VJ_IRAM` (default y): run the decoder from internal RAM, 58,812 B (code + tables, section 4).
 - `CONFIG_VJ_ERROR_PRINT` (default n): print the decoder's bitstream errors to stderr (about 60 messages, from the decoding task).
 - `CONFIG_VJ_PROFILE` (default n): per-stage cycle counters, read with `vj_profile_take()`. Their cost is not separable from code-layout
   noise (`docs/bench-log.md`) and they move code layout: profiling builds only, never timed scores (the bench enables it

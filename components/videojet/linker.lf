@@ -2,6 +2,6 @@
 archive: libvideojet.a
 entries:
     if VJ_IRAM = y:
-        * (noflash_text)
+        * (noflash)
     else:
         * (default)

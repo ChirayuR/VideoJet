@@ -15,11 +15,13 @@ config VJ_ERROR_PRINT
         Compiles in the vendored decoder's ~60 error prints. They print from the decoding task.
 
 config VJ_IRAM
-    bool "Run the decoder from IRAM"
+    bool "Run the decoder from internal RAM (code and tables)"
     default y
     help
-        Puts libvideojet's code (about 51 KB) in internal RAM. On the bench it gained +1 / +11 / +21 %
-        fps (aux_card / aux_map / full_map) over flash code with the default 16 KB I-cache, and with it,
-        moving the code changed fps by at most 0.11 %. Off: a 32 KB I-cache gets within 1 % for 16 KB of RAM.
+        Puts libvideojet's code (about 51 KB, IRAM) and its tables (about 7 KB, DRAM) in internal RAM.
+        On the bench the code gained +1 / +11 / +21 % fps (aux_card / aux_map / full_map) over flash code
+        with the default 16 KB I-cache, and with it moving the code changed fps by at most 0.11 %; the tables
+        in DRAM gained another +0.7 / +1.4 / +2.0 %. Off: a 32 KB I-cache gets within 1 % of the code-in-IRAM
+        figure for 16 KB of RAM.
 
 endmenu
