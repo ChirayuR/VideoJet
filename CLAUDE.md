@@ -130,6 +130,12 @@ h264bsd: Android's Hantro baseline decoder, Apache-2.0, plain C (github.com/onea
   So compare candidates A/B/B/A across resets, and only within the same speed class, and accept a win only at ≥1 %.
   `bench.py` records `psram_tuning`. The official baseline (8 boots) is in `docs/bench-log.md`; its records are in
   `docs/baseline-m1.jsonl`.
+- **Code layout sensitivity is several percent** (M2 Task 1, 2026-10-10). Identical decoder logic shifted by ~16 B
+  measured −3.1 % (aux_map) and −4.3 % (full_map). A +0x51c shift measured +0.6/+0.7 %.
+  - Likely cause: the default 16 KB I-cache is smaller than the hot decode code.
+  - Consequence: any rebuild that moves code is a ±4 % lottery. M2 acceptance is ±5 % (`compare.py --tol 5`).
+  - The ≥1 % bar above is void until **M3 step 0**: pin hot-code placement (libvideojet in IRAM via a
+    linker fragment, and/or a 32 KB I-cache), then re-measure the build-to-build noise floor.
 
   Baseline fps by speed class. The held-out rows come from the smoke boot, whose search fps put it in the fast class.
 
