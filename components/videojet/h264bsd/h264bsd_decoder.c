@@ -493,7 +493,8 @@ u32 h264bsdDecode(storage_t *pStorage, u8 *byteStrm, u32 len, u32 picId,
     if (picReady)
     {
         { VJP_BEGIN(VJP_DEBLOCK);
-        h264bsdFilterPicture(pStorage->currImage, pStorage->mb);
+        h264bsdFilterPicture(pStorage->currImage, pStorage->mb,
+            pStorage->picSliceBase);
         VJP_END(VJP_DEBLOCK); }
 
         h264bsdResetStorage(pStorage);

@@ -161,11 +161,11 @@ static u32 EdgeBoundaryStrengthLeft(mbStorage_t *mb1, mbStorage_t *mb2);
 static u32 EdgeBoundaryStrengthTop(mbStorage_t *mb1, mbStorage_t *mb2);
 #endif
 
-static u32 IsSliceBoundaryOnLeft(mbStorage_t *mb);
+static u32 IsSliceBoundaryOnLeft(mbStorage_t *mb, u32 base);
 
-static u32 IsSliceBoundaryOnTop(mbStorage_t *mb);
+static u32 IsSliceBoundaryOnTop(mbStorage_t *mb, u32 base);
 
-static u32 GetMbFilteringFlags(mbStorage_t *mb);
+static u32 GetMbFilteringFlags(mbStorage_t *mb, u32 base);
 
 #ifndef H264DEC_OMXDL
 
@@ -231,10 +231,13 @@ static void GetChromaEdgeThresholds(
 
         Functional description:
             Function to determine if there is a slice boundary on the left side
-            of a macroblock.
+            of a macroblock. base is the picture's picSliceBase: mb[] is not
+            cleared per picture, so ids below it (MBs no slice of this picture
+            touched, possible with failed redundant slices) all count as base,
+            as the old cleared 0s compared equal.
 
 ------------------------------------------------------------------------------*/
-u32 IsSliceBoundaryOnLeft(mbStorage_t *mb)
+u32 IsSliceBoundaryOnLeft(mbStorage_t *mb, u32 base)
 {
 
 /* Variables */
@@ -243,7 +246,7 @@ u32 IsSliceBoundaryOnLeft(mbStorage_t *mb)
 
     ASSERT(mb && mb->mbA);
 
-    if (mb->sliceId != mb->mbA->sliceId)
+    if (MAX(mb->sliceId, base) != MAX(mb->mbA->sliceId, base))
         return(HANTRO_TRUE);
     else
         return(HANTRO_FALSE);
@@ -256,10 +259,10 @@ u32 IsSliceBoundaryOnLeft(mbStorage_t *mb)
 
         Functional description:
             Function to determine if there is a slice boundary above the
-            current macroblock.
+            current macroblock. base: see IsSliceBoundaryOnLeft.
 
 ------------------------------------------------------------------------------*/
-u32 IsSliceBoundaryOnTop(mbStorage_t *mb)
+u32 IsSliceBoundaryOnTop(mbStorage_t *mb, u32 base)
 {
 
 /* Variables */
@@ -268,7 +271,7 @@ u32 IsSliceBoundaryOnTop(mbStorage_t *mb)
 
     ASSERT(mb && mb->mbB);
 
-    if (mb->sliceId != mb->mbB->sliceId)
+    if (MAX(mb->sliceId, base) != MAX(mb->mbB->sliceId, base))
         return(HANTRO_TRUE);
     else
         return(HANTRO_FALSE);
@@ -286,7 +289,7 @@ u32 IsSliceBoundaryOnTop(mbStorage_t *mb)
           shall be filtered.
 
 ------------------------------------------------------------------------------*/
-u32 GetMbFilteringFlags(mbStorage_t *mb)
+u32 GetMbFilteringFlags(mbStorage_t *mb, u32 base)
 {
 
 /* Variables */
@@ -305,13 +308,13 @@ u32 GetMbFilteringFlags(mbStorage_t *mb)
         /* filterLeftMbEdgeFlag, left mb is MB_A */
         if (mb->mbA &&
             ((mb->disableDeblockingFilterIdc != 2) ||
-             !IsSliceBoundaryOnLeft(mb)))
+             !IsSliceBoundaryOnLeft(mb, base)))
             flags |= FILTER_LEFT_EDGE;
 
         /* filterTopMbEdgeFlag */
         if (mb->mbB &&
             ((mb->disableDeblockingFilterIdc != 2) ||
-             !IsSliceBoundaryOnTop(mb)))
+             !IsSliceBoundaryOnTop(mb, base)))
             flags |= FILTER_TOP_EDGE;
     }
 
@@ -574,7 +577,7 @@ u32 EdgeBoundaryStrengthLeft(mbStorage_t *mb1, mbStorage_t *mb2)
 #ifndef H264DEC_OMXDL
 void h264bsdFilterPicture(
   image_t *image,
-  mbStorage_t *mb)
+  mbStorage_t *mb, u32 picSliceBase)
 {
 
 /* Variables */
@@ -603,7 +606,7 @@ void h264bsdFilterPicture(
 
     for (mbRow = 0, mbCol = 0; mbRow < image->height; pMb++)
     {
-        flags = GetMbFilteringFlags(pMb);
+        flags = GetMbFilteringFlags(pMb, picSliceBase);
 
         if (flags)
         {
@@ -1774,7 +1777,7 @@ void FilterChroma(
 /*lint --e{550} Symbol not accessed */
 void h264bsdFilterPicture(
   image_t *image,
-  mbStorage_t *mb)
+  mbStorage_t *mb, u32 picSliceBase)
 {
 
 /* Variables */
@@ -1807,7 +1810,7 @@ void h264bsdFilterPicture(
 
     for (mbRow = 0, mbCol = 0; mbRow < image->height; pMb++)
     {
-        flags = GetMbFilteringFlags(pMb);
+        flags = GetMbFilteringFlags(pMb, picSliceBase);
 
         if (flags)
         {

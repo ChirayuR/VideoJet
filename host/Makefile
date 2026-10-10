@@ -25,7 +25,7 @@ $(B)/vjhash_raw: vjhash_raw.c $(HASH) | $(B)
 
 # The correctness floor: API unit tests, then every stream with a .golden decodes bit-exact.
 check: all
-	@$(B)/test_api ../streams
+	@$(B)/test_api ../streams vectors
 	@./check.sh $(B)/vjdec ../streams
 
 .PHONY: all check

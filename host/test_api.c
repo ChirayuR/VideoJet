@@ -1,4 +1,4 @@
-/* test_api STREAMS_DIR: unit checks of the public API that the stream gate cannot reach. Plain asserts. */
+/* test_api STREAMS_DIR VECTORS_DIR: unit checks of the public API that the stream gate cannot reach. Plain asserts. */
 #undef NDEBUG /* the checks are the asserts: they stay live whatever CFLAGS say (-DNDEBUG would pass vacuously) */
 #include <assert.h>
 #include <stdio.h>
@@ -340,42 +340,88 @@ static void test_twice(const char *dir)
     vj_decoder_destroy(d);
 }
 
-/* Concealment next to older pictures' MBs. aux_map_dark's IDR cut after 2 of its 4 slices is concealed from its
- * decoded neighbours (intra, no reference) and AU 1 decodes on it. Concealment reads only this picture's MBs, so the
- * frame must hash the same on a fresh decoder and on one that decoded the whole stream first (its mb[] is all old). */
-static uint32_t cut_idr_run(const char *path, int warm)
+/* Concealment next to older pictures' MBs. aux_map_dark's IDR loses slices [lo, hi) of its 4 and is concealed from its
+ * decoded neighbours (intra, no reference); AU 1 decodes on it. Concealment reads only this picture's MBs, so AU 1 must
+ * hash the same on a fresh decoder and on a warm one, whose mb[] holds older pictures. Losing the bottom starts the
+ * concealment at MB 0; losing the top starts it mid-picture, with the rows above it concealed upwards. */
+static uint32_t cut_idr(vj_decoder_t *d, const char *path, int lo, int hi)
 {
     size_t len;
     uint8_t *s = slurp(path, &len);
-    vj_frame_t f;
-    vj_decoder_t *d = vj_decoder_create();
-    for (size_t o = 0, au; warm && o < len; o += au) {
-        au = vj_au_length(s + o, len - o);
-        assert(au && vj_decode_au(d, s + o, au, &f) >= 0);
-    }
-    if (warm) {
-        free(s);
-        s = slurp(path, &len); /* decoding rewrote the AUs */
-    }
     size_t n0 = vj_au_length(s, len), n1 = vj_au_length(s + n0, len - n0);
-    assert(vj_decode_au(d, s, slice_at(s, n0, 2), &f) == VJ_ERR_STREAM); /* SPS, PPS, SEI, IDR slices 0 and 1 */
+    size_t a = slice_at(s, n0, lo), z = hi < 4 ? slice_at(s, n0, hi) : n0;
+    memmove(s + a, s + z, len - z); /* AU 0 keeps SPS, PPS, SEI and the other slices; AU 1 follows it */
+    n0 -= z - a;
+    vj_frame_t f;
+    assert(vj_decode_au(d, s, n0, &f) == VJ_ERR_STREAM);
     assert(vj_decode_au(d, s + n0, n1, &f) == VJ_FRAME);
     uint32_t h = vj_hash_i420(f.y, f.y_stride, f.u, f.v, f.uv_stride, f.crop_x, f.crop_y, f.crop_w, f.crop_h);
-    vj_decoder_destroy(d);
     free(s);
     return h;
 }
 
 static void test_conceal_history(const char *dir)
 {
+    static const int cut[][2] = {{2, 4}, {0, 2}, {0, 1}};
     char path[512];
     snprintf(path, sizeof path, "%s/heldout/aux_map_dark.h264", dir);
-    assert(cut_idr_run(path, 0) == cut_idr_run(path, 1));
+    size_t len;
+    uint8_t *s = slurp(path, &len);
+    vj_frame_t f;
+    vj_decoder_t *warm = vj_decoder_create();
+    for (size_t o = 0, au; o < len; o += au) {
+        au = vj_au_length(s + o, len - o);
+        assert(au && vj_decode_au(warm, s + o, au, &f) >= 0);
+    }
+    free(s);
+    for (int k = 0; k < 3; k++) { /* each cut's pictures leave warm's mb[] old for the next IDR */
+        vj_decoder_t *fresh = vj_decoder_create();
+        assert(cut_idr(fresh, path, cut[k][0], cut[k][1]) == cut_idr(warm, path, cut[k][0], cut[k][1]));
+        vj_decoder_destroy(fresh);
+    }
+    vj_decoder_destroy(warm);
+}
+
+/* Redundant slices (host/vectors, made by gen.py there): failed redundant slices can leave MBs untouched in a complete
+ * picture (attack) or keep a concealed MB's corrupted-slice id (attack2), and idc 2 deblocking compares those ids.
+ * Expected: the per-picture-clear decoder (m3-speed 2063e44), one entry per vj_decode_au call ("-" = VJ_ERR_STREAM);
+ * every frame hashes the same with DPB memory filled 0x00, 0xA5, 0x5A or a byte pattern, so none reads uninitialised
+ * memory. */
+static void test_vectors(const char *vec)
+{
+    static const char *const want[][2] = {
+        {"attack.h264", "ed86bcae ed86bcae - - - - c946cd05 c946cd05 "},
+        {"attack2.h264", "ed86bcae ed86bcae - - 2c2cceb1 "},
+    };
+    for (int k = 0; k < 2; k++) {
+        char path[512], got[256] = "";
+        snprintf(path, sizeof path, "%s/%s", vec, want[k][0]);
+        size_t len;
+        uint8_t *s = slurp(path, &len);
+        vj_decoder_t *d = vj_decoder_create();
+        for (size_t o = 0, au; o < len; o += au) {
+            au = vj_au_length(s + o, len - o);
+            assert(au && strlen(got) < sizeof got - 10);
+            vj_frame_t f;
+            vj_status_t r = vj_decode_au(d, s + o, au, &f);
+            if (r == VJ_FRAME)
+                sprintf(got + strlen(got), "%08x ", (unsigned)vj_hash_i420(f.y, f.y_stride, f.u, f.v, f.uv_stride,
+                                                                          f.crop_x, f.crop_y, f.crop_w, f.crop_h));
+            else
+                strcat(got, r == VJ_ERR_STREAM ? "- " : "? ");
+        }
+        if (strcmp(got, want[k][1]))
+            fprintf(stderr, "%s: got  %s\n%*swant %s\n", want[k][0], got, (int)strlen(want[k][0]) + 2, "", want[k][1]);
+        assert(!strcmp(got, want[k][1]));
+        vj_decoder_destroy(d);
+        free(s);
+    }
 }
 
 int main(int argc, char **argv)
 {
     const char *dir = argc > 1 ? argv[1] : "../streams";
+    const char *vec = argc > 2 ? argv[2] : "vectors";
     test_au_length();
     test_args();
     test_frames(dir);
@@ -386,6 +432,7 @@ int main(int argc, char **argv)
     test_resume(dir);
     test_twice(dir);
     test_conceal_history(dir);
+    test_vectors(vec);
     puts("test_api: all passed");
     return 0;
 }
