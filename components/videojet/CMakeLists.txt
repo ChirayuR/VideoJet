@@ -9,7 +9,8 @@ endif()
 idf_component_register(SRCS "src/videojet.c" "src/vj_au.c" "src/vj_alloc.c" ${dec_srcs}
                        INCLUDE_DIRS "include"
                        PRIV_INCLUDE_DIRS "src" "h264bsd"
-                       PRIV_REQUIRES heap)
+                       PRIV_REQUIRES heap
+                       LDFRAGMENTS "linker.lf")
 # IDF's -Werror=all beats a bare -Wno-error, so this is a point fix for a known GCC false positive in
 # h264bsd_pic_order_cnt.c (both variables are set and read under the same absFrameNum > 0 test). Other tags may
 # need the same as optimisation flags change. It is set on the vendored sources only: our own code stays strict.
