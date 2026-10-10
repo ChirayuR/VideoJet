@@ -1,6 +1,7 @@
 /*
  * Copyright (C) 2009 The Android Open Source Project
  * Modified for use by h264bsd standalone library
+ * Modified for VideoJet: see h264bsd/README.md, Local changes.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -36,6 +37,7 @@
 #include "h264bsd_macroblock_layer.h"
 #include "h264bsd_image.h"
 #include "h264bsd_util.h"
+#include "vj_prof.h"
 
 #ifdef H264DEC_OMXDL
 #include "omxtypes.h"
@@ -1833,6 +1835,7 @@ void h264bsdPredictSamples(
     u32 xFrac, yFrac, width, height;
     i32 xInt, yInt;
     u8 *lumaPartData;
+    VJP_BEGIN(VJP_MC);
 
 /* Code */
 
@@ -1859,6 +1862,7 @@ void h264bsdPredictSamples(
 
     ASSERT(lumaFracPos[xFrac][yFrac] < 16);
 
+    { VJP_BEGIN(VJP_LUMA);
     switch (lumaFracPos[xFrac][yFrac])
     {
         case 0: /* G */
@@ -1926,8 +1930,10 @@ void h264bsdPredictSamples(
                     xInt-2, yInt-2, width, height, partWidth, partHeight, 3);
             break;
     }
+    VJP_END_AT(VJP_LUMA, VJP_LUMA + 4 * xFrac + yFrac); }
 
     /* chroma */
+    { VJP_BEGIN(VJP_CHROMA);
     PredictChroma(
       data + 16*16 + (partY>>1)*8 + (partX>>1),
       xA + partX,
@@ -1936,6 +1942,8 @@ void h264bsdPredictSamples(
       partHeight,
       mv,
       refPic);
+    VJP_END(VJP_CHROMA); }
+    VJP_END(VJP_MC);
 
 }
 

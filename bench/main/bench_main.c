@@ -149,8 +149,14 @@ static void run_stream(const esp_partition_t *part, const vj_entry_t *e, int run
         uint64_t parse = prof.parse / mhz / n, recon = prof.recon / mhz / n;
         uint64_t inter = prof.inter / mhz / n, dblk = prof.deblock / mhz / n;
         uint64_t frame = (uint64_t)((sum + idr_us) / n);
-        printf("VJP run=%d stream=%s parse_us=%llu recon_us=%llu inter_us=%llu deblock_us=%llu other_us=%lld\n",
-               run, e->name, parse, recon, inter, dblk, (long long)frame - (long long)(parse + recon + dblk));
+        printf("VJP run=%d stream=%s parse_us=%llu recon_us=%llu inter_us=%llu deblock_us=%llu other_us=%lld "
+               "mvpred_us=%llu copy_us=%llu mc_us=%llu write_us=%llu chroma_us=%llu luma_us=",
+               run, e->name, parse, recon, inter, dblk, (long long)frame - (long long)(parse + recon + dblk),
+               prof.mvpred / mhz / n, prof.copy / mhz / n, prof.mc / mhz / n, prof.write / mhz / n,
+               prof.chroma / mhz / n);
+        for (int i = 0; i < 16; i++) /* by quarter-sample position 4 * xFrac + yFrac, 0.1 us per frame */
+            printf("%s%.1f", i ? "," : "", (double)prof.luma[i] / mhz / n);
+        printf("\n");
     }
 out:
     if (monitoring) /* left after the monitor started: error=init */

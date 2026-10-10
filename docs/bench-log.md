@@ -386,3 +386,37 @@ of the 100 KB budget, stack excluded. An internal-RAM row ring for `mbStorage_t`
 compaction of `mbStorage_t` in PSRAM, or the records move to PSRAM (one line, bit-exact either way).
 
 At the cold-code tip: library internal RAM = heap 39,572 + IRAM 43,843 + DRAM 7,058 = 90,473 B (IRAM −7,798 B for concealment and SPS/PPS/VUI parsing, which now run from flash: once per parameter-set NAL or error). Cumulative since M2 (17.11 / 9.67 / 5.58): +332 % / +78 % / +48 %.
+
+### Profile split of `inter` (T7 Stage A, no candidate)
+Sub-counters inside `inter`, compiled out by default (`vj_prof.h`; the timed build's libvideojet objects are byte-identical to
+6f8a03b's, every section of all 29). Profile build `m3-mc-prof-a` at 6f8a03b + the counters: ELF 625cde6bd, slow class (idx 5),
+PASS, both runs within 1 µs. µs per frame; MC = `h264bsdPredictSamples` (luma + chroma), write = `h264bsdWriteOutputBlocks` /
+`h264bsdWriteMacroblock`, copy = the direct skip copy (5a), rest = inter minus the four (elision checks, dispatch, counter overhead).
+
+| stream | frame | inter | MV pred | copy | MC: luma + chroma | write | rest |
+|---|---|---|---|---|---|---|---|
+| aux_card | 13,934 | 4,273 | 1,837 | 1,083 | 299: 159 + 136 | 264 | 790 |
+| aux_map | 59,426 | 21,034 | 2,104 | 2,461 | 12,077: 8,659 + 3,314 | 3,619 | 773 |
+| full_map | 124,019 | 59,096 | 3,060 | 2,424 | 42,588: 32,022 + 10,275 | 10,172 | 852 |
+
+MC is the bulk of `inter` on the moving streams (57 % aux_map, 72 % full_map); write-out is next (17 %). On aux_card, MV
+prediction of the static skips is the largest part (43 %). Luma by quarter-sample position, with calls and pixels per frame from
+a host count (`-Wl,--wrap=h264bsdPredictSamples`, deterministic, so the board ran the same calls); cycles at 240 MHz:
+
+| position | full_map µs | calls | px | cyc/px | aux_map µs | cyc/px |
+|---|---|---|---|---|---|---|
+| G (full-sample copy) | 2,956 | 520 | 101,484 | 7.0 | 1,234 | 7.5 |
+| d / h / n (vertical) | 4,089 / 2,463 / 2,922 | 158 / 118 / 119 | 29,784 / 21,998 / 21,341 | 33.0 / 26.9 / 32.9 | 1,353 / 708 / 950 | 33.4 / 27.3 / 33.6 |
+| a / b / c (horizontal) | 3,007 / 1,769 / 2,624 | 138 / 99 / 121 | 25,973 / 18,554 / 22,490 | 27.8 / 22.9 / 28.0 | 989 / 437 / 863 | 28.3 / 23.4 / 28.6 |
+| e / g / p / r (diagonal) | 870 / 730 / 642 / 812 | 24 / 20 / 19 / 23 | 4,132 / 3,451 / 3,097 / 3,901 | 50.5 / 50.8 / 49.8 / 49.9 | 557 together | 51 |
+| f / q / i / k (centre quarter) | 1,999 / 1,870 / 1,834 / 2,036 | 31 / 29 / 29 / 32 | 5,177 / 4,850 / 4,906 / 5,463 | 92.7 / 92.6 / 89.7 / 89.5 | 1,389 together | 93–96 |
+| j (centre half) | 1,400 | 26 | 4,366 | 77.0 | 181 | 79.7 |
+| chroma (all 4 kinds) | 10,275 | 1,507 | 140,483 | 17.6 | 3,314 | 17.8 |
+
+- Ranking by µs (full_map / aux_map): chroma 10.3 / 3.3 ms, vertical 9.5 / 3.0, horizontal 7.4 / 2.3, centre quarter 7.7 / 1.4,
+  full-sample copy 3.0 / 1.2, diagonal 3.1 / 0.6, j 1.4 / 0.2. Quarter positions outnumber half positions 3-3.5 : 1 (calls:
+  aux_map 73k : 21k, full_map 223k : 73k).
+- The centre kernels run 3x slower per pixel than the 1D ones: their 1.9 KB stack frame (`p1[]` + `table[]`) puts GCC's spill
+  slots beyond `l32i`'s 1020 B reach, so every spill costs `movi` + `add` + `l32i` (seen in the disassembly).
+- Partitions: the x264 streams use 16x16 / 16x8 / 8x16 / 8x8 only; the JVT held-out streams cover 8x4 / 4x8 / 4x4 and every position.
+  Blocks that cross the picture edge (the FillBlock path): 3.7 % of full_map's luma calls.

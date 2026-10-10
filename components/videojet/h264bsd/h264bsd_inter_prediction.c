@@ -46,6 +46,7 @@
 #include "h264bsd_util.h"
 #include "h264bsd_reconstruct.h"
 #include "h264bsd_dpb.h"
+#include "vj_prof.h"
 
 /*------------------------------------------------------------------------------
     2. External compiler flags
@@ -389,8 +390,10 @@ u32 h264bsdInterPrediction(mbStorage_t *pMb, macroblockLayer_t *pMbLayer,
     {
         case P_Skip:
         case P_L0_16x16:
+            { VJP_BEGIN(VJP_MVPRED);
             if (MvPrediction16x16(pMb, &pMbLayer->mbPred, dpb) != HANTRO_OK)
                 return(HANTRO_NOK);
+            VJP_END(VJP_MVPRED); }
             refImage.data = pMb->refAddr[0];
             /* skip elision. First write of a pure copy (MV (0,0), no
              * residual) of the reference R = list[refPic[0]], whose data is
@@ -436,6 +439,7 @@ u32 h264bsdInterPrediction(mbStorage_t *pMb, macroblockLayer_t *pMbLayer,
                     u8 *dcb = currImage->cb;
                     u8 *dcr = currImage->cr;
 
+                    { VJP_BEGIN(VJP_COPY);
                     for (i = 0; i < 16; i++, rl += width, dl += width)
                         memcpy(dl, rl, 16);
                     for (i = 0; i < 8; i++, rcb += cw, rcr += cw, dcb += cw,
@@ -444,6 +448,7 @@ u32 h264bsdInterPrediction(mbStorage_t *pMb, macroblockLayer_t *pMbLayer,
                         memcpy(dcb, rcb, 8);
                         memcpy(dcr, rcr, 8);
                     }
+                    VJP_END(VJP_COPY); }
                     return HANTRO_OK;
                 }
             }
@@ -452,8 +457,10 @@ u32 h264bsdInterPrediction(mbStorage_t *pMb, macroblockLayer_t *pMbLayer,
             break;
 
         case P_L0_L0_16x8:
+            { VJP_BEGIN(VJP_MVPRED);
             if ( MvPrediction16x8(pMb, &pMbLayer->mbPred, dpb) != HANTRO_OK)
                 return(HANTRO_NOK);
+            VJP_END(VJP_MVPRED); }
             refImage.data = pMb->refAddr[0];
             h264bsdPredictSamples(data, pMb->mv, &refImage, col, row, 0, 0,
                 16, 8);
@@ -463,8 +470,10 @@ u32 h264bsdInterPrediction(mbStorage_t *pMb, macroblockLayer_t *pMbLayer,
             break;
 
         case P_L0_L0_8x16:
+            { VJP_BEGIN(VJP_MVPRED);
             if ( MvPrediction8x16(pMb, &pMbLayer->mbPred, dpb) != HANTRO_OK)
                 return(HANTRO_NOK);
+            VJP_END(VJP_MVPRED); }
             refImage.data = pMb->refAddr[0];
             h264bsdPredictSamples(data, pMb->mv, &refImage, col, row, 0, 0,
                 8, 16);
@@ -474,8 +483,10 @@ u32 h264bsdInterPrediction(mbStorage_t *pMb, macroblockLayer_t *pMbLayer,
             break;
 
         default: /* P_8x8 and P_8x8ref0 */
+            { VJP_BEGIN(VJP_MVPRED);
             if ( MvPrediction8x8(pMb, &pMbLayer->subMbPred, dpb) != HANTRO_OK)
                 return(HANTRO_NOK);
+            VJP_END(VJP_MVPRED); }
             for (i = 0; i < 4; i++)
             {
                 refImage.data = pMb->refAddr[i];
@@ -524,6 +535,7 @@ u32 h264bsdInterPrediction(mbStorage_t *pMb, macroblockLayer_t *pMbLayer,
     if (pMb->decoded > 1)
         return HANTRO_OK;
 
+    { VJP_BEGIN(VJP_WRITE);
     if (pMb->mbType != P_Skip)
     {
         h264bsdWriteOutputBlocks(currImage, mbNum, data,
@@ -533,6 +545,7 @@ u32 h264bsdInterPrediction(mbStorage_t *pMb, macroblockLayer_t *pMbLayer,
     {
         h264bsdWriteMacroblock(currImage, data);
     }
+    VJP_END(VJP_WRITE); }
 
     return(HANTRO_OK);
 }

@@ -135,6 +135,12 @@ bool vj_profile_take(vj_profile_t *out)
     out->recon = vj_prof[VJP_RECON];
     out->inter = vj_prof[VJP_INTER];
     out->deblock = vj_prof[VJP_DEBLOCK];
+    out->mvpred = vj_prof[VJP_MVPRED];
+    out->copy = vj_prof[VJP_COPY];
+    out->mc = vj_prof[VJP_MC];
+    out->write = vj_prof[VJP_WRITE];
+    out->chroma = vj_prof[VJP_CHROMA];
+    memcpy(out->luma, vj_prof + VJP_LUMA, sizeof out->luma);
     memset(vj_prof, 0, sizeof vj_prof);
     return true;
 }

@@ -52,8 +52,14 @@ void vj_decoder_destroy(vj_decoder_t *dec);
  * holds no start code. Constrained baseline without arbitrary slice order or redundant pictures. */
 size_t vj_au_length(const uint8_t *data, size_t len);
 
-/* Per-stage CPU cycles since the last take, then zeroed. False when profiling is compiled out. */
-typedef struct { uint64_t parse, recon, inter, deblock; } vj_profile_t;
+/* Per-stage CPU cycles since the last take, then zeroed. False when profiling is compiled out.
+ * Within inter: mvpred (motion-vector prediction), copy (direct skip copy), mc (motion compensation) and write
+ * (prediction + residual into the picture). Within mc: chroma, and luma by quarter-sample position 4 * xFrac + yFrac
+ * (0: full-sample copy). */
+typedef struct {
+    uint64_t parse, recon, inter, deblock;
+    uint64_t mvpred, copy, mc, write, chroma, luma[16];
+} vj_profile_t;
 bool vj_profile_take(vj_profile_t *out);
 
 #ifdef __cplusplus

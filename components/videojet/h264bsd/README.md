@@ -59,5 +59,9 @@ Every change made for VideoJet is listed here, newest last.
       after success, and after an error the slice's stream is never read again.
     - Exp-Golomb codes (up to 31 leading zeros) and CAVLC's level_prefix count the zeros with `__builtin_clz`
       (NSAU on Xtensa).
+  - Profile split of `inter` (`h264bsd_inter_prediction.c`, `h264bsd_reconstruct.c`, `vj_prof.h`; `VJ_PROFILE` builds only,
+    no change to the default build): `{ VJP_BEGIN(..); <original code>; VJP_END(..); }` blocks around MV prediction, the
+    direct skip copy and the write-out, and in `h264bsdPredictSamples` around the whole function, the luma `switch`
+    (counted per quarter-sample position) and `PredictChroma`.
 - Apache-2.0 §4(b) modification notice: every file changed above carries the header line
   `Modified for VideoJet: see h264bsd/README.md, Local changes.` Comment-only.
