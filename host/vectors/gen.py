@@ -1,7 +1,8 @@
 """Craft a tiny baseline stream (redundant_pic_cnt_present=1, deblocking control=1) that drives h264bsd into
 IsEndOfPicture with two adjacent untouched MBs (double counting via failed redundant slices).
 host/vectors: python3 gen.py attack > attack.h264; python3 gen.py attack2 > attack2.h264 (6x2 MBs, I_PCM IDR).
-python3 gen.py elide > elide.h264: a redundant slice re-decodes, as a skip, an MB that its primary slice changed."""
+python3 gen.py elide > elide.h264: a redundant slice re-decodes, as a skip, an MB that its primary slice changed.
+python3 gen.py slerr > slerr.h264: slices that fail mid-way, then re-decodes, around elidable skips."""
 import sys
 
 class BW:

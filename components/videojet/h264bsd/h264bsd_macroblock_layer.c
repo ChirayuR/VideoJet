@@ -157,8 +157,11 @@ u32 h264bsdDecodeMacroblockLayer(strmData_t *pStrmData,
      * one active reference (and for P_8x8ref0); totalCoeff and coeffMap are set
      * only for decoded blocks; the DC blocks level[24..25] are read whatever
      * their totalCoeff. Any other level[] block is read beyond [0] only when its
-     * totalCoeff != 0 (ProcessResidual), so DecodeResidual zeroes only the coded
-     * ones, before the CAVLC decoder writes their nonzero levels. */
+     * coeffMap is nonzero: an uncoded I16x16-luma or chroma-AC block with a DC
+     * reaches h264bsdProcessBlock, whose coeffMap == 0 path reads data[0] alone
+     * (h264bsd_transform.c). So DecodeResidual zeroes only the coded blocks,
+     * before the CAVLC decoder writes their levels. A transform that ignores
+     * coeffMap must zero the blocks itself. */
     pMbLayer->mbQpDelta = 0;
     memset(pMbLayer->mbPred.refIdxL0, 0, sizeof(pMbLayer->mbPred.refIdxL0));
     memset(pMbLayer->subMbPred.refIdxL0, 0,

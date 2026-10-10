@@ -358,3 +358,21 @@ speed class or 10 boots: it took 7 to draw idx 10 twice. fps is exact, frames·1
   Three measures of the IRAM cost agree to within 149 B: the archive's own 50,831 B, `.iram0.text` growing 50,980 B, and the heap losing
   50,944 B. The last is what the library costs the heap; the differences were not broken down.
 - The whole image is 258,666 B (M2: 258,798 B). The stack is still unmeasured by any axis.
+
+## M3 frontier
+Each candidate is scored with `tools/score.sh` (fresh build, slow class pinned with `--tuning 5`, exact fps =
+frames·10⁶/total_us, run 0). Δ is against the row above. A KEEP merges as a fast-forward, and its own record becomes
+`docs/baseline-m3.jsonl` (ruling R8). Records live in `results/bench.jsonl` of the checkout that ran them; the last two
+are copied into `.superpowers/sdd/2026-10-10-videojet-m3-speed/baseline-t{3,6c}.jsonl`.
+
+| candidate | record | idx | ELF | aux_card / aux_map / full_map fps | Δ % | int_used B |
+|---|---|---|---|---|---|---|
+| step 0 (d4d219f) | `m3-base-1` | 5 | e85969831 | 22.2075 / 12.7164 / 7.6810 | | 13,544 |
+| 5a skip copy (c437933) | `m3-base-skipcopy-2` | 5 | 18c888b1c | 23.1732 / 12.9092 / 7.6949 | +4.35 / +1.52 / +0.18 | 13,544 |
+| T9 reset generation (0abb6d3) | `m3-resetgen2` | 5 | 5b752d531 | 24.3856 / 13.2758 / 7.8423 | +5.23 / +2.84 / +1.92 | 13,544 |
+| T3 skip elision (088983c; af919ec adds tests only) | `m3-elide` | 5 | 48a121b56 | 59.8110 / 16.1626 / 7.8575 | +145.27 / +21.75 / +0.19 | 21,136 |
+| T6c lazy mbLayer clear (c4fbb31) | `m3-lazyclear` | 5 | e0fa69db4 | 59.9155 / 16.2917 / 7.9250 | +0.17 / +0.80 / +0.86 | 21,136 |
+
+Cumulative since M2 (slow class 17.11 / 9.67 / 5.58): **+250 % / +68 % / +42 %**. Skip elision elides 1,438 / 797 / 8.4 MBs
+per frame (aux_card / aux_map / full_map), against the 1,437 / 800 / 6 that the earlier cost model predicted. aux_card is at the
+spec's 60 fps decode-only goal; aux_map, the ≥30 fps gate for the Android Auto consumer, is next.

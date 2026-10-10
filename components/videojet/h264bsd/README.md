@@ -23,6 +23,22 @@ Every change made for VideoJet is listed here, newest last.
   - `MEMORY_ALLOCATION_ERROR` from `h264bsdDecodeSeqParamSet` / `h264bsdDecodePicParamSet` (a VUI or array allocation) now
     also returns `H264BSD_MEMALLOC_ERROR` instead of `H264BSD_ERROR`, so every allocation failure reaches the caller as
     "out of memory", not "bad stream".
-- Apache-2.0 §4(b) modification notice: `h264bsd_decoder.c`, `h264bsd_macroblock_layer.c`, `h264bsd_slice_data.c` and
-  `h264bsd_util.h`, the four files changed above, carry the header line `Modified for VideoJet: see h264bsd/README.md, Local
-  changes.` Comment-only.
+- M3 speed changes. Each one is bit-exact on the host gate and the board bench (`docs/bench-log.md`, M3 frontier):
+  - Direct skip copy (`h264bsd_inter_prediction.c`): a P_Skip MB with an even integer MV whose block lies inside the
+    reference is copied reference → picture, with no staging in `data[384]`.
+  - No per-picture `mbStorage_t` clear (`h264bsd_storage.c/h`, `h264bsd_slice_data.c`, `h264bsd_conceal.c`,
+    `h264bsd_deblocking.c/h`, `h264bsd_decoder.c`).
+    - `storage_t.picSliceBase` is the per-picture "slice id 0". Slice ids only grow, and `decoded` is reset lazily in
+      SetMbParams.
+    - Concealed MBs that no slice touched take `sliceId = picSliceBase`.
+    - The deblock slice-boundary tests compare `MAX(id, base)`.
+    - The original clear runs only when ids reach 0x80000000.
+  - Skip elision (`h264bsd_dpb.c/h`, `h264bsd_inter_prediction.c`, `h264bsd_deblocking.c`, `h264bsd_decoder.c`).
+    - `dpbPicture_t.vjFrameIdx` labels each buffer with the picture it holds, and a per-MB counter records the last
+      picture whose pixels changed there.
+    - A pure-copy MB whose pixels are already in the target buffer is not rebuilt. Deblocking marks the MBs it
+      changes, and the map is exported as `vj_frame_t.changed_mb`.
+  - Lazy `macroblockLayer_t` clear (`h264bsd_macroblock_layer.c`): only the fields a reader can see unwritten are
+    zeroed. Uncoded blocks depend on `h264bsdProcessBlock`'s `coeffMap == 0` path.
+- Apache-2.0 §4(b) modification notice: every file changed above carries the header line
+  `Modified for VideoJet: see h264bsd/README.md, Local changes.` Comment-only.
