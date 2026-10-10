@@ -112,7 +112,9 @@ h264bsd: Android's Hantro baseline decoder, Apache-2.0, plain C (github.com/onea
 - `$WORK/the consumer project` (CLAUDE.md, docs/) + its memory dir.
 
 ## Status
-- 2026-10-10: **M1 complete** on branch `m1-eval-harness` (`7c9c628..3c174ad`).
+- 2026-10-10: **M1 complete, merged to `main`** (`7c9c628..3c174ad`).
+  - Local repo only, no remote yet: the user will grant GitHub access later.
+  - `backups/` (board flash dump, incl. NVS) and `results/` are gitignored. Keep it that way when pushing.
   - What it delivered: the eval harness, a hardened scorer and the baseline + profile.
   - Review: the final review came back clean after one fix wave.
   - Next: M2 (library API + packaging), then M3 (meta-harness search).
