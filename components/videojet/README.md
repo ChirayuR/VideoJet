@@ -60,17 +60,20 @@ vj_decoder_destroy(dec);
 ## 4. Recommended config
 The bench's `sdkconfig.defaults` is the reference. Together the three cache and placement settings below took
 aux_card / aux_map / full_map (800x480) from 17.11 / 9.67 / 5.58 fps (M2: code in flash, 16 KB I-cache, 32 KB D-cache with
-32 B lines) to 22.21 / 12.72 / 7.68 (+30 / +32 / +38 %). Numbers and records: `docs/bench-log.md`, M3 step 0.
+32 B lines) to 22.21 / 12.72 / 7.68 (+30 / +32 / +38 %), with the tables still in flash then. Numbers and records:
+`docs/bench-log.md`, M3 step 0 and M3 frontier.
 - 240 MHz CPU, octal PSRAM at 80 MHz, `-O2` (`CONFIG_COMPILER_OPTIMIZATION_PERF`).
 - **D-cache line 64 B** (`CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y`): the largest lever, and it costs no RAM. At 32 KB with the
   code in IRAM it gained +19 / +11 / +7 %.
 - **D-cache 64 KB** (`CONFIG_ESP32S3_DATA_CACHE_64KB=y`): another +8 / +6 / +7 % on top of the 64 B line, for 32 KB of
   internal RAM (31,996 B less heap, measured).
-- **Decoder code and tables in internal RAM** (`CONFIG_VJ_IRAM=y`, the default): 51,722 B IRAM + 7,090 B DRAM. The
-  tables in DRAM gained +0.7 / +1.4 / +2.0 % on their own (in flash they cost up to ~2,350 cache misses per frame). It gained +1 / +11 / +21 % over flash
-  code with the default 16 KB I-cache, and with it, moving the code changed fps by at most 0.11 % on the bench. The alternative, for
-  16 KB of internal RAM instead of 59 KB: `CONFIG_VJ_IRAM=n` with `CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y`, which stayed within
-  1 % of IRAM on the bench's code layout (flash code has no layout pin, so treat it as an estimate) (22.17 / 12.60 / 7.63).
+- **Decoder code and tables in internal RAM** (`CONFIG_VJ_IRAM=y`, the default): 51,722 B IRAM + 7,090 B DRAM (default
+  config; `CONFIG_VJ_ERROR_PRINT=y` adds ~1.3 KB of strings). The code in IRAM gained +1 / +11 / +21 % over flash code with
+  the default 16 KB I-cache (step 0), and with it moving the code changed fps by at most 0.11 %. The tables in DRAM gained
+  another +0.7 / +1.4 / +2.0 % on top of that (in flash they cost up to ~2,350 cache misses per frame).
+- The small-RAM alternative, 16 KB of internal RAM instead of 58,812 B: `CONFIG_VJ_IRAM=n` with
+  `CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y`. At step 0 it stayed within 1 % of code-in-IRAM (22.17 / 12.60 / 7.63; flash code
+  has no layout pin), but it keeps the tables in flash too, so expect it about 1 / 2 / 3 % below the default (estimate).
 - With 64 B lines, a PSRAM buffer that DMA reads or writes needs 64 B alignment in address and size
   (`CONFIG_ESP32S3_DATA_CACHE_LINE_SIZE`; for example `heap_caps_aligned_alloc(64, n, MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA)`
   with `n` a multiple of 64). The library does no DMA, and its own buffers, `f.y`, `f.u` and `f.v` included, are not
