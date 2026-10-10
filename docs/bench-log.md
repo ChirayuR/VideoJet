@@ -159,7 +159,7 @@ VJ run=0 set=search stream=aux_card frames=300/300 fail=0 first_fail=-1 idr_us=1
 
 ### fps against the M1 baseline
 M2 acceptance is |Δ| ≤ 5 % per stream in the same speed class (ruling R1 of the M2 plan; Noise above).
-`python3 tools/compare.py m2-t3-final`:
+`python3 tools/compare.py m2-t3-final`, as the M2 script printed it (from the fps tokens):
 ```
 aux_card                    17.23 vs    17.24 fps (fast)  -0.06 %  ok
 aux_map                      9.71 vs     9.73 fps (fast)  -0.21 %  ok
@@ -167,15 +167,19 @@ full_map                     5.60 vs     5.62 fps (fast)  -0.36 %  ok
 PASS
 ```
 `m2-final-all` is the same firmware at index 5 (slow class): 17.11 / 9.67 / 5.58 fps against 17.12 / 9.69 / 5.60, the same
-−0.06 / −0.21 / −0.36 % (`compare.py` prints FAIL for that record only because of the held-out "no baseline" lines). Exactly,
+−0.06 / −0.21 / −0.36 % (the M2 `compare.py` printed FAIL for that record only because of the held-out "no baseline" lines; it now
+prints `ERROR: <stream>: no baseline` for them and exits 2). Exactly,
 from `total_us` against the baseline from row times: −0.051 / −0.205 / −0.447 % (fast) and −0.061 / −0.201 / −0.441 % (slow).
 The two classes agree: the Δ belongs to the binary, and it sits well inside the layout band (Noise above).
 
-Every committed M2 firmware against the same-class baseline, as `compare.py` computes it from the printed fps (aux_card /
+Every committed M2 firmware against the same-class baseline, as `compare.py` computed it from the printed fps (aux_card /
 aux_map / full_map, %). No decoder algorithm changed in any of them: the spread is code placement (Noise above). The two
 controls are M1 logic. Labels repeat in `results/bench.jsonl` (`m2-t1` is on four records, on two ELFs), and `compare.py LABEL`
 reads only the last record with a label, so a record is identified by label, ELF and index. The rows below are
-`compare.compare()` over each such record; the CLI reproduces all of them except the first (the `m2-t1` index-4 record).
+the M2 `compare.compare()` over each such record, from the fps tokens; the CLI then reproduced all of them except the first
+(the `m2-t1` index-4 record). It no longer does: since M3 Task 2 `compare.py` computes exact fps from `total_us` wherever a row
+has it, so `m2-t3-final` now prints −0.076 / −0.157 / −0.438 % (exact run against M1's token baseline), while the table's
+2-decimal values come from the fps tokens.
 
 | firmware | record | ELF | index (class) | aux_card | aux_map | full_map |
 |---|---|---|---|---|---|---|
