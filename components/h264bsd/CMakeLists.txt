@@ -5,3 +5,6 @@ idf_component_register(SRCS ${srcs} INCLUDE_DIRS "src")
 # variables are set and read under the same `absFrameNum > 0` test). Other warning tags may need the
 # same treatment as the optimisation flags change.
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-error=maybe-uninitialized -D_ERROR_PRINT)
+if(VJ_PROFILE)
+    target_compile_definitions(${COMPONENT_LIB} PUBLIC VJ_PROFILE=1)
+endif()

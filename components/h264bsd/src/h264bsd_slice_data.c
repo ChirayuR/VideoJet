@@ -37,6 +37,7 @@
 #include "h264bsd_slice_data.h"
 #include "h264bsd_util.h"
 #include "h264bsd_vlc.h"
+#include "vj_prof.h"
 
 /*------------------------------------------------------------------------------
     2. External compiler flags
@@ -172,9 +173,11 @@ u32 h264bsdDecodeSliceData(strmData_t *pStrmData, storage_t *pStorage,
         else
         {
             prevSkipped = HANTRO_FALSE;
+            { VJP_BEGIN(VJP_PARSE);
             tmp = h264bsdDecodeMacroblockLayer(pStrmData, mbLayer,
                 pStorage->mb + currMbAddr, pSliceHeader->sliceType,
                 pSliceHeader->numRefIdxL0Active);
+            VJP_END(VJP_PARSE); }
             if (tmp != HANTRO_OK)
             {
                 EPRINT("macroblock_layer");
@@ -182,9 +185,11 @@ u32 h264bsdDecodeSliceData(strmData_t *pStrmData, storage_t *pStorage,
             }
         }
 
+        { VJP_BEGIN(VJP_RECON);
         tmp = h264bsdDecodeMacroblock(pStorage->mb + currMbAddr, mbLayer,
             currImage, pStorage->dpb, &qpY, currMbAddr,
             pStorage->activePps->constrainedIntraPredFlag, data);
+        VJP_END(VJP_RECON); }
         if (tmp != HANTRO_OK)
         {
             EPRINT("MACRO_BLOCK");

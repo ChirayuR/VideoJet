@@ -1,6 +1,7 @@
 /* VideoJet board bench: decode every stream in the `streams` partition, time each frame,
  * check each frame's hash against its golden, print one "VJ ..." line per stream.
- * Hashing and the per-frame yield happen outside the timed region. */
+ * Hashing and the per-frame yield happen outside the timed region.
+ * A VJ_PROFILE build (see vj_prof.h) also prints one "VJP ..." per-stage line after each "VJ ... stream=" line. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,8 +14,13 @@
 #include "h264bsd_decoder.h"
 #include "h264bsd_util.h"
 #include "vj_hash.h"
+#include "vj_prof.h"
 
 #define VJ_RUNS 2
+
+#ifdef VJ_PROFILE
+uint64_t vj_prof[VJP_N];
+#endif
 
 typedef struct {
     char name[24];
@@ -52,6 +58,9 @@ static void run_stream(const esp_partition_t *part, const vj_entry_t *e, int run
     uint32_t left = e->data_len, n = 0, fails = 0, stalls = 0;
     int first_fail = -1;
     const char *err = NULL;
+#ifdef VJ_PROFILE
+    memset(vj_prof, 0, sizeof vj_prof);
+#endif
     int64_t t0 = esp_timer_get_time();
     while (left > 0 && n < e->frames) {
         /* Anything whose address goes to the h264bsd API is u32 (unsigned int): uint32_t is
@@ -116,6 +125,16 @@ static void run_stream(const esp_partition_t *part, const vj_entry_t *e, int run
            (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
            (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM),
            err ? " error=" : "", err ? err : "");
+#ifdef VJ_PROFILE
+    if (n) {
+        const uint64_t mhz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
+        uint64_t parse = vj_prof[VJP_PARSE] / mhz / n, recon = vj_prof[VJP_RECON] / mhz / n;
+        uint64_t inter = vj_prof[VJP_INTER] / mhz / n, dblk = vj_prof[VJP_DEBLOCK] / mhz / n;
+        uint64_t frame = (uint64_t)((sum + idr_us) / n);
+        printf("VJP run=%d stream=%s parse_us=%llu recon_us=%llu inter_us=%llu deblock_us=%llu other_us=%lld\n",
+               run, e->name, parse, recon, inter, dblk, (long long)frame - (long long)(parse + recon + dblk));
+    }
+#endif
 out:
     if (dec) {
         h264bsdShutdown(dec);

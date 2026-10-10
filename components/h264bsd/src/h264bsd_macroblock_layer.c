@@ -54,6 +54,7 @@
 #include "h264bsd_transform.h"
 #include "h264bsd_intra_prediction.h"
 #include "h264bsd_inter_prediction.h"
+#include "vj_prof.h"
 
 #ifdef H264DEC_OMXDL
 #include "omxtypes.h"
@@ -1025,8 +1026,10 @@ u32 h264bsdDecodeMacroblock(mbStorage_t *pMb, macroblockLayer_t *pMbLayer,
 #ifdef H264DEC_OMXDL
         if (h264bsdMbPartPredMode(mbType) == PRED_MODE_INTER)
         {
+            { VJP_BEGIN(VJP_INTER);
             tmp = h264bsdInterPrediction(pMb, pMbLayer, dpb, mbNum,
                 currImage, (u8*)data);
+            VJP_END(VJP_INTER); }
             if (tmp != HANTRO_OK) return (tmp);
         }
 #endif
@@ -1120,8 +1123,10 @@ u32 h264bsdDecodeMacroblock(mbStorage_t *pMb, macroblockLayer_t *pMbLayer,
         }
         else
         {
+            { VJP_BEGIN(VJP_INTER);
             tmp = h264bsdInterPrediction(pMb, pMbLayer, dpb, mbNum,
                 currImage, (u8*)data);
+            VJP_END(VJP_INTER); }
             if (tmp != HANTRO_OK) return (tmp);
         }
 #endif

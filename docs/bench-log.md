@@ -36,3 +36,32 @@ index 5 aux_card 60.36 / 116.78 ms (P p95 / IDR), full_map 197.31 / 217.46 ms; i
 full_map 196.62 / 217.19 ms.
 Binary: the Task 4 image, not rebuilt for this log (boot log: app version `88ed2d6-dirty`, compiled `Oct 10 2026 04:13:34`,
 ELF SHA256 `c31a1eec3…`).
+
+## Baseline profile
+Where a frame's decode time goes, per search stream: the `VJP` lines of `results/bench.jsonl`, record `baseline-prof`
+(one boot, PASS, 6 rows, `psram_tuning` 10, the fast class). It is a separate firmware, not the timed one:
+`idf.py -C bench -B "$PWD/bench/build-prof" -DVJ_PROFILE=1 build` (counters in `components/h264bsd/src/vj_prof.h`,
+compiled out by default), flashed with the same `-B`, run with `tools/bench.py --label baseline-prof --set search`,
+then the default build flashed back. Each stage is a CCOUNT delta around one call, summed over the stream's 300 frames
+(IDR included, like fps) and divided by 300. Run 0 is shown; run 1 differs by at most 1 µs.
+- parse = `h264bsdDecodeMacroblockLayer` (CAVLC), once per coded macroblock.
+- recon = `h264bsdDecodeMacroblock`, once per macroblock, skipped ones included: residual, intra, inter, write-out.
+- inter = `h264bsdInterPrediction`, a part of recon.
+- deblock = `h264bsdFilterPicture`, once per picture.
+- other = mean frame time − parse − recon − deblock: NAL and slice-header parsing, skip runs, DPB, and on the IDR the SPS/PPS and allocation.
+
+| stream | mean frame µs | parse µs (%) | recon µs (%) | of which inter µs (%) | deblock µs (%) | other µs (%) |
+|---|---|---|---|---|---|---|
+| aux_card | 58,269 | 531 (0.9 %) | 44,864 (77.0 %) | 41,891 (71.9 %) | 8,203 (14.1 %) | 4,671 (8.0 %) |
+| aux_map | 102,498 | 14,429 (14.1 %) | 64,079 (62.5 %) | 50,275 (49.0 %) | 17,549 (17.1 %) | 6,441 (6.3 %) |
+| full_map | 177,038 | 27,883 (15.7 %) | 105,726 (59.7 %) | 84,257 (47.6 %) | 34,963 (19.7 %) | 8,466 (4.8 %) |
+
+Counter cost: the profile firmware printed 17.16 / 9.76 / 5.65 fps (aux_card / aux_map / full_map) against 17.24 / 9.73 / 5.62
+for the timed baseline at index 10 (Results table): within about 0.5 %, mixed sign. The timed firmware rebuilt with these
+changes and flashed back printed 17.24 / 9.73 / 5.62 at index 4 (record `timed-restore-check`, no `VJP` lines), the same
+numbers as the index 10 row.
+
+Reading: inter prediction dominates all three streams. aux_card is skip-heavy (parse is 0.9 %, so almost no macroblock is
+coded), yet 72 % of its frame is inter prediction, with deblock next at 14 %. aux_map and full_map spend about half the frame
+in inter (49 % / 48 %); the rest is deblock 17 % / 20 %, parse 14 % / 16 %, recon minus inter (residual, intra, write-out)
+13.5 % / 12 %, and other 6 % / 5 %.

@@ -55,6 +55,7 @@
 #include "h264bsd_deblocking.h"
 #include "h264bsd_conceal.h"
 #include "h264bsd_storage.h"
+#include "vj_prof.h"
 
 /*------------------------------------------------------------------------------
     2. External compiler flags
@@ -472,7 +473,9 @@ u32 h264bsdDecode(storage_t *pStorage, u8 *byteStrm, u32 len, u32 picId,
 
     if (picReady)
     {
+        { VJP_BEGIN(VJP_DEBLOCK);
         h264bsdFilterPicture(pStorage->currImage, pStorage->mb);
+        VJP_END(VJP_DEBLOCK); }
 
         h264bsdResetStorage(pStorage);
 
