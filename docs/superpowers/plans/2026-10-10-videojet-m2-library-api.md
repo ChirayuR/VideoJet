@@ -27,7 +27,12 @@
   - `make -C host check` must pass on all 11 streams.
   - Every board run must PASS `tools/bench.py`, which checks frame hashes, the full stream×run grid and firmware identity.
   - The `vj_hash_i420()` header is untouched.
-- **fps acceptance.** Every task that changes code the board runs must end with a `--set search` run whose fps is within ±0.6 % per stream of `docs/baseline-m1.jsonl` in the same speed class. Check it with `tools/compare.py <label>` (Task 1). Tuning index 5 is "slow"; 4 and 10 are "fast".
+- **fps acceptance (ruling R1, after Task 1).** Every task that changes code the board runs must end with a `--set search` run within
+  **±5 %** per stream of `docs/baseline-m1.jsonl` in the same speed class: `tools/compare.py <label> --tol 5`.
+  Report the exact Δ. Tuning index 5 is "slow"; 4 and 10 are "fast".
+  - Why ±5 %: Task 1 measured that code layout alone moves fps between −4.3 % and +0.7 % with identical decoder logic.
+    M2 changes no decoder algorithm, so the guard has to sit outside the layout band.
+  - The original ±0.6 % is void until M3 pins code placement.
 - **Vendored code** may change only where a task says so. Every change goes under "Local changes" in the vendored README.
 - **Xtensa trap.** `uint32_t` is `unsigned long`. Anything whose address goes to an h264bsd function is `u32`.
 - **IDF build traps.**

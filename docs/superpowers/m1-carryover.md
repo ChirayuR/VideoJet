@@ -89,3 +89,12 @@ are the review's.
 - R14. M1 doc-precision nits are parked (see above).
 - R15. The frozen M1 plan's profile command lacks `--profile --elf`. CLAUDE.md and `bench-log` carry the correct command.
   - The identity check needs INFO-level boot logs, so M3 must not lower the log level.
+
+## Added during M2 (2026-10-10)
+- **M3 step 0, blocking: layout-robust measurement.**
+  - M2 Task 1 found that identical decoder logic moves fps by −4.3 % … +0.7 % depending only on code placement. The default 16 KB I-cache is the likely cause.
+  - Before any candidate is scored:
+    - pin the decoder's hot code: libvideojet `.text` in IRAM via a linker fragment (about 52 KB of internal RAM, inside the 100 KB budget), and/or the 32 KB I-cache;
+    - re-measure the build-to-build noise floor with deliberate layout perturbations;
+    - only then set M3's acceptance bar. The planned ≥1 % bar is void.
+- M2's "fps unchanged" was enforced as ±5 % (ruling R1 of the M2 ledger).
