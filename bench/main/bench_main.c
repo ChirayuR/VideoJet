@@ -95,8 +95,9 @@ static void run_stream(const esp_partition_t *part, const vj_entry_t *e, int run
         vTaskDelay(1); /* let IDLE0 feed the task watchdog: outside the timed region, as in M1 */
     }
 
-    /* Stats: t0 is taken before the first decode, so idr_us includes SPS/PPS parsing and DPB
-     * allocation. p95 is floor-rank s[m * 95 / 100]: it equals max_us for 20 or fewer P-frames. */
+    /* Stats: idr_us is the timed sum of the AUs up to and including the first frame (parameter sets included), so it
+     * covers SPS/PPS parsing and DPB allocation. p95 is floor-rank s[m * 95 / 100]: it equals max_us for 20 or fewer
+     * P-frames. */
     int64_t idr_us = n ? t[0] : 0, sum = 0;
     uint32_t m = n > 1 ? n - 1 : 0;
     int64_t *s = t + 1; /* P-frame times */

@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """Compare a bench run's per-stream fps with a baseline, within the same PSRAM speed class.
 
-  python3 tools/compare.py LABEL [--tol 0.6] [--results results/bench.jsonl] [--baseline docs/baseline-m1.jsonl]
+  python3 tools/compare.py LABEL [--tol 5] [--results results/bench.jsonl] [--baseline docs/baseline-m1.jsonl]
 
 The PSRAM timing tuning index picked at boot sets a speed class (docs/bench-log.md): 5 is the common, slower one;
 4 and 10 are the faster one. Only same-class numbers compare. The baseline mean per stream comes from every ok,
-non-profile record of that class in the baseline file; the run's from its own rows. Exit 0 only if every stream of
-the run is within ±tol % (M2's "fps unchanged" rule)."""
+non-profile record of that class in the baseline file; the run's from its own rows. Exit 0 only if the run has a row for
+every baseline stream and each is within ±tol % (M2's "fps unchanged" rule).
+
+The default ±5 % is ruling R1 of the M2 plan, not a noise figure. With identical decoder logic, code placement alone
+moved fps between -4.3 % and +0.7 % (M2 Task 1), so while placement is unpinned the guard has to sit outside that band.
+M3 step 0 pins placement and sets the real tolerance (docs/superpowers/m1-carryover.md)."""
 import argparse
 import json
 import sys
@@ -14,6 +18,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 CLASS = {5: "slow", 4: "fast", 10: "fast"}
+TOL = 5.0  # percent, ruling R1 (see the docstring)
 
 
 def per_stream(records):
@@ -35,6 +40,9 @@ def compare(run, baseline, tol):
     if not base:
         return False, [f"no {cls}-class baseline records"]
     b, now = per_stream(base), per_stream([run])
+    if not now or set(b) - set(now):  # a run that dropped streams (or has none) must not pass on what is left
+        what = "no rows" if not now else "no rows for " + ", ".join(sorted(set(b) - set(now)))
+        return False, [f"{run['label']}: {what}"]
     ok, lines = True, []
     for s in sorted(now):
         if s not in b:
@@ -55,7 +63,7 @@ def load(path):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("label")
-    ap.add_argument("--tol", type=float, default=0.6)
+    ap.add_argument("--tol", type=float, default=TOL)
     ap.add_argument("--results", default=ROOT / "results" / "bench.jsonl")
     ap.add_argument("--baseline", default=ROOT / "docs" / "baseline-m1.jsonl")
     a = ap.parse_args()

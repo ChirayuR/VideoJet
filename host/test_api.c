@@ -1,4 +1,5 @@
 /* test_api STREAMS_DIR: unit checks of the public API that the stream gate cannot reach. Plain asserts. */
+#undef NDEBUG /* the checks are the asserts: they stay live whatever CFLAGS say (-DNDEBUG would pass vacuously) */
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,7 +17,8 @@ static uint8_t *slurp(const char *path, size_t *len)
     *len = (size_t)ftell(f);
     fseek(f, 0, SEEK_SET);
     uint8_t *b = malloc(*len);
-    assert(b && fread(b, 1, *len, f) == *len);
+    size_t got = b ? fread(b, 1, *len, f) : 0;
+    assert(b && got == *len);
     fclose(f);
     return b;
 }
@@ -37,6 +39,11 @@ static void test_au_length(void)
     /* SEI after a slice starts the next AU. */
     static const uint8_t sei[] = {0, 0, 1, 0x65, 0x88, 0, 0, 1, 0x06, 0x05};
     assert(vj_au_length(sei, LEN(sei)) == 5);
+    /* AUD after a slice starts the next AU; an AUD at the head of an AU is part of it (no slice seen yet). */
+    static const uint8_t aud[] = {0, 0, 1, 0x65, 0x88, 0, 0, 1, 0x09, 0xF0};
+    assert(vj_au_length(aud, LEN(aud)) == 5);
+    static const uint8_t aud2[] = {0, 0, 1, 0x09, 0xF0, 0, 0, 1, 0x65, 0x88, 0, 0, 1, 0x09, 0xF0, 0, 0, 1, 0x41, 0x9A};
+    assert(vj_au_length(aud2, LEN(aud2)) == 10);
     /* No start code, NULL, empty. */
     static const uint8_t junk[] = {1, 2, 3, 4};
     assert(vj_au_length(junk, LEN(junk)) == 0);
@@ -46,7 +53,7 @@ static void test_au_length(void)
 
 static void test_args(void)
 {
-    static const uint8_t b[] = {0, 0, 1, 0x67};
+    static uint8_t b[] = {0, 0, 1, 0x67};
     vj_frame_t f;
     vj_decoder_t *d = vj_decoder_create();
     assert(d);
@@ -100,9 +107,28 @@ static void test_frames(const char *dir)
     free(s);
 }
 
-/* Consumers reuse one buffer for every AU. A damaged AU must leave nothing behind that a later AU at the same address
- * trips over (h264bsd keeps a "continue at this pointer" state): decode the first AUs of aux_card with one slice-header
- * bit flipped in the second, once from a fresh block per AU and once from a single buffer. Everything must agree. */
+/* Make the slice header of the AU at `au` unparsable: slice_type becomes a B slice, which baseline never has. */
+static void damage_header(uint8_t *au)
+{
+    while (!(au[0] == 0 && au[1] == 0 && au[2] == 1))
+        au++;
+    au[4] ^= 0x04; /* the byte after the NAL header */
+}
+
+/* Offset of the start code of slice number k (from 0) in the n-byte AU. */
+static size_t slice_at(const uint8_t *au, size_t n, int k)
+{
+    for (size_t i = 0; i + 3 < n; i++)
+        if (au[i] == 0 && au[i + 1] == 0 && au[i + 2] == 1 && ((au[i + 3] & 0x1f) == 1 || (au[i + 3] & 0x1f) == 5) &&
+            k-- == 0)
+            return i;
+    assert(!"slice not found");
+    return 0;
+}
+
+/* Consumers reuse one buffer for every AU, and a damaged AU is followed by more. Decode the first AUs of aux_card
+ * with one slice-header bit flipped in the second, once from a fresh block per AU and once from a single buffer.
+ * Everything must agree, and the AU after the damaged one must decode. */
 #define NAU 8
 
 static void decode_run(const uint8_t *s, const size_t *off, const size_t *len, int reuse, int *st, uint32_t *hash)
@@ -140,17 +166,104 @@ static void test_reuse(const char *dir)
         assert(len[i]);
         o += len[i];
     }
-    size_t sc = off[1];
-    while (!(s[sc] == 0 && s[sc + 1] == 0 && s[sc + 2] == 1))
-        sc++;
-    s[sc + 4] ^= 0x04; /* the byte after the NAL header: slice_type becomes a B slice, which baseline never has */
+    damage_header(s + off[1]);
     int st_a[NAU], st_b[NAU];
     uint32_t h_a[NAU], h_b[NAU];
     decode_run(s, off, len, 0, st_a, h_a);
     decode_run(s, off, len, 1, st_b, h_b);
     assert(st_a[0] == VJ_FRAME && st_a[1] == VJ_ERR_STREAM); /* the damage is felt */
+    assert(st_a[2] == VJ_FRAME); /* and the AU after it is decoded, not swallowed */
     for (int i = 0; i < NAU; i++)
         assert(st_a[i] == st_b[i] && h_a[i] == h_b[i]);
+    free(s);
+}
+
+/* The call after a damaged AU conceals the half-parsed picture and must still decode its own AU. Here that AU is the
+ * recovery IDR (AA sends one after a keyframe request): no error path may swallow it. */
+static void test_recovery(const char *dir)
+{
+    char path[512];
+    snprintf(path, sizeof path, "%s/search/aux_card.h264", dir);
+    size_t len;
+    uint8_t *s = slurp(path, &len);
+    size_t n0 = vj_au_length(s, len), n1 = vj_au_length(s + n0, len - n0);
+    uint8_t *idr = malloc(n0);
+    memcpy(idr, s, n0); /* decoding rewrites an AU in place: keep a copy to send again */
+    damage_header(s + n0);
+    vj_frame_t f;
+    vj_decoder_t *d = vj_decoder_create();
+    assert(vj_decode_au(d, s, n0, &f) == VJ_FRAME);
+    assert(vj_decode_au(d, s + n0, n1, &f) == VJ_ERR_STREAM);
+    assert(vj_decode_au(d, idr, n0, &f) == VJ_FRAME && f.idr && f.error_mbs == 0);
+    vj_decoder_destroy(d);
+    free(idr);
+    free(s);
+}
+
+/* Two more contract edges, on aux_map_dark (4 slices per picture): an AU that stops after 2 of its 4 slices is an error
+ * and the next AU still decodes; two AUs handed over as one call are an error (one picture per call). */
+static void test_contract(const char *dir)
+{
+    char path[512];
+    snprintf(path, sizeof path, "%s/heldout/aux_map_dark.h264", dir);
+    size_t len;
+    uint8_t *s = slurp(path, &len);
+    size_t n0 = vj_au_length(s, len), n1 = vj_au_length(s + n0, len - n0);
+    size_t n2 = vj_au_length(s + n0 + n1, len - n0 - n1);
+    vj_frame_t f;
+    vj_decoder_t *d = vj_decoder_create();
+    assert(vj_decode_au(d, s, n0, &f) == VJ_FRAME);
+    assert(vj_decode_au(d, s + n0, slice_at(s + n0, n1, 2), &f) == VJ_ERR_STREAM); /* slices 0 and 1 only */
+    assert(vj_decode_au(d, s + n0 + n1, n2, &f) == VJ_FRAME);
+    vj_decoder_destroy(d);
+
+    free(s);
+    s = slurp(path, &len); /* decoding rewrote the AUs: start from the file again */
+    d = vj_decoder_create();
+    assert(vj_decode_au(d, s, n0, &f) == VJ_FRAME);
+    assert(vj_decode_au(d, s + n0, n1 + n2, &f) == VJ_ERR_STREAM); /* two pictures in one call */
+    vj_decoder_destroy(d);
+    free(s);
+}
+
+/* A call never continues the last one. Hand over [AU1][AU2 cut after 2 of its 4 slices][AU3] as one call: an error
+ * (AU3's first slice conceals the cut picture, which makes a second picture) that leaves h264bsd expecting a re-call at
+ * AU3's address. Then decode AU4 where AU3 began, or in a fresh block: it must decode either way. */
+static int resume_run(const uint8_t *s, const size_t *off, const size_t *n, int same_address)
+{
+    size_t cut = slice_at(s + off[2], n[2], 2), at = n[1] + cut;
+    uint8_t *big = malloc(at + n[3]), *a0 = malloc(n[0]), *a4 = malloc(n[4]);
+    memcpy(a0, s + off[0], n[0]);
+    memcpy(big, s + off[1], n[1]);
+    memcpy(big + n[1], s + off[2], cut);
+    memcpy(big + at, s + off[3], n[3]);
+    vj_frame_t f;
+    vj_decoder_t *d = vj_decoder_create();
+    assert(vj_decode_au(d, a0, n[0], &f) == VJ_FRAME);
+    assert(vj_decode_au(d, big, at + n[3], &f) == VJ_ERR_STREAM);
+    uint8_t *au4 = same_address ? big + at : a4;
+    memcpy(au4, s + off[4], n[4]);
+    int st = vj_decode_au(d, au4, n[4], &f);
+    vj_decoder_destroy(d);
+    free(a4);
+    free(a0);
+    free(big);
+    return st;
+}
+
+static void test_resume(const char *dir)
+{
+    char path[512];
+    snprintf(path, sizeof path, "%s/heldout/aux_map_dark.h264", dir);
+    size_t total, off[5], n[5], o = 0;
+    uint8_t *s = slurp(path, &total);
+    for (int i = 0; i < 5; i++) {
+        off[i] = o;
+        n[i] = vj_au_length(s + o, total - o);
+        o += n[i];
+    }
+    assert(resume_run(s, off, n, 0) == VJ_FRAME);
+    assert(resume_run(s, off, n, 1) == VJ_FRAME);
     free(s);
 }
 
@@ -161,6 +274,9 @@ int main(int argc, char **argv)
     test_args();
     test_frames(dir);
     test_reuse(dir);
+    test_recovery(dir);
+    test_contract(dir);
+    test_resume(dir);
     puts("test_api: all passed");
     return 0;
 }

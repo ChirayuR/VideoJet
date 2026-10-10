@@ -17,7 +17,7 @@ $(B):
 $(B)/vjdec: vjdec.c $(LIB_SRC) $(LIB_HDR) $(HASH) | $(B)
 	$(CC) $(CFLAGS) $(INC) $(LIB_INC) -o $@ vjdec.c $(LIB_SRC)
 
-$(B)/test_api: test_api.c $(LIB_SRC) $(LIB_HDR) | $(B)
+$(B)/test_api: test_api.c $(LIB_SRC) $(LIB_HDR) $(HASH) | $(B)
 	$(CC) $(CFLAGS) $(INC) $(LIB_INC) -o $@ test_api.c $(LIB_SRC)
 
 $(B)/vjhash_raw: vjhash_raw.c $(HASH) | $(B)

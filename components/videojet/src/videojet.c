@@ -29,9 +29,12 @@ void vj_decoder_destroy(vj_decoder_t *dec)
     h264bsdFree(S(dec));
 }
 
-static void describe(storage_t *s, const u8 *pic, u32 idr, u32 nerr, vj_frame_t *f)
+/* Fill *f for the picture just decoded. 0 when the frame cannot be described (its fields are 16 bit). */
+static int describe(storage_t *s, const u8 *pic, u32 idr, u32 nerr, vj_frame_t *f)
 {
     u32 W = h264bsdPicWidth(s) * 16, H = h264bsdPicHeight(s) * 16;
+    if (W > 0xFFFF || H > 0xFFFF)
+        return 0;
     u32 crop, x0, w, y0, h;
     h264bsdCroppingParams(s, &crop, &x0, &w, &y0, &h);
     if (!crop) {
@@ -56,15 +59,16 @@ static void describe(storage_t *s, const u8 *pic, u32 idr, u32 nerr, vj_frame_t 
     f->idr = idr != 0;
     f->error_mbs = nerr;
     f->changed_mb = NULL;
+    return 1;
 }
 
-vj_status_t vj_decode_au(vj_decoder_t *dec, const uint8_t *au, size_t len, vj_frame_t *out)
+vj_status_t vj_decode_au(vj_decoder_t *dec, uint8_t *au, size_t len, vj_frame_t *out)
 {
     if (!dec || !au || !len || !out || len > 0xffffffffu)
         return VJ_ERR_ARG;
     storage_t *s = S(dec);
     s->prevBufNotFinished = HANTRO_FALSE; /* a call never continues the last: no stale "resume at this pointer" */
-    u8 *p = (u8 *)au; /* not const-correct, and h264bsd strips emulation-prevention bytes in place: *au is written */
+    u8 *p = au;
     u32 left = (u32)len;
     int frames = 0;
     unsigned stalls = 0;
@@ -81,15 +85,17 @@ vj_status_t vj_decode_au(vj_decoder_t *dec, const uint8_t *au, size_t len, vj_fr
         if (r == H264BSD_PIC_RDY) {
             u32 id, idr, nerr;
             u8 *pic = h264bsdNextOutputPicture(s, &id, &idr, &nerr);
-            if (!pic)
-                return VJ_ERR_STREAM;
             /* PIC_RDY before consuming anything: h264bsd just concealed the previous AU's unfinished picture,
-             * already reported as VJ_ERR_STREAM. Drop it so each call returns only its own picture. */
+             * already reported as VJ_ERR_STREAM. Drop it, pixels or not, and go on to this call's own AU (it may be
+             * the recovery IDR): each call decodes and returns only its own picture. */
             if (used == 0 && at_start)
                 continue;
+            if (!pic)
+                return VJ_ERR_STREAM;
             if (++frames > 1)
                 return VJ_ERR_STREAM; /* two pictures in one access unit */
-            describe(s, pic, idr, nerr, out);
+            if (!describe(s, pic, idr, nerr, out))
+                return VJ_ERR_STREAM;
         } else if (used == 0 && ++stalls > 2) {
             return VJ_ERR_STREAM;
         }

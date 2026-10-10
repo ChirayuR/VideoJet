@@ -26,6 +26,11 @@ int main(int argc, char **argv)
     fseek(f, 0, SEEK_END);
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
+    if (size < 0) { /* not seekable (a pipe): the size is unknown */
+        fprintf(stderr, "%s: cannot size the input, give a regular file\n", argv[1]);
+        fclose(f);
+        return 2;
+    }
     uint8_t *buf = malloc(size > 0 ? (size_t)size : 1);
     if (!buf || fread(buf, 1, (size_t)size, f) != (size_t)size) {
         fprintf(stderr, "read failed\n");
@@ -35,8 +40,11 @@ int main(int argc, char **argv)
     }
     fclose(f);
     FILE *yuv = argc > 2 ? fopen(argv[2], "wb") : NULL;
-    if (argc > 2 && !yuv)
+    if (argc > 2 && !yuv) {
         perror(argv[2]);
+        free(buf);
+        return 2;
+    }
 
     int rc = 0; /* every exit goes through `out`, so nothing leaks and ASan's leak check stays usable */
     unsigned frames = 0;

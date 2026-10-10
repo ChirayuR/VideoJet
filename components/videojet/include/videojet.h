@@ -1,8 +1,9 @@
 #pragma once
 /* VideoJet: fast H.264 constrained-baseline decoding for the ESP32-S3.
  *
- * Feed one Annex-B access unit (AU) per vj_decode_au() call. A call that completes a picture returns it fully
- * decoded and deblocked, and no decode work is left running when any call returns. Pictures come out in decode
+ * Feed one Annex-B access unit (AU) per vj_decode_au() call. The decoder rewrites the AU in place (it removes
+ * emulation-prevention bytes): pass a writable buffer and decode each AU once. A call that completes a picture returns
+ * it fully decoded and deblocked, and no decode work is left running when any call returns. Pictures come out in decode
  * order (no output reordering), which is display order for baseline streams that never reorder.
  * Byte-stream sources split their buffer with vj_au_length(). One decoder per task: calls on one decoder must not
  * overlap. Frame buffers live in PSRAM (about 1.5 x width x height bytes each, refs + 1 of them). */
@@ -21,7 +22,7 @@ typedef enum {
     VJ_NO_FRAME = 0,     /* the AU held no slice (parameter sets, SEI) */
     VJ_ERR_STREAM = -1,  /* bitstream error, unsupported stream, or the AU ended inside a picture */
     VJ_ERR_NOMEM = -2,   /* a buffer could not be allocated (frames need PSRAM) */
-    VJ_ERR_ARG = -3,     /* NULL decoder, AU or out; empty AU */
+    VJ_ERR_ARG = -3,     /* NULL decoder, AU or out; empty AU, or one over 4 GiB */
 } vj_status_t;
 
 typedef struct {
@@ -32,12 +33,13 @@ typedef struct {
     bool full_range;            /* VUI video_full_range_flag: 0-255 samples instead of 16-235 */
     uint8_t matrix;             /* VUI matrix_coefficients: 1 BT.709, 5 or 6 BT.601, 2 unspecified */
     bool idr;                   /* an IDR picture: decoding can (re)start here */
-    uint32_t error_mbs;         /* macroblocks concealed after a bitstream error, 0 when clean */
+    uint32_t error_mbs;         /* macroblocks concealed in this returned frame, rarely non-zero: concealment normally
+                                 * surfaces as VJ_ERR_STREAM on the damaged AU, the cue to request a keyframe */
     const uint8_t *changed_mb;  /* NULL: unknown, treat every macroblock as changed */
 } vj_frame_t;
 
 vj_decoder_t *vj_decoder_create(void);
-vj_status_t vj_decode_au(vj_decoder_t *dec, const uint8_t *au, size_t len, vj_frame_t *out);
+vj_status_t vj_decode_au(vj_decoder_t *dec, uint8_t *au, size_t len, vj_frame_t *out);
 void vj_decoder_destroy(vj_decoder_t *dec);
 
 /* Length of the first access unit at `data`: up to the next AU's start code, `len` for the last AU, 0 when `data`
