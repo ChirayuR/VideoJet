@@ -26,16 +26,23 @@ BOOT_ID = (b"I (500) app_init: Project name:     videojet_bench\r\n"
            b"I (500) app_init: ESP-IDF:          v5.4.2\r\n" % (VERSION.encode(), SHA[:9].encode()))
 # A VJ_PROFILE firmware prints one of these after each stream's row.
 VJP = "VJP run={r} stream={n} parse_us=531 recon_us=44864 inter_us=41891 deblock_us=8203 other_us=4671"
-# A real line from the m1-smoke run on the board.
-REAL = ("VJ run=0 set=search stream=aux_card frames=300/300 fail=0 first_fail=-1 idr_us=116465 "
-        "p_mean_us=57824 p50_us=57407 p95_us=59956 max_us=83010 fps=17.24 int_min=354655 psram_min=6810676")
+# A real line from the m2-t3 run on the board (the M2 format: total_us, int_used and psram_used close the stats).
+REAL = ("VJ run=0 set=search stream=aux_card frames=300/300 fail=0 first_fail=-1 idr_us=116214 p_mean_us=57854 "
+        "p50_us=57429 p95_us=59977 max_us=83086 fps=17.23 int_min=354639 psram_min=6808212 total_us=17414779 "
+        "int_used=13544 psram_used=1507340")
+# The same stream's row from the m1-smoke run (the M1 format, before those three fields): the scorer must refuse it.
+M1_REAL = ("VJ run=0 set=search stream=aux_card frames=300/300 fail=0 first_fail=-1 idr_us=116465 "
+           "p_mean_us=57824 p50_us=57407 p95_us=59956 max_us=83010 fps=17.24 int_min=354655 psram_min=6810676")
+NEW_FIELDS = "total_us int_used psram_used".split()
 
 
 def row(s, n, r, **over):
-    f = dict(frames="300/300", fail="0", first_fail="-1", idr_us="116465", p_mean_us="57824", p50_us="57407",
-             p95_us="59956", max_us="83010", fps="17.24", int_min="354655", psram_min="6810676")
+    """One row as the firmware prints it. A field given as None is left out (an M1-format row has no new fields)."""
+    f = dict(frames="300/300", fail="0", first_fail="-1", idr_us="116214", p_mean_us="57854", p50_us="57429",
+             p95_us="59977", max_us="83086", fps="17.23", int_min="354639", psram_min="6808212",
+             total_us="17414779", int_used="13544", psram_used="1507340")
     f.update(over)
-    return f"VJ run={r} set={s} stream={n} " + " ".join(f"{k}={v}" for k, v in f.items())
+    return f"VJ run={r} set={s} stream={n} " + " ".join(f"{k}={v}" for k, v in f.items() if v is not None)
 
 
 def good(which="all"):
@@ -164,7 +171,7 @@ def test_stream_count_in_the_start_line():
 
 def test_truncated_rows_never_pass_and_never_raise():
     full = row("search", "aux_card", 0)
-    last = full.index("psram_min=") + len("psram_min=")
+    last = full.index("psram_used=") + len("psram_used=")
     for k in range(len(full)):
         lines = good()
         lines[1] = full[:k]
@@ -204,8 +211,8 @@ def test_fps_is_exactly_what_the_firmware_prints():
 
 
 def test_integer_fields_are_plain_integers():
-    for field in "fail idr_us p_mean_us p50_us p95_us max_us int_min psram_min".split():
-        for bad in ("+5", "-5", "5.0", "1_000", "0x1f", "5e3", "007", "00", "٥", "1٥", "5x", "9" * 20):
+    for field in "fail idr_us p_mean_us p50_us p95_us max_us int_min psram_min".split() + NEW_FIELDS:
+        for bad in ("+5", "-5", "5.0", "1_000", "0x1f", "5e3", "007", "00", "٥", "1٥", "5x", "9" * 20, ""):
             lines = good()
             lines[1] = row("search", "aux_card", 0, **{field: bad})
             fail(lines, f"search/aux_card/run0: missing or bad {field}")
@@ -221,6 +228,40 @@ def test_first_fail_is_minus_one_or_an_index_and_agrees_with_fail():
         lines = good()
         lines[1] = row("search", "aux_card", 0, fail=f, first_fail=ff)
         fail(lines, f"fail={f} first_fail={ff}")
+
+
+def test_a_row_without_total_us_int_used_or_psram_used_fails():
+    for field in NEW_FIELDS:
+        lines = good()
+        lines[1] = row("search", "aux_card", 0, **{field: None})
+        fail(lines, f"search/aux_card/run0: missing or bad {field}")
+
+
+def test_m1_format_rows_fail_naming_the_missing_fields():
+    # The row the M1 firmware printed, verbatim, and a whole capture of such rows: every one is refused, by name.
+    lines = good()
+    lines[1] = M1_REAL
+    fail(lines, "search/aux_card/run0: missing or bad total_us int_used psram_used")
+    old = []
+    for x in good():
+        d = bench.kv(x)
+        old.append(row(d["set"], d["stream"], d["run"], **dict.fromkeys(NEW_FIELDS)) if "stream" in d else x)
+    ok, reasons = bench.score(old, NAMES, RUNS, "all")
+    bad = [r for r in reasons if "missing or bad" in r]
+    assert not ok and len(bad) == 6 and all(r.endswith("missing or bad total_us int_used psram_used") for r in bad), reasons
+
+
+def test_the_boards_new_errors_fail_the_run():
+    lines = good()
+    lines[1] = "VJ run=0 set=search stream=aux_card error=read"  # a short row: the partition read failed
+    fail(lines, "search/aux_card/run0: board error=read")
+    lines = good()
+    lines[1] += " error=extra_frames"  # a full row, frames=300/300 and clean hashes: the stream has more pictures
+    fail(lines, "search/aux_card/run0: board error=extra_frames")
+    # `VJ error=container` follows `VJ start` and ends the capture there, as any marker without stream= does
+    lines, _, abort, board = cap([b"VJ start streams=99999999\nVJ error=container\n", b"more\n"])
+    assert lines == ["VJ start streams=99999999", "VJ error=container"] and abort is None and board.script == [b"more\n"]
+    fail(lines, "board gave up: VJ error=container", "search")
 
 
 def test_absurdly_long_numbers_fail_without_raising():
