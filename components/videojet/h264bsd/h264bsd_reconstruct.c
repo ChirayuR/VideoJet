@@ -476,8 +476,8 @@ static void LumaInside(const u8 *s, u32 ss, u8 *d, u32 w, u32 h, u32 xFrac,
     u32 yFrac)
 {
 #if VJ_PIE
-    /* PIE stores round the destination down to 16 B: any other d takes the C path */
-    if (w >= 8 && ((uintptr_t)d & 15) == 0)
+    /* w 16 stores 16 B (rounds d down), w 8 stores 8 B (needs 8-alignment): anything less aligned takes the C path */
+    if (w >= 8 && ((uintptr_t)d & (w == 16 ? 15 : 7)) == 0)
     {
         switch (4 * xFrac + yFrac)
         {
@@ -517,7 +517,7 @@ static void LumaInside(const u8 *s, u32 ss, u8 *d, u32 w, u32 h, u32 xFrac,
 #if VJ_PIE
 /* chroma of an 8 or 16 wide partition whose window lies inside the picture,
  * both planes, in PIE (a full-sample copy is the bilinear filter with A = 64).
- * Returns 0, doing nothing, when the window crosses the picture edge or d is not 16-byte aligned */
+ * Returns 0, doing nothing, when the window crosses the picture edge or d is not 8-aligned (w 8) / 4-aligned (w 4) */
 static u32 ChromaPie(u8 *d, u32 xAL, u32 yAL, u32 partWidth, u32 partHeight,
     mv_t *mv, image_t *refPic)
 {
@@ -527,7 +527,7 @@ static u32 ChromaPie(u8 *d, u32 xAL, u32 yAL, u32 partWidth, u32 partHeight,
     i32 x0 = (i32)(xAL >> 1) + (mv->hor >> 3);
     i32 y0 = (i32)(yAL >> 1) + (mv->ver >> 3);
 
-    if (((uintptr_t)d & 15) != 0 || x0 < 0 || y0 < 0 || (u32)x0 + w + (xFrac ? 1 : 0) > width ||
+    if (((uintptr_t)d & (w == 8 ? 7 : 3)) != 0 || x0 < 0 || y0 < 0 || (u32)x0 + w + (xFrac ? 1 : 0) > width ||
         (u32)y0 + h + (yFrac ? 1 : 0) > height)
         return 0;
     vj_pie_chroma(refPic->data + 256 * refPic->width * refPic->height +

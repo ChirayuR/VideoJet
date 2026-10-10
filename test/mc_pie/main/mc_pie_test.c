@@ -94,13 +94,15 @@ static int checkSpec;
 static void one(int xA, int yA, int px0, int py0, int w, int h, int vx, int vy)
 {
     /* 16 guard bytes each side of the 384-byte output: the PIE stores must not touch them. Every 16th case runs a
-     * second time at a misaligned destination (offset 1..15): the dispatch must take the C path, 0 mismatches */
+     * second time at a shifted destination (offset 1..15, every other one a multiple of 4): partitions still
+     * aligned to their store width (8 / 4 B) run PIE, the rest must take the C path; 0 mismatches either way */
     static u8 A[416] __attribute__((aligned(16))), B[416] __attribute__((aligned(16)));
     image_t img = {pic, (u32)W / 16, (u32)H / 16, 0, 0, 0};
     mv_t mv = {(i16)vx, (i16)vy};
     for (int v = 0; v < 2; v++) {
         if (v && (cases & 15)) break;
-        int off = v ? 1 + (int)((cases >> 4) % 15) : 0;
+        unsigned long k = cases >> 4;
+        int off = !v ? 0 : (k & 1) ? 4 * (1 + (int)((k >> 1) % 3)) : 1 + (int)((k >> 1) % 15);
         u8 *a = A + 16 + off, *b = B + 16 + off;
         memset(A, 0xA5, sizeof A);
         memset(B, 0xA5, sizeof B);

@@ -78,7 +78,8 @@ config VJ_PIE
     help
         Luma and chroma interpolation of partitions 8 or 16 wide whose reference window lies inside the picture run
         as ESP32-S3 PIE (128-bit SIMD) kernels; the rest, and every host build, use the C kernels, which the PIE ones
-        match bit for bit.
+        match bit for bit. Each destination must be aligned to its store width (16 B luma w 16, 8 B w 8, 4 B chroma
+        w 4); the library checks per partition and otherwise uses C.
 
         IDF pins a task to its current core at its first PIE instruction (portasm.S _frxt_coproc_exc_hook), so an unpinned decode task is pinned at its first P-frame.
 

@@ -1,8 +1,8 @@
 #pragma once
 /* PIE (ESP32-S3 SIMD) motion-compensation kernels, vj_mc_pie.S. Windows lie inside the picture; see the .S header for
  * the read slack they need. Luma w is 8 or 16, rows go to d with stride 16.
- * PRECONDITION: d is 16-byte aligned (ee.vst.128.ip silently rounds a store address down, so a misaligned d corrupts
- * the 15 bytes below it). The callers in h264bsd_reconstruct.c check this and fall back to C. */
+ * PRECONDITION: d is aligned to the store width: luma w 16 -> 16 B (ee.vst.128.ip silently rounds the address down,
+ * corrupting the bytes below), luma w 8 -> 8 B (ee.vst.l.64), chroma w 8 -> 8 B, w 4 -> 4 B (one s32i). The callers in h264bsd_reconstruct.c check this and fall back to C. */
 #include "basetype.h"
 
 void vj_pie_luma_copy(const u8 *s, u32 ss, u8 *d, u32 w, u32 h);
