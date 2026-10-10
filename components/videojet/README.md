@@ -79,7 +79,12 @@ aux_card / aux_map / full_map (800x480) from 17.11 / 9.67 / 5.58 fps (M2: code i
 - `f.y`, `f.u` and `f.v` are valid until the next `vj_decode_au()` or `vj_decoder_destroy()`.
 - The call rewrites the AU in place (it removes emulation-prevention bytes): pass writable RAM, never flash-mapped data, and
   decode each AU once.
-- `f.changed_mb` is NULL for now: treat every macroblock as changed.
+- `f.changed_mb` has one byte per 16x16 macroblock of the coded frame, `(width / 16) x (height / 16)`, row by row, valid
+  as long as `f.y`. 0 means the macroblock is bit-identical to the same macroblock in the previous `VJ_FRAME` this
+  decoder returned, so a consumer that converted that frame can skip it; 1 means it may differ. Frames decoded in between
+  but never returned (an error call, a dropped concealed picture) are accounted for. If you skipped a frame yourself,
+  treat every macroblock of the next one as changed. NULL means the same as all 1. The first frame, an IDR, and a frame
+  with concealed macroblocks have every byte at 1.
 - Frames are unreliable until one with `f.idr` arrives: before the first IDR of a stream (a P-frame can decode as a
   clean-looking `VJ_FRAME`) and after any `VJ_ERR_*` (a lost reference can leave `error_mbs` at 0). After an error,
   request a keyframe. `error_mbs` counts concealed macroblocks in a returned frame and is rarely non-zero, but

@@ -51,7 +51,8 @@
 
 void h264bsdFilterPicture(
   image_t *image,
-  mbStorage_t *mb, u32 picSliceBase);
+  mbStorage_t *mb, u32 picSliceBase,
+  u8 *changed);
 
 #endif /* #ifdef H264SWDEC_DEBLOCKING_H */
 

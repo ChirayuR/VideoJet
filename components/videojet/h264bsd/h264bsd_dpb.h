@@ -41,6 +41,12 @@
     2. Module defines
 ------------------------------------------------------------------------------*/
 
+/* skip elision: pictures are numbered 1, 2, ... in decode order (vjPicIdx);
+ * 0 means "unknown" and the last value is never issued (see
+ * h264bsdRecordChanges) */
+#define VJ_IDX_NONE 0U
+#define VJ_IDX_NEVER 0xFFFFFFFFU
+
 /*------------------------------------------------------------------------------
     3. Data types
 ------------------------------------------------------------------------------*/
@@ -65,6 +71,8 @@ typedef struct {
     u32 picId;
     u32 numErrMbs;
     u32 isIdr;
+    u32 vjFrameIdx;     /* the picture whose final pixels data holds, or
+                           VJ_IDX_NONE. It travels with data */
 } dpbPicture_t;
 
 /* structure to represent display image output from the buffer */
@@ -93,6 +101,15 @@ typedef struct {
     u32 lastContainsMmco5;
     u32 noReordering;
     u32 flushed;
+    /* skip elision. An MB keeps its pixels from picture vjLastChanged[mb]
+     * on: a pure copy of it from a buffer holding one of those pictures into
+     * a buffer holding another is already in place */
+    u32 vjPicIdx;       /* index of the last finished picture */
+    u32 vjLastOut;      /* index of the last picture returned (videojet.c) */
+    u32 vjMbs;          /* MBs per picture: the length of the two maps */
+    u32 *vjLastChanged; /* per MB: the last picture that may have changed it */
+    u8 *vjChanged;      /* per MB, this picture: 1 = may differ from the
+                           previous picture. Exported as changed_mb */
 } dpbStorage_t;
 
 /*------------------------------------------------------------------------------
@@ -143,6 +160,8 @@ u32 h264bsdCheckGapsInFrameNum(dpbStorage_t *dpb, u32 frameNum, u32 isRefPic,
 dpbOutPicture_t* h264bsdDpbOutputPicture(dpbStorage_t *dpb);
 
 void h264bsdFlushDpb(dpbStorage_t *dpb);
+
+void h264bsdRecordChanges(dpbStorage_t *dpb, u32 numConcealedMbs);
 
 void h264bsdFreeDpb(dpbStorage_t *dpb);
 

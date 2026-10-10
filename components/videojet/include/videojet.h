@@ -38,7 +38,10 @@ typedef struct {
     bool idr;                   /* an IDR picture: decoding can (re)start here */
     uint32_t error_mbs;         /* macroblocks concealed in this returned frame, rarely non-zero: concealment normally
                                  * surfaces as VJ_ERR_STREAM on the damaged AU. Either is a cue to request a keyframe */
-    const uint8_t *changed_mb;  /* NULL: unknown, treat every macroblock as changed */
+    const uint8_t *changed_mb;  /* one byte per 16x16 macroblock, (width/16) x (height/16) in raster order; valid as long
+                                 * as y. 0: the macroblock is bit-identical to the same one in the previous VJ_FRAME of
+                                 * this decoder, so a consumer that showed that frame can skip it. 1: it may differ (every
+                                 * macroblock of the first frame, an IDR or a concealed frame). NULL: treat all as 1 */
 } vj_frame_t;
 
 vj_decoder_t *vj_decoder_create(void);

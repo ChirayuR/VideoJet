@@ -61,7 +61,7 @@ static int describe(storage_t *s, const u8 *pic, u32 idr, u32 nerr, vj_frame_t *
     f->matrix = (uint8_t)h264bsdMatrixCoefficients(s);
     f->idr = idr != 0;
     f->error_mbs = nerr;
-    f->changed_mb = NULL;
+    f->changed_mb = s->dpb->vjChanged;
     return 1;
 }
 
@@ -112,7 +112,16 @@ vj_status_t vj_decode_au(vj_decoder_t *dec, uint8_t *au, size_t len, vj_frame_t 
      * already asked for a keyframe.) */
     if (s->picStarted)
         return VJ_ERR_STREAM;
-    return frames ? VJ_FRAME : VJ_NO_FRAME;
+    if (!frames)
+        return VJ_NO_FRAME;
+    /* changed_mb holds the changes since the previous picture decoded. Make them the changes since the last picture
+     * returned when some were decoded in between and not returned (dropped, or completed by a call that failed). */
+    dpbStorage_t *d = s->dpb;
+    if (d->vjLastOut + 1 != d->vjPicIdx)
+        for (u32 i = 0; i < d->vjMbs; i++)
+            d->vjChanged[i] = d->vjLastChanged[i] > d->vjLastOut;
+    d->vjLastOut = d->vjPicIdx;
+    return VJ_FRAME;
 }
 
 #if defined(ESP_PLATFORM) && defined(CONFIG_VJ_PROFILE)

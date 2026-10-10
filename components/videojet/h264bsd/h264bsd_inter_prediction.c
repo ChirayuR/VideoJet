@@ -391,10 +391,29 @@ u32 h264bsdInterPrediction(mbStorage_t *pMb, macroblockLayer_t *pMbLayer,
             if (MvPrediction16x16(pMb, &pMbLayer->mbPred, dpb) != HANTRO_OK)
                 return(HANTRO_NOK);
             refImage.data = pMb->refAddr[0];
+            /* skip elision. First write of a pure copy (MV (0,0), no
+             * residual) of the reference R = list[refPic[0]], whose data is
+             * refAddr[0]. If the MB is unchanged since R's picture it stays
+             * unchanged in this one; if it is also unchanged since the
+             * picture the current buffer still holds, R's pixels are
+             * already in place: write nothing (h264bsdRecordChanges) */
+            if ((pMb->mbType == P_Skip || !pMbLayer->codedBlockPattern) &&
+                pMb->decoded <= 1 && !pMb->mv[0].hor && !pMb->mv[0].ver)
+            {
+                u32 lastChanged = dpb->vjLastChanged[mbNum];
+
+                if (lastChanged <= dpb->list[pMb->refPic[0]]->vjFrameIdx)
+                {
+                    dpb->vjChanged[mbNum] = 0;
+                    if (lastChanged <= dpb->currentOut->vjFrameIdx)
+                        return HANTRO_OK;
+                }
+            }
             /* skipped MB, even integer MV (chroma is integer too), 16x16 block
              * inside the reference: the prediction is a plain copy, so copy
              * it straight into the picture (no data[] staging and no
-             * h264bsdWriteMacroblock) */
+             * h264bsdWriteMacroblock). decoded > 1: already written, the old
+             * path writes nothing */
             if (pMb->mbType == P_Skip && pMb->decoded <= 1 &&
                 !(pMb->mv[0].hor & 7) && !(pMb->mv[0].ver & 7))
             {

@@ -888,6 +888,9 @@ u8* h264bsdAllocateDpbImage(dpbStorage_t *dpb)
 
     dpb->currentOut = dpb->buffer + dpb->dpbSize;
 
+    /* a new picture: every MB changed until a pure copy shows otherwise */
+    memset(dpb->vjChanged, 1, dpb->vjMbs);
+
     return(dpb->currentOut->data);
 
 }
@@ -1032,9 +1035,17 @@ u32 h264bsdInitDpb(
 
     ALLOCATE(dpb->list, MAX_NUM_REF_IDX_L0_ACTIVE + 1, dpbPicture_t*);
     ALLOCATE(dpb->outBuf, dpb->dpbSize+1, dpbOutPicture_t);
+    /* the buffers above start at VJ_IDX_NONE (memset), and no MB is known
+     * unchanged since any picture */
+    ALLOCATE(dpb->vjLastChanged, picSizeInMbs, u32);
+    ALLOCATE(dpb->vjChanged, picSizeInMbs, u8);
 
-    if (dpb->list == NULL || dpb->outBuf == NULL)
+    if (dpb->list == NULL || dpb->outBuf == NULL ||
+        dpb->vjLastChanged == NULL || dpb->vjChanged == NULL)
         return(MEMORY_ALLOCATION_ERROR);
+
+    dpb->vjMbs = picSizeInMbs;
+    memset(dpb->vjLastChanged, 0xFF, picSizeInMbs * sizeof(u32)); /* NEVER */
 
     memset(dpb->list, 0,
             ((MAX_NUM_REF_IDX_L0_ACTIVE + 1) * sizeof(dpbPicture_t*)) );
@@ -1302,6 +1313,7 @@ u32 h264bsdCheckGapsInFrameNum(dpbStorage_t *dpb, u32 frameNum, u32 isRefPic,
             dpb->buffer[dpb->dpbSize].picNum   = (i32)unUsedShortTermFrameNum;
             dpb->buffer[dpb->dpbSize].picOrderCnt = 0;
             dpb->buffer[dpb->dpbSize].toBeDisplayed = HANTRO_FALSE;
+            dpb->buffer[dpb->dpbSize].vjFrameIdx = VJ_IDX_NONE;
             dpb->fullness++;
             dpb->numRefFrames++;
 
@@ -1331,9 +1343,15 @@ u32 h264bsdCheckGapsInFrameNum(dpbStorage_t *dpb, u32 frameNum, u32 isRefPic,
                     {
                         if (dpb->buffer[i].data == tmp)
                         {
+                            u32 idx = dpb->buffer[i].vjFrameIdx;
+
                             dpb->buffer[i].data =
                                 dpb->buffer[dpb->dpbSize].data;
                             dpb->buffer[dpb->dpbSize].data = tmp;
+                            /* the index travels with the pixels */
+                            dpb->buffer[i].vjFrameIdx =
+                                dpb->buffer[dpb->dpbSize].vjFrameIdx;
+                            dpb->buffer[dpb->dpbSize].vjFrameIdx = idx;
                             break;
                         }
                     }
@@ -1542,7 +1560,53 @@ void h264bsdFreeDpb(dpbStorage_t *dpb)
     FREE(dpb->buffer);
     FREE(dpb->list);
     FREE(dpb->outBuf);
+    FREE(dpb->vjLastChanged);
+    FREE(dpb->vjChanged);
 
+}
+
+/*------------------------------------------------------------------------------
+
+    Function: h264bsdRecordChanges
+
+        Functional description:
+            Skip elision bookkeeping, once per finished (deblocked) picture,
+            before reference marking. Numbers the picture, sets
+            vjLastChanged of every MB still flagged in vjChanged to it and
+            labels the current buffer with it.
+
+            vjChanged was set to 1 at picture start, cleared when the first
+            decode of an MB is a pure copy (16x16, MV (0,0), no residual)
+            from a reference picture since which the MB has not changed
+            (h264bsdInterPrediction), and set again for every MB that
+            deblocking may have modified (h264bsdFilterPicture). A picture
+            with concealed MBs, or decoded into a buffer whose old content
+            was unknown or damaged by a failed slice (vjFrameIdx
+            VJ_IDX_NONE), marks every MB.
+
+------------------------------------------------------------------------------*/
+
+void h264bsdRecordChanges(dpbStorage_t *dpb, u32 numConcealedMbs)
+{
+    u32 i, n;
+
+    n = ++dpb->vjPicIdx;
+    if (n == VJ_IDX_NEVER) /* out of numbers: forget every buffer, from 1 */
+    {
+        for (i = 0; i < dpb->dpbSize + 1; i++)
+            dpb->buffer[i].vjFrameIdx = VJ_IDX_NONE;
+        n = dpb->vjPicIdx = 1;
+        dpb->vjLastOut = VJ_IDX_NONE;
+    }
+
+    if (dpb->currentOut->vjFrameIdx == VJ_IDX_NONE || numConcealedMbs)
+        memset(dpb->vjChanged, 1, dpb->vjMbs);
+
+    for (i = 0; i < dpb->vjMbs; i++)
+        if (dpb->vjChanged[i])
+            dpb->vjLastChanged[i] = n;
+
+    dpb->currentOut->vjFrameIdx = n;
 }
 
 /*------------------------------------------------------------------------------

@@ -87,7 +87,7 @@ static void test_frames(const char *dir)
     vj_decoder_t *d = vj_decoder_create();
     assert(vj_decode_au(d, s, idr, &f) == VJ_NO_FRAME);
     assert(vj_decode_au(d, s + idr, au - idr, &f) == VJ_FRAME);
-    assert(f.idr && f.width == 800 && f.height == 480 && f.error_mbs == 0 && f.changed_mb == NULL);
+    assert(f.idr && f.width == 800 && f.height == 480 && f.error_mbs == 0 && f.changed_mb != NULL);
     assert(f.crop_x == 0 && f.crop_y == 0 && f.crop_w == 800 && f.crop_h == 480);
     assert(f.y_stride == 800 && f.uv_stride == 400 && f.u == f.y + 800 * 480 && f.v == f.u + 400 * 240);
     assert(!f.full_range && f.matrix == 5); /* gen_streams.py: --range tv --colormatrix bt470bg */
@@ -383,8 +383,9 @@ static void test_conceal_history(const char *dir)
 }
 
 /* Redundant slices (host/vectors, made by gen.py there): failed redundant slices can leave MBs untouched in a complete
- * picture (attack) or keep a concealed MB's corrupted-slice id (attack2), and idc 2 deblocking compares those ids.
- * Expected: the per-picture-clear decoder (m3-speed 2063e44), one entry per vj_decode_au call ("-" = VJ_ERR_STREAM);
+ * picture (attack) or keep a concealed MB's corrupted-slice id (attack2), and idc 2 deblocking compares those ids. In
+ * elide, a redundant slice re-decodes as a skip an MB that its primary slice changed: skip elision must still count it
+ * changed, or the next picture keeps that MB's old pixels. Expected: the per-picture-clear decoder (m3-speed 2063e44), one entry per vj_decode_au call ("-" = VJ_ERR_STREAM);
  * every frame hashes the same with DPB memory filled 0x00, 0xA5, 0x5A or a byte pattern, so none reads uninitialised
  * memory. */
 static void test_vectors(const char *vec)
@@ -392,8 +393,9 @@ static void test_vectors(const char *vec)
     static const char *const want[][2] = {
         {"attack.h264", "ed86bcae ed86bcae - - - - c946cd05 c946cd05 "},
         {"attack2.h264", "ed86bcae ed86bcae - - 2c2cceb1 "},
+        {"elide.h264", "ed86bcae ed86bcae - ed86bcae ed86bcae - 45efe711 45efe711 "},
     };
-    for (int k = 0; k < 2; k++) {
+    for (int k = 0; k < 3; k++) {
         char path[512], got[256] = "";
         snprintf(path, sizeof path, "%s/%s", vec, want[k][0]);
         size_t len;
@@ -418,6 +420,105 @@ static void test_vectors(const char *vec)
     }
 }
 
+/* f.changed_mb against the pixels: every macroblock it calls unchanged equals the same macroblock of *prev, the last
+ * frame returned (NULL: none yet). Then *prev becomes f. Returns how many macroblocks it calls changed. */
+static unsigned check_changed(const vj_frame_t *f, uint8_t **prev)
+{
+    unsigned w = f->width / 16, h = f->height / 16, n = 0;
+    size_t ysz = (size_t)f->width * f->height;
+    assert(f->changed_mb);
+    for (unsigned i = 0; i < w * h; i++) {
+        unsigned x = i % w, y = i / w;
+        n += f->changed_mb[i];
+        if (f->changed_mb[i])
+            continue;
+        assert(*prev); /* the first frame has every byte at 1 */
+        for (unsigned r = 0; r < 16; r++)
+            assert(!memcmp(f->y + (y * 16 + r) * f->y_stride + x * 16, *prev + (y * 16 + r) * f->width + x * 16, 16));
+        for (unsigned r = 0; r < 8; r++) {
+            size_t o = (y * 8 + r) * (size_t)f->uv_stride + x * 8;
+            assert(!memcmp(f->u + o, *prev + ysz + o, 8) && !memcmp(f->v + o, *prev + ysz + ysz / 4 + o, 8));
+        }
+    }
+    if (!*prev)
+        *prev = malloc(ysz * 3 / 2);
+    memcpy(*prev, f->y, ysz);
+    memcpy(*prev + ysz, f->u, ysz / 4);
+    memcpy(*prev + ysz + ysz / 4, f->v, ysz / 4);
+    return n;
+}
+
+/* Skip elision and changed_mb on aux_card (a near-static card: most P macroblocks are elided): every frame hashes to
+ * the golden, changed_mb holds against the pixels, the IDR is all changed and P frames are not. Every 7th frame the
+ * picture numbers jump to 2 below the end of the range, so the renumbering restart runs about 40 times. */
+static void test_changed_mb(const char *dir)
+{
+    char path[512];
+    snprintf(path, sizeof path, "%s/search/aux_card.golden", dir);
+    FILE *g = fopen(path, "r");
+    assert(g);
+    unsigned gold[400], ng = 0;
+    while (ng < 400 && fscanf(g, "%x", &gold[ng]) == 1)
+        ng++;
+    fclose(g);
+    snprintf(path, sizeof path, "%s/search/aux_card.h264", dir);
+    size_t len;
+    uint8_t *s = slurp(path, &len), *prev = NULL;
+    vj_decoder_t *d = vj_decoder_create();
+    dpbStorage_t *dpb = ((storage_t *)(void *)d)->dpb;
+    unsigned n = 0, partial = 0, restarts = 0;
+    for (size_t o = 0, au; o < len; o += au) {
+        au = vj_au_length(s + o, len - o);
+        vj_frame_t f;
+        u32 before = dpb->vjPicIdx;
+        vj_status_t r = vj_decode_au(d, s + o, au, &f);
+        assert(r == VJ_FRAME || r == VJ_NO_FRAME);
+        restarts += dpb->vjPicIdx < before;
+        if (r != VJ_FRAME)
+            continue;
+        assert(n < ng && vj_hash_i420(f.y, f.y_stride, f.u, f.v, f.uv_stride, f.crop_x, f.crop_y, f.crop_w,
+                                      f.crop_h) == gold[n]);
+        unsigned c = check_changed(&f, &prev);
+        assert(n || (f.idr && c == 1500u));
+        partial += c < 1500u;
+        if (++n % 7 == 0)
+            dpb->vjPicIdx = VJ_IDX_NEVER - 2;
+    }
+    assert(n == ng && partial > ng / 2 && restarts >= 40);
+    vj_decoder_destroy(d);
+    free(prev);
+    free(s);
+}
+
+/* Concealment marks every macroblock changed. aux_map_dark (4 slices per picture): picture 1 cut after 2 slices, with
+ * an AUD behind them in the same call, is concealed and returned (error_mbs > 0). Picture 2, cut the same way without
+ * the AUD, is an error; the next call conceals and drops it, and its own frame must be all changed against the last
+ * one returned. */
+static void test_changed_conceal(const char *dir)
+{
+    char path[512];
+    snprintf(path, sizeof path, "%s/heldout/aux_map_dark.h264", dir);
+    size_t total;
+    uint8_t *s = slurp(path, &total), *prev = NULL;
+    size_t n0 = vj_au_length(s, total), n1 = vj_au_length(s + n0, total - n0);
+    size_t n2 = vj_au_length(s + n0 + n1, total - n0 - n1), cut = slice_at(s + n0, n1, 2);
+    size_t n3 = vj_au_length(s + n0 + n1 + n2, total - n0 - n1 - n2);
+    uint8_t *a1 = malloc(cut + 5);
+    memcpy(a1, s + n0, cut);
+    memcpy(a1 + cut, (const uint8_t[]){0, 0, 1, 0x09, 0xF0}, 5); /* access unit delimiter */
+    vj_frame_t f;
+    vj_decoder_t *d = vj_decoder_create();
+    assert(vj_decode_au(d, s, n0, &f) == VJ_FRAME && check_changed(&f, &prev) == 1500u);
+    assert(vj_decode_au(d, a1, cut + 5, &f) == VJ_FRAME && f.error_mbs > 0 && check_changed(&f, &prev) == 1500u);
+    assert(vj_decode_au(d, s + n0 + n1, slice_at(s + n0 + n1, n2, 2), &f) == VJ_ERR_STREAM);
+    assert(vj_decode_au(d, s + n0 + n1 + n2, n3, &f) == VJ_FRAME && f.error_mbs == 0);
+    assert(check_changed(&f, &prev) == 1500u);
+    vj_decoder_destroy(d);
+    free(a1);
+    free(prev);
+    free(s);
+}
+
 int main(int argc, char **argv)
 {
     const char *dir = argc > 1 ? argv[1] : "../streams";
@@ -433,6 +534,8 @@ int main(int argc, char **argv)
     test_twice(dir);
     test_conceal_history(dir);
     test_vectors(vec);
+    test_changed_mb(dir);
+    test_changed_conceal(dir);
     puts("test_api: all passed");
     return 0;
 }

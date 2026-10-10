@@ -471,6 +471,9 @@ u32 h264bsdDecode(storage_t *pStorage, u8 *byteStrm, u32 len, u32 picId,
                     EPRINT("SLICE_DATA");
                     h264bsdMarkSliceCorrupted(pStorage,
                         pStorage->sliceHeader->firstMbInSlice);
+                    /* MBs this slice wrote may be decoded again: the buffer
+                     * no longer holds its old picture, so elide no more */
+                    pStorage->dpb->currentOut->vjFrameIdx = VJ_IDX_NONE;
                     return(H264BSD_ERROR);
                 }
 
@@ -494,8 +497,9 @@ u32 h264bsdDecode(storage_t *pStorage, u8 *byteStrm, u32 len, u32 picId,
     {
         { VJP_BEGIN(VJP_DEBLOCK);
         h264bsdFilterPicture(pStorage->currImage, pStorage->mb,
-            pStorage->picSliceBase);
+            pStorage->picSliceBase, pStorage->dpb->vjChanged);
         VJP_END(VJP_DEBLOCK); }
+        h264bsdRecordChanges(pStorage->dpb, pStorage->numConcealedMbs);
 
         h264bsdResetStorage(pStorage);
 

@@ -1,6 +1,7 @@
 """Craft a tiny baseline stream (redundant_pic_cnt_present=1, deblocking control=1) that drives h264bsd into
 IsEndOfPicture with two adjacent untouched MBs (double counting via failed redundant slices).
-host/vectors: python3 gen.py attack > attack.h264; python3 gen.py attack2 > attack2.h264 (6x2 MBs, I_PCM IDR)."""
+host/vectors: python3 gen.py attack > attack.h264; python3 gen.py attack2 > attack2.h264 (6x2 MBs, I_PCM IDR).
+python3 gen.py elide > elide.h264: a redundant slice re-decodes, as a skip, an MB that its primary slice changed."""
 import sys
 
 class BW:
@@ -75,6 +76,14 @@ def p_slice(first, fn, skip, rpc=0, idc=0, bad_after=False, redundant=1):
     if bad_after: b.ue(31)             # invalid P mb_type -> macroblock_layer error
     b.trailing(); return nal(2, 1, b.bytes())
 
+def p_pcm_slice(first, fn, luma, skip, rpc=0, idc=0):
+    b = BW(); hdr(b, first, 0, fn, False, rpc, idc); b.ue(0)
+    b.ue(30); b.align0()               # I_PCM in a P slice: mb_type 5 + 25
+    for _ in range(256): b.u(8, luma)
+    for _ in range(128): b.u(8, 128)
+    b.ue(skip)
+    b.trailing(); return nal(2, 1, b.bytes())
+
 mode = sys.argv[1]
 luma = [100 if (m % W) < 3 else 110 for m in range(N)]   # step between MB 2 and MB 3 of each row
 s = sps() + pps() + idr_slice(luma)
@@ -93,5 +102,13 @@ elif mode == 'attack2':
     s += p_slice(0, 3, 2) + p_slice(3, 3, N - 3) + p_slice(2, 3, 2, rpc=1, idc=2, bad_after=True)
 elif mode == 'plain':
     s += p_slice(0, 3, N)
+elif mode == 'elide':
+    # frames 3 and 4 copy: skip elision runs by frame 4. Frame 5: primary [0,6) makes MB 0 an I_PCM, primary [6,N) is
+    # lost, the redundant slice skips all N (MBs 0-5 decoded twice), no deblocking. Frame 6 copies, so it may elide
+    # MB 0 only if frame 5 wrongly recorded MB 0 as unchanged.
+    s += p_slice(0, 3, N) + p_slice(0, 4, N)
+    s += p_pcm_slice(0, 5, 200, 5, idc=1) + p_slice(0, 5, N, rpc=1, idc=1) + p_slice(0, 6, N)
+    sys.stdout.buffer.write(s)
+    sys.exit()
 s += p_slice(0, 4, N)                                     # frame 4
 sys.stdout.buffer.write(s)

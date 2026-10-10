@@ -577,7 +577,8 @@ u32 EdgeBoundaryStrengthLeft(mbStorage_t *mb1, mbStorage_t *mb2)
 #ifndef H264DEC_OMXDL
 void h264bsdFilterPicture(
   image_t *image,
-  mbStorage_t *mb, u32 picSliceBase)
+  mbStorage_t *mb, u32 picSliceBase,
+  u8 *changed)
 {
 
 /* Variables */
@@ -614,6 +615,17 @@ void h264bsdFilterPicture(
              * the bS values for the macroblock being processed was non-zero */
             if (GetBoundaryStrengths(pMb, bS, flags))
             {
+                /* skip elision: mark every MB this filtering may modify,
+                 * itself and, across an MB edge with bS > 0, its left or
+                 * top neighbour. Chroma edges use these luma bS */
+                u8 *c = changed + (pMb - mb);
+
+                c[0] = 1;
+                if (bS[0].left | bS[4].left | bS[8].left | bS[12].left)
+                    c[-1] = 1;
+                if (bS[0].top | bS[1].top | bS[2].top | bS[3].top)
+                    c[-(i32)picWidthInMbs] = 1;
+
                 /* luma */
                 GetLumaEdgeThresholds(thresholds, pMb, flags);
                 data = image->data + mbRow * picWidthInMbs * 256 + mbCol * 16;
