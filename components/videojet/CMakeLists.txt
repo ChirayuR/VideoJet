@@ -6,7 +6,7 @@ if(CMAKE_BUILD_EARLY_EXPANSION)
 else()
     file(GLOB dec_srcs CONFIGURE_DEPENDS "h264bsd/*.c")
 endif()
-idf_component_register(SRCS "src/vj_pad.c" "src/videojet.c" "src/vj_au.c" "src/vj_alloc.c" ${dec_srcs}
+idf_component_register(SRCS "src/videojet.c" "src/vj_au.c" "src/vj_alloc.c" ${dec_srcs}
                        INCLUDE_DIRS "include"
                        PRIV_INCLUDE_DIRS "src" "h264bsd"
                        PRIV_REQUIRES heap)
@@ -18,5 +18,3 @@ set_source_files_properties(${dec_srcs} PROPERTIES COMPILE_OPTIONS -Wno-error=ma
 if(CONFIG_VJ_ERROR_PRINT)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE _ERROR_PRINT)
 endif()
-# SPIKE e8: force vj_pad.c.obj out of the archive (nothing references it); it is the first object, so it sits ahead of the decoder.
-target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,-u,vj_pad")

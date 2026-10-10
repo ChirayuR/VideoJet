@@ -1,0 +1,2 @@
+# SPIKE e9: e1 (libvideojet in IRAM) with only the D-cache LINE doubled: 32 KB (default) D-cache, 64 B line
+CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
