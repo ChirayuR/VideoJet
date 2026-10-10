@@ -31,24 +31,33 @@ config VJ_DCACHE_AUTOLOAD
     default n
     help
         Turns on the data cache's hardware autoload (a prefetch: after a miss it also fetches the next cache
-        lines) over the span of the decoder's own PSRAM blocks (the frames and the per-macroblock state), at
-        the start of every vj_decode_au(). It only decides which lines are already cached, so the output is
-        unchanged. In the autoload experiment (800x480 bench, slow PSRAM class, region = the whole PSRAM
-        mapping, armed before the stream) size 1 gained +9.5 / +5.1 / +4.4 % (aux_card / aux_map / full_map),
-        size 3 +0.3 / +5.5 / +6.4 %, size 0 -3.4 / -0.3 / +0.3 %.
+        lines) over the span of the decoder's own PSRAM blocks (the frames and the per-macroblock state: about
+        1.5 MB at 800x480), at the start of every vj_decode_au(), from the second decode call on. It only
+        decides which lines are already cached, so the decoder's own output cannot change.
+        Scored (T11, record m3-autoload, 800x480, slow PSRAM class, 64 KB D-cache with 64 B lines, size 1):
+        73.87 / 17.84 / 8.82 -> 80.77 / 18.74 / 9.22 fps, +9.35 / +5.05 / +4.54 % (aux_card / aux_map /
+        full_map).
 
-        It is a global cache setting and uses the ROM cache calls (Cache_Config_DCache_Autoload,
-        Cache_Config_DCache_Region_Autoload, Cache_Enable_DCache_Autoload) that IDF marks as not for
+        It is a global cache setting made with the ROM cache calls Cache_Config_DCache_Autoload,
+        Cache_Config_DCache_Region_Autoload and Cache_Enable_DCache_Autoload, which IDF marks as not for
         applications. The library takes over autoload region 0 and its trigger, order and size (nothing else in
-        IDF 5.4 uses D-cache autoload). It leaves autoload on when a call returns and after
-        vj_decoder_destroy(): the boot default is off and you opted in by enabling this; call
-        Cache_Disable_DCache_Autoload() to stop it. The span can include your own PSRAM that lies between the
-        decoder's blocks: autoload only reads, but a buffer that DMA writes there needs
-        esp_cache_msync(M2C) before the CPU reads it, as IDF already requires. Two more traps are handled:
-        a region that ends at 0x3E000000 (the end of the data window) panics in Cache_Enable_DCache_Autoload()
-        (the end is clamped below it), and any IDF flash operation (esp_partition_read, NVS, OTA) clears the
-        enable bit (every vj_decode_au() sets it again). The call that first activates an SPS allocates the
-        decoder's blocks, so that picture decodes before the region exists; the next call arms it.
+        IDF 5.4 configures D-cache autoload). There is one region: with several decoders the last caller wins.
+        Autoload stays on when a call returns and after vj_decoder_destroy(), with the region and the enable
+        still on the freed blocks. The boot default is off and you opted in by enabling this.
+        Cache_Disable_DCache_Autoload() stops it only after the last vj_decode_au(): every call enables it again.
+
+        IDF suspends autoload around its cache write-back (esp_cache_msync C2M) because of an S3 erratum, and
+        esp_lcd's RGB panel starts manual preloads that suspend it. vj_decode_au() on another core re-enables it
+        without coordination. If you write back PSRAM or use an RGB panel with a PSRAM framebuffer, keep those
+        on the decoder's task or leave this option off (unmeasured).
+
+        The span can include your own PSRAM that lies between the decoder's blocks: autoload only reads, but a
+        buffer that DMA writes there needs esp_cache_msync(M2C) before the CPU reads it, as IDF already
+        requires. Two traps are handled: a region that ends at 0x3E000000 (the end of the data window) panics
+        in Cache_Enable_DCache_Autoload() (the end is clamped below it), and any IDF flash operation
+        (esp_partition_read, NVS, OTA) clears the enable bit (every vj_decode_au() sets it again). The call that
+        first activates an SPS allocates the decoder's blocks, so that picture decodes before the region exists.
+        Evidence for these rules: docs/bench-log.md, "D-cache autoload (T11)".
 
 config VJ_DCACHE_AUTOLOAD_SIZE
     int "Lines fetched after a miss, minus one (0 to 3)"
@@ -57,7 +66,9 @@ config VJ_DCACHE_AUTOLOAD_SIZE
     default 1
     help
         A miss requests this + 1 cache lines after the missed one (64 B each with the recommended 64 B
-        D-cache line). In the experiment above 1 favoured the aux streams (+9.5 / +5.1 / +4.4 %) and 3 the
-        full-frame stream (+0.3 / +5.5 / +6.4 %); 0 lost 3.4 % on aux_card.
+        D-cache line; the numbers here are for that line). Only size 1 was scored on this code (see above). In
+        the earlier autoload experiment (region = the whole PSRAM mapping, armed before the first picture) size 1
+        gave +9.50 / +5.08 / +4.41 %, size 3 +0.34 / +5.47 / +6.40 % (it favoured full_map) and size 0
+        -3.39 / -0.25 / +0.31 %.
 
 endmenu

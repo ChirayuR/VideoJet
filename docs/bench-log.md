@@ -422,3 +422,73 @@ a host count (`-Wl,--wrap=h264bsdPredictSamples`, deterministic, so the board ra
   slots beyond `l32i`'s 1020 B reach, so every spill costs `movi` + `add` + `l32i` (seen in the disassembly).
 - Partitions: the x264 streams use 16x16 / 16x8 / 8x16 / 8x8 only; the JVT held-out streams cover 8x4 / 4x8 / 4x4 and every position.
   Blocks that cross the picture edge (the FillBlock path): 3.7 % of full_map's luma calls.
+
+### D-cache autoload (T11): hardware rules and trap evidence
+Measured on the bench board on 2026-10-11 with two scratch apps (kept in the session scratchpad, not in the repo; the comment in
+`components/videojet/src/videojet.c` cites this section): a probe that masks the cache-error interrupt and reads
+`EXTMEM_CACHE_ILG_INT_ST` instead of panicking, and a re-arm test that drives the library through its public API on streams from
+the `streams` partition. In the probe a line counts as cached when a timed load of it, with autoload switched off again, takes under
+60 cycles. 64 KB / 64 B D-cache. `EXTMEM_DCACHE_AUTOLOAD_CTRL`: bit 0 SCT0_ENA, bit 2 ENA, bit 3 DONE, bit 4 ORDER, bits 6:5 RQST,
+bits 8:7 SIZE. The feature's own score is record `m3-autoload`, slow class, at the T6d tip: 73.87 / 17.84 / 8.82 to 80.77 / 18.74 / 9.22 fps
+(+9.35 / +5.05 / +4.54 %).
+
+ROM (`esp32s3_rev0_rom.elf`, disassembled): `Cache_Enable_DCache_Autoload` is `ctrl |= BIT(2)`. `Cache_Config_DCache_Autoload` switches
+autoload off first (it waits for DONE) and writes only ORDER, RQST and SIZE; its `ena` means "apply these". `Cache_Config_DCache_Region_Autoload`
+checks `region < 2` and that `addr` and `addr + size - 1` both pass `Cache_Address_Through_DCache` (inside the 32 MB data window
+0x3C000000..0x3DFFFFFF), clears the autoload buffer if the section was on, then stores `addr` and `size` (27 bit) verbatim and sets
+SCT0_ENA. It rounds nothing. Its check lets an end of exactly 0x3E000000 through (the last byte, 0x3DFFFFFF, is inside the window);
+the hardware refuses it at the enable.
+
+**What the hardware accepts** (ILG status read after `Cache_Enable_DCache_Autoload()`):
+
+| region | result |
+|---|---|
+| start 1 or 33 B past a line, size 0x1000; size 0x1001; both unaligned; size 1 line; size 1 B | accepted (`rc=0`, no ILG), registers read back verbatim |
+| **end = 0x3E000000**: `[0x3DFF0000, +0x10000)`, `[0x3DFF0001, +0xFFFF)`, `[0x3C030000, +0x1FD0000)`, autoload sizes 0, 1 and 3 | **ILG bit 3 set at the enable**: "Dcache preload parameter configuration error", a panic without the mask |
+| end = 0x3E000000 minus 1, 2, 4, 16, 32, 63 or 64 B (size 3); minus 64, 128, 256 B, 1 KB or 4 KB (sizes 0, 1 and 3) | accepted |
+| end = the end of the 8 MB mapping (0x3C830000); the whole mapping | accepted |
+
+**What one miss fetches** (a 16 KB region, miss trigger; "cached" = a timed load hits afterwards):
+
+| case | result |
+|---|---|
+| ascending, size 0 / 1 / 2 / 3 | the next 1 / 2 / 3 / 4 lines |
+| descending, size 0 / 3 | the previous 1 / 4 lines |
+| the miss is on the last line of the region | nothing |
+| the miss is on the 2nd / 3rd / 4th last line (size 3) | 1 / 2 / 3 lines: the request is cut at the region end |
+| aligned start, miss on the line just below the region | the first 1 / 4 lines of the region (size 0 / 3) |
+| start 32 B past a line boundary, miss on the line below that boundary | nothing: the whole request is dropped |
+| start 32 B past a line boundary, miss on that first line | the next 4 lines (size 3) |
+| end 32 B inside a line, miss on the line before it | the half-covered line is fetched, the next is not |
+| region ending at, or 64 KB past, the end of the mapping; miss on the last mapped line (sizes 1, 3) | no ILG, no ACS fault |
+
+So the start is rounded down and the end up to a line, and the end is kept below 0x3E000000 (the library uses one line below).
+
+**Trap 2 and the re-arm** (re-arm test on the final code, `CONFIG_VJ_DCACHE_AUTOLOAD_SIZE=1`, `ctrl` read after each step):
+
+| step | ctrl | ENA | region (SCT0) |
+|---|---|---|---|
+| boot, after reading the stream clips | 0x008 | 0 | none |
+| after the first AU (SPS + PPS + IDR: the blocks are allocated inside that call) | 0x004 | 1 | none |
+| after the second AU | 0x085 | 1 | 0x3C07A740 + 0x16CA40 |
+| after `esp_partition_read()` | **0x089** | **0** | unchanged |
+| after the next `vj_decode_au()` | **0x085** | **1** | unchanged |
+| after `esp_flash_read()`, then after the next call | 0x089, 0x085 | 0, 1 | unchanged |
+| after `vj_decode_au(NULL, ...)` (VJ_ERR_ARG) | 0x089 | 0 | an argument error arms nothing |
+| someone else's setting (descending, both triggers, size 3, another region), then one call | 0x1D5, 0x085 | 1, 1 | replaced by the right one |
+
+At 800x480 the blocks were `mb` 0x3C07A750 (+324,000 B) and frames 0x3C0CA754 and 0x3C15A758 (+576,000 B each): region
+0x3C07A740 .. 0x3C1E7180 = 1,493,568 B, inside the mapping 0x3C030000 .. 0x3C830000 (the heap's own PSRAM use there, 1,507,340 B, counts
+each big block rounded up to a 16 KB step). An SPS change to 640x360 (dpbSize 1 to 3): the changing call still ran on the old region, the
+next call programmed 0x3C07A740 + 0x18F440 (1,635,392 B); a second decoder got its own region. 40 + 12 + 2 frames, with flash operations
+and the SPS change in between, all matched their golden hashes. 25 checks, 0 fails.
+
+**Interactions with IDF, read from the 5.4.2 sources, not tested:**
+- `esp_cache_msync()` C2M reaches `Cache_WriteBack_Addr()` (`hal/esp32s3/include/hal/cache_ll.h:377`), which on the S3 is the patch in
+  `esp_rom/patches/esp_rom_cache_esp32s2_esp32s3.c` (the erratum `ESP_ROM_HAS_CACHE_WRITEBACK_BUG`, `esp_rom_caps.h:32`). It wraps the ROM
+  write-back in `Cache_Suspend_DCache_Autoload()` / `Cache_Resume_DCache_Autoload()` (lines 148-151, "avoid load cachelines being written
+  back"). A `vj_decode_au()` on another core enables autoload inside that window.
+- esp_lcd's RGB panel calls `Cache_Start_DCache_Preload()` from its bounce-buffer ISR when the framebuffer is behind the cache
+  (`esp_lcd_panel_rgb.c:841-845`). The ROM function suspends autoload first (disassembly), and no IDF code calls `Cache_End_DCache_Preload()`.
+- Flash operations: `esp_cache_suspend_ext_mem_cache()` (`esp_mm/esp_cache.c:159`) calls `cache_hal_suspend()`, which drops the old autoload
+  state, and `cache_hal_resume()` restores only the boot-time flag (off): that is the ENA clear above.
