@@ -3,6 +3,7 @@
 in the firmware's exact `VJ` format, capture() against a scripted fake port and clock, and main() with
 capture() faked. Plain asserts, no hardware, no frameworks: python3 tools/test_bench.py"""
 import contextlib
+import hashlib
 import io
 import json
 import sys
@@ -11,8 +12,20 @@ from pathlib import Path
 
 import bench
 
-NAMES = {"search": ["aux_card", "aux_map"], "heldout": ["BA1_Sony_D"]}
+FRAMES = 300  # frames in every fake golden, and what row() says the board wants
+NAMES = {"search": {"aux_card": FRAMES, "aux_map": FRAMES}, "heldout": {"BA1_Sony_D": FRAMES}}
 RUNS = 2
+# The firmware identity as the boot log prints it, and the ELF it stands for (a fake file's sha256).
+ELF = b"\x7fELF a fake firmware image"
+SHA = hashlib.sha256(ELF).hexdigest()
+VERSION = "7f97d6a-dirty"
+BOOT_ID = (b"I (500) app_init: Project name:     videojet_bench\r\n"
+           b"I (500) app_init: App version:      %s\r\n"
+           b"I (500) app_init: Compile time:     Oct 10 2026 06:04:37\r\n"
+           b"I (500) app_init: ELF file SHA256:  %s...\r\n"
+           b"I (500) app_init: ESP-IDF:          v5.4.2\r\n" % (VERSION.encode(), SHA[:9].encode()))
+# A VJ_PROFILE firmware prints one of these after each stream's row.
+VJP = "VJP run={r} stream={n} parse_us=531 recon_us=44864 inter_us=41891 deblock_us=8203 other_us=4671"
 # A real line from the m1-smoke run on the board.
 REAL = ("VJ run=0 set=search stream=aux_card frames=300/300 fail=0 first_fail=-1 idr_us=116465 "
         "p_mean_us=57824 p50_us=57407 p95_us=59956 max_us=83010 fps=17.24 int_min=354655 psram_min=6810676")
@@ -31,6 +44,17 @@ def good(which="all"):
     for s in ("search", "heldout")[: 1 if which == "search" else 2]:
         out += [row(s, n, r) for r in range(RUNS) for n in NAMES[s]]
         out.append("VJ search_done" if s == "search" else "VJ done")
+    return out
+
+
+def with_prof(lines):
+    """The same run from a VJ_PROFILE firmware: a `VJP` line after each stream's row."""
+    out = []
+    for x in lines:
+        out.append(x)
+        d = bench.kv(x)
+        if "stream" in d:
+            out.append(VJP.format(r=d["run"], n=d["stream"]))
     return out
 
 
@@ -155,7 +179,7 @@ def test_two_rows_run_together_fail():
 
 
 def test_nothing_to_expect_fails():
-    assert not bench.score(good(), {"search": [], "heldout": []}, RUNS, "all")[0]
+    assert not bench.score(good(), {"search": {}, "heldout": {}}, RUNS, "all")[0]
 
 
 def test_a_pre_start_error_is_carried_into_the_reasons():
@@ -273,8 +297,14 @@ def cap(script, **kw):
 
 def psram_tuning(script, **kw):
     """capture()'s fourth result."""
-    (_, _, _, tuning), _ = run(script, **kw)
+    (_, _, _, tuning, *_), _ = run(script, **kw)
     return tuning
+
+
+def identity(script, **kw):
+    """capture()'s last two results: the boot log's ELF SHA256 hex prefix and app version."""
+    (*_, sha, version), _ = run(script, **kw)
+    return sha, version
 
 
 def test_capture_reassembles_lines_and_stops_at_the_end_marker():
@@ -335,11 +365,11 @@ def test_capture_port_retries_are_bounded():
 
 def test_capture_gives_up_early_with_the_same_result_shape():
     result, _ = run([], fail=lambda n: True)  # the port never opens
-    assert result == ([], [], "cannot open or reset fake: no such device", None)
+    assert result == ([], [], "cannot open or reset fake: no such device", None, None, None)
     saved, bench.serial = bench.serial, None  # no pyserial
     try:
-        assert bench.capture("fake", "VJ search_done", 10) == ([], [], "pyserial is not importable: run with the IDF python",
-                                                               None)
+        assert bench.capture("fake", "VJ search_done", 10) == (
+            [], [], "pyserial is not importable: run with the IDF python", None, None, None)
     finally:
         bench.serial = saved
 
@@ -412,18 +442,27 @@ def test_capture_console_noise_is_not_vj_output():
     assert abort == "no VJ output for 180 s" and board.now - 1000.0 < 182 and tail[-1] == "Task watchdog got triggered"
 
 
-def run_main(lines, tuning, abort=None, *argv):
-    """bench.main() with capture() faked and a scratch repo root: (exit code, stdout, jsonl records, capture's args)."""
+def run_main(lines, tuning, abort=None, *argv, sha=SHA[:9], version=VERSION, elf=ELF, golden=None, names=NAMES):
+    """bench.main() with capture() faked and a scratch repo root: (exit code, stdout, jsonl records, capture's args).
+    The root has `names`' streams with goldens of that many lines (`golden` {name: lines, or None for no golden}
+    overrides) and bench/build/videojet_bench.elf holding `elf` (none when None). The boot log said `sha` and
+    `version` (None: no such line)."""
     with tempfile.TemporaryDirectory() as tmp:
         root, calls = Path(tmp), []
-        for s, names in NAMES.items():
+        for s, streams in names.items():
             (root / "streams" / s).mkdir(parents=True)
-            for n in names:
+            for n, frames in streams.items():
                 (root / "streams" / s / f"{n}.h264").touch()
+                frames = (golden or {}).get(n, frames)
+                if frames is not None:
+                    (root / "streams" / s / f"{n}.golden").write_text("00000000\n" * frames)
+        if elf is not None:
+            (root / "bench" / "build").mkdir(parents=True)
+            (root / "bench" / "build" / "videojet_bench.elf").write_bytes(elf)
 
         def fake_capture(*args):
             calls.append(args)
-            return lines, ["last console line"], abort, tuning
+            return lines, ["last console line"], abort, tuning, sha, version
 
         saved = bench.ROOT, bench.capture, sys.argv
         bench.ROOT, bench.capture, sys.argv = root, fake_capture, ["bench.py", "--label", "t", *argv]
@@ -457,6 +496,185 @@ def test_main_carries_a_pre_start_no_streams_error_into_the_jsonl():
     assert code == 1 and not records[-1]["ok"]
     assert any("VJ error=no_streams" in r for r in records[-1]["reasons"]), records[-1]["reasons"]
     assert "VJ error=no_streams" in out
+
+
+def test_a_profile_firmware_is_not_a_timed_score():
+    for which in ("search", "all"):
+        fail(with_prof(good(which)), "`VJP` lines", which)
+    lines = good("search")
+    lines.insert(-1, VJP.format(r=1, n="aux_map"))  # one line is enough
+    fail(lines, "`VJP` lines", "search")
+    lines = good("search")
+    lines[1] = lines[1].replace("VJ ", "VJP", 1)  # a row mangled into a VJP-looking line is still not a timed row
+    fail(lines, "`VJP` lines", "search")
+    # a profile run's leftovers from before this boot's `VJ start` are not this run's
+    assert bench.score([VJP.format(r=0, n="aux_card")] + good("search"), NAMES, RUNS, "search") == (True, [])
+
+
+def test_a_profile_run_passes_with_profile_and_still_scores_every_row():
+    for which in ("search", "all"):
+        assert bench.score(with_prof(good(which)), NAMES, RUNS, which, profile=True) == (True, []), which
+    assert bench.score(good("search"), NAMES, RUNS, "search", profile=True) == (True, [])  # no counters is fine
+    lines = with_prof(good("search"))
+    lines.remove(row("search", "aux_map", 1))
+    ok, reasons = bench.score(lines, NAMES, RUNS, "search", profile=True)
+    assert not ok and any("missing rows: search/aux_map/run1" in r for r in reasons), reasons
+
+
+def test_a_stale_container_fails():
+    # got == want: a clean decode of whatever the board holds. But the repo's golden has 300 lines, so it holds old goldens.
+    for bad in ("299/299", "301/301", "1/1"):
+        lines = good()
+        lines[1] = row("search", "aux_card", 0, frames=bad)
+        fail(lines, f"flashed container is stale: search/aux_card has {bad.split('/')[0]} frames, golden 300")
+    lines = [x.replace("frames=300/300", "frames=17/17") if "stream=BA1_Sony_D" in x else x for x in good()]
+    fail(lines, "stale: heldout/BA1_Sony_D has 17 frames, golden 300")
+    lines = [x.replace("frames=300/300", "frames=299/299") if "stream=aux_card" in x else x for x in good()]
+    stale = [r for r in bench.score(lines, NAMES, RUNS, "all")[1] if "stale" in r]
+    assert len(stale) == 1 and "re-run tools/pack_streams.py && tools/flash_streams.sh" in stale[0]  # once, not per row
+    # it is what the board WANTS that is compared: a short decode (got < want) of the right container is no stale one
+    lines = good()
+    lines[1] = row("search", "aux_card", 0, frames="299/300")
+    ok, reasons = bench.score(lines, NAMES, RUNS, "all")
+    assert not ok and any("frames=299/300" in r for r in reasons) and not any("stale" in r for r in reasons), reasons
+    lines[1] = row("search", "aux_card", 0, frames="300/299")
+    fail(lines, "stale: search/aux_card has 299 frames, golden 300")
+
+
+def test_a_stale_held_out_container_is_not_looked_at_by_a_search_run():
+    lines = [x.replace("frames=300/300", "frames=17/17") if "stream=BA1_Sony_D" in x else x for x in good("all")]
+    assert bench.score(lines, NAMES, RUNS, "search") == (True, [])  # that run ends at `VJ search_done`
+    fail(lines, "stale: heldout/BA1_Sony_D", "all")
+
+
+def test_stale_container_reason_is_bounded():
+    many = {"search": {f"s{i}": FRAMES for i in range(6)}, "heldout": {}}
+    lines = ["VJ start streams=6"]
+    lines += [row("search", f"s{i}", r, frames="9/9") for r in range(RUNS) for i in range(6)] + ["VJ search_done"]
+    ok, reasons = bench.score(lines, many, RUNS, "search")
+    stale = [r for r in reasons if "stale" in r]
+    assert not ok and len(stale) == 1 and "(+2 more)" in stale[0] and stale[0].count("golden 300") == 4, stale
+
+
+def test_firmware_reasons():
+    with tempfile.TemporaryDirectory() as tmp:
+        elf = Path(tmp) / "videojet_bench.elf"
+        elf.write_bytes(ELF)
+        for ok in (SHA[:8], SHA[:9], SHA[:63], SHA):  # any prefix of the file's sha256, up to all of it
+            assert bench.firmware_reasons(ok, elf) == [], ok
+        for bad in (SHA[:8][:-1] + ("0" if SHA[7] != "0" else "1"), "0" * 9, SHA[:9] + "0", SHA + "0", SHA[1:]):
+            assert any("ELF mismatch" in r and bad in r for r in bench.firmware_reasons(bad, elf)), bad
+        assert any("no `ELF file SHA256` line" in r for r in bench.firmware_reasons(None, elf))
+        assert any("cannot read the ELF" in r for r in bench.firmware_reasons(SHA[:9], Path(tmp) / "nope.elf"))
+        elf.write_bytes(ELF + b"x")  # the file on disk is another build than the one that booted
+        assert any("ELF mismatch" in r for r in bench.firmware_reasons(SHA[:9], elf))
+
+
+def test_capture_returns_the_firmware_identity_from_the_boot_log():
+    assert identity([BOOT_ID + START_DONE]) == (SHA[:9], VERSION)
+    colour = (b"\x1b[0;32mI (500) app_init: App version:      7f97d6a\x1b[0m\r\n"  # IDF with coloured logs
+              b"\x1b[0;32mI (500) app_init: ELF file SHA256:  67cc60d0c...\x1b[0m\r\n"
+              b"\x1b[0;32mI (500) app_init: ESP-IDF:          v5.4.2\x1b[0m\r\n")
+    assert identity([colour + START_DONE]) == ("67cc60d0c", "7f97d6a")
+    cut = [BOOT_ID[:60], BOOT_ID[60:] + START_DONE]  # lines cut across two reads
+    assert identity(cut) == (SHA[:9], VERSION)
+    assert identity([b"I (500) app_init: ELF file SHA256:  " + SHA.encode() + b"\n" + START_DONE])[0] == SHA  # all 64
+
+
+def test_capture_identity_is_none_without_the_boot_lines():
+    sha = b"I (500) app_init: ELF file SHA256:  %s...\n"
+    for boot in (b"", b"I (84) esp_psram: Speed: 80MHz\n",
+                 sha % b"67cc60d",  # 7 digits identify nothing
+                 sha % b"67CC60D0C",  # the firmware prints lower case
+                 sha % b"xyzxyzxyz", sha % b"", sha % (b"a" * 65),  # more than a sha256
+                 sha % (b"a" * 5000), b"I (500) app_init: ELF file SHA256:\n"):
+        assert identity([boot + START_DONE])[0] is None, boot[:70]
+    for boot in (b"I (500) app_init: App version:\n", b"I (500) app_init: App version:      \x1b[0m\n",
+                 b"I (500) app_init: Project name:     videojet_bench\n"):
+        assert identity([boot + START_DONE])[1] is None, boot[:70]
+
+
+def test_capture_identity_is_the_last_line_before_the_start():
+    other = BOOT_ID.replace(SHA[:9].encode(), b"0" * 9).replace(VERSION.encode(), b"old")
+    assert identity([other + BOOT_ID + b"VJ start streams=2\n" + other + b"VJ search_done\n"]) == (SHA[:9], VERSION)
+    assert identity([b"VJ start streams=2\n" + BOOT_ID + b"VJ search_done\n"]) == (None, None)  # after the start
+
+
+def test_main_records_the_firmware_identity_of_a_passing_run():
+    code, out, records, _ = run_main(good("search"), 5)
+    assert code == 0 and records[-1]["ok"] and records[-1]["reasons"] == []
+    assert records[-1]["elf_sha"] == SHA[:9] and records[-1]["app_version"] == VERSION
+    assert f"app_version={VERSION} elf_sha={SHA[:9]}" in out and out.strip().splitlines()[-1].startswith("PASS")
+
+
+def test_main_fails_when_the_board_runs_another_elf_than_the_one_on_disk():
+    for kw in (dict(sha="0" * 9), dict(sha=SHA[:8] + "0" if SHA[8] != "0" else SHA[:8] + "1"), dict(elf=ELF + b" rebuilt")):
+        code, out, records, _ = run_main(good("search"), 5, None, **kw)
+        assert code == 1 and not records[-1]["ok"], kw
+        assert any("ELF mismatch" in r for r in records[-1]["reasons"]) and "ELF mismatch" in out, kw
+        assert out.strip().splitlines()[-1].startswith("FAIL"), kw
+    # the rows themselves were clean: only the identity fails the run
+    assert len(records[-1]["rows"]) == 4 and len(records[-1]["reasons"]) == 1
+
+
+def test_main_fails_without_the_elf_line_or_the_elf_file():
+    code, out, records, _ = run_main(good("search"), 5, None, sha=None, version=None)
+    assert code == 1 and records[-1]["elf_sha"] is None and records[-1]["app_version"] is None
+    assert any("no `ELF file SHA256` line" in r for r in records[-1]["reasons"])
+    code, out, records, _ = run_main(good("search"), 5, None, elf=None)  # nothing at the default path
+    assert code == 1 and any("cannot read the ELF" in r for r in records[-1]["reasons"])
+    assert records[-1]["elf_sha"] == SHA[:9]  # still recorded
+
+
+def test_main_elf_option_points_at_the_flashed_file():
+    with tempfile.TemporaryDirectory() as tmp:
+        other = Path(tmp) / "profile.elf"
+        other.write_bytes(b"the profile build")
+        sha = hashlib.sha256(b"the profile build").hexdigest()[:9]
+        code, _, records, _ = run_main(good("search"), 5, None, "--elf", str(other), sha=sha, elf=None)
+        assert code == 0 and records[-1]["elf_sha"] == sha  # the default path does not even exist
+        code, out, records, _ = run_main(good("search"), 5, None, "--elf", str(other))  # booted the default's SHA
+        assert code == 1 and any("ELF mismatch" in r and str(other) in r for r in records[-1]["reasons"])
+
+
+def test_main_vjp_lines_need_profile():
+    code, out, records, _ = run_main(with_prof(good("search")), 5)
+    assert code == 1 and any("`VJP` lines" in r for r in records[-1]["reasons"]) and "VJP" in out
+    code, out, records, _ = run_main(with_prof(good("search")), 5, None, "--profile")
+    assert code == 0 and records[-1]["ok"] and len(records[-1]["prof"]) == 4 and out.strip().splitlines()[-1].startswith("PASS")
+    # --profile does not excuse a wrong ELF
+    code, _, records, _ = run_main(with_prof(good("search")), 5, None, "--profile", sha="0" * 9)
+    assert code == 1 and any("ELF mismatch" in r for r in records[-1]["reasons"])
+
+
+def test_main_fails_a_stale_container():
+    code, out, records, _ = run_main(good("search"), 5, None, golden={"aux_card": 301})
+    assert code == 1 and not records[-1]["ok"] and "flashed container is stale" in out
+    assert any("search/aux_card has 300 frames, golden 301" in r for r in records[-1]["reasons"])
+    for none in (0, None):  # an empty golden, or none at all
+        code, _, records, _ = run_main(good("search"), 5, None, golden={"aux_card": none})
+        assert code == 1 and any("search/aux_card has 300 frames, golden 0" in r for r in records[-1]["reasons"]), none
+    code, _, records, _ = run_main(good("all"), 5, None, "--set", "all", golden={"BA1_Sony_D": 299})
+    assert code == 1 and any("heldout/BA1_Sony_D has 300 frames, golden 299" in r for r in records[-1]["reasons"])
+    assert run_main(good("all"), 5, None, "--set", "all")[0] == 0
+
+
+def test_main_names_the_streams_as_the_container_does():
+    long = "a_stream_with_a_very_long_name"  # tools/pack_streams.py keeps 23 characters of the file name
+    names = {"search": {long: FRAMES, "aux_map": FRAMES}, "heldout": {"BA1_Sony_D": FRAMES}}
+    lines = [x.replace("stream=aux_card", f"stream={long[:23]}") for x in good("search")]
+    code, _, records, _ = run_main(lines, 5, None, names=names)
+    assert code == 0 and records[-1]["reasons"] == [], records[-1]["reasons"]
+    code, _, records, _ = run_main(lines, 5, None, names=names, golden={long: 299})  # and its golden is that stream's
+    assert code == 1 and any(f"search/{long[:23]} has 300 frames, golden 299" in r for r in records[-1]["reasons"])
+
+
+def test_main_every_record_carries_the_identity_even_when_the_capture_failed():
+    code, _, records, _ = run_main([], 4, "no `VJ start` within 30 s of the reset", sha=None, version=None)
+    assert code == 1 and records[-1]["elf_sha"] is None and records[-1]["app_version"] is None
+    assert records[-1]["reasons"][0] == "no `VJ start` within 30 s of the reset"  # the capture's own failure first
+    code, _, records, _ = run_main(good("search")[:-1], 5, "no VJ output for 180 s")
+    assert code == 1 and records[-1]["elf_sha"] == SHA[:9] and records[-1]["app_version"] == VERSION
 
 
 if __name__ == "__main__":

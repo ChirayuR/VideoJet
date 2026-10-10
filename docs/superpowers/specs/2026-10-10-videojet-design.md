@@ -17,7 +17,7 @@ Settled context (board, research, related projects) lives in `CLAUDE.md`. This s
 ## Target workload and score
 - Workload: the Android Auto second-screen stream (800×480, 30 fps, picture top-left 640×172, the rest blank; 440 of 1500 MBs active).
   - Every frame is a reference, so the decoder must sustain 30 fps with **≥2× headroom**.
-  - It must stay correct on any constrained-baseline stream.
+  - It must stay correct on any constrained-baseline stream whose output order equals decode order (output reordering is off).
 - Score: decoded fps on fixed streams on the board, **bit-exact** against ffmpeg.
 
 ## Architecture
@@ -58,6 +58,7 @@ consumer: AU bytes ─► VideoJet API ─► h264bsd fork (parse, CAVLC, MC/IDC
 - Decode-only fps.
   - Per stream: IDR µs, P-frame mean/p95/max µs, fps, hash pass/fail, minimum free internal and PSRAM heap.
   - Hashing and yields stay outside the timed region.
+  - The bench must not leave decode work in flight when the timer stops (the concurrency rule for multi-core candidates, and an M2 API contract).
 - Per-stage CCOUNT counters exist only in a `VJ_PROFILE` build.
 - Every claimed gain is measured A/B/B/A on the board.
   - Raw runs go to `results/bench.jsonl`.

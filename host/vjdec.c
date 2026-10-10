@@ -31,18 +31,22 @@ int main(int argc, char **argv)
     u8 *buf = malloc(size);
     if (!buf || fread(buf, 1, size, f) != (size_t)size) {
         fprintf(stderr, "read failed\n");
+        fclose(f);
+        free(buf);
         return 2;
     }
     fclose(f);
     FILE *yuv = argc > 2 ? fopen(argv[2], "wb") : NULL;
 
+    int rc = 0; /* every exit below goes through `out`: nothing leaks, ASan's leak check stays usable */
+    u8 *p = buf;
+    u32 left = (u32)size, frames = 0, stalls = 0;
     storage_t *dec = h264bsdAlloc();
     if (!dec || h264bsdInit(dec, HANTRO_TRUE) != HANTRO_OK) {
         fprintf(stderr, "init failed\n");
-        return 1;
+        rc = 1;
+        goto out;
     }
-    u8 *p = buf;
-    u32 left = (u32)size, frames = 0, stalls = 0;
     clock_t t0 = clock();
     while (left > 0) {
         u32 used = 0;
@@ -51,11 +55,13 @@ int main(int argc, char **argv)
         left -= used;
         if (r == H264BSD_ERROR || r == H264BSD_PARAM_SET_ERROR || r == H264BSD_MEMALLOC_ERROR) {
             fprintf(stderr, "decode error %u at frame %u\n", r, frames);
-            return 1;
+            rc = 1;
+            goto out;
         }
         if (used == 0 && r != H264BSD_PIC_RDY && ++stalls > 2) {
             fprintf(stderr, "decoder made no progress at frame %u\n", frames);
-            return 1;
+            rc = 1;
+            goto out;
         }
         if (used)
             stalls = 0;
@@ -65,7 +71,8 @@ int main(int argc, char **argv)
         u8 *pic = h264bsdNextOutputPicture(dec, &id, &idr, &nerr);
         if (!pic) {
             fprintf(stderr, "PIC_RDY without a picture at frame %u\n", frames);
-            return 1;
+            rc = 1;
+            goto out;
         }
         u32 W = h264bsdPicWidth(dec) * 16, H = h264bsdPicHeight(dec) * 16;
         h264bsdCroppingParams(dec, &crop, &x0, &w, &y0, &h);
@@ -86,9 +93,13 @@ int main(int argc, char **argv)
     }
     double s = (double)(clock() - t0) / CLOCKS_PER_SEC;
     fprintf(stderr, "%u frames, %.1f fps on host\n", frames, s > 0 ? frames / s : 0.0);
-    h264bsdShutdown(dec);
-    h264bsdFree(dec);
+out:
+    if (dec) { /* h264bsdInit zeroes the storage first, so this is safe after a failed init too */
+        h264bsdShutdown(dec);
+        h264bsdFree(dec);
+    }
+    free(buf);
     if (yuv)
         fclose(yuv);
-    return 0;
+    return rc;
 }

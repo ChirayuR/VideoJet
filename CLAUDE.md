@@ -62,9 +62,14 @@ Toolchain traps (found in M1):
 - Xtensa `uint32_t` is `unsigned long`. Pass h264bsd's `u32` (`unsigned int`) to its out-params, or GCC 14 errors.
   Host builds never catch this.
 - IDF's `-Werror=all` beats `-Wno-error`. Relax one tag at a time with `-Wno-error=<tag>`.
+- A component's `file(GLOB ... CONFIGURE_DEPENDS ...)` is a CMake error in IDF's requirements scan (script mode). Guard it
+  with `if(CMAKE_BUILD_EARLY_EXPANSION)` (plain glob) / `else()` (see `components/h264bsd/CMakeLists.txt`).
 - esptool/idf.py progress floods output. Pipe through `tr '\r' '\n' | grep -v '%)' | tail`.
 - Board loop: `tools/flash_streams.sh` (only when streams change), then `idf.py -C bench -p /dev/ttyACM0 flash`,
-  then `$IDF_PY tools/bench.py --label X --set search`.
+  then `$IDF_PY tools/bench.py --label X --set search`, with `IDF_PY=/path/to/idf-python-env/bin/python`
+  (it has pyserial). `bench.py` FAILs unless the boot log's ELF SHA256 matches `bench/build/videojet_bench.elf`
+  (`--elf PATH` for another build dir): flash what you built. A `VJ_PROFILE` image needs
+  `--profile --elf bench/build-prof/videojet_bench.elf`.
 
 ## Jet lessons that transfer
 - Consumer project: a ring of internal-SRAM DMA bands with the converter writing straight into them.
@@ -111,17 +116,21 @@ h264bsd: Android's Hantro baseline decoder, Apache-2.0, plain C (github.com/onea
     It covers only the first 960 KB of the old `basemap` area, but that area was erased (0xFF) anyway.
 - 2026-10-10 baseline, unmodified h264bsd on the S3, decode-only (M1 smoke run). Noise is ≤0.02 fps within one boot,
   but **bimodal ~0.4–0.7 % across boots**: it follows the boot log line `MSPI Timing: PSRAM timing tuning index`.
-  Indices 4 and 10 gave identical fast numbers; 5 is ~0.4–0.7 % slower and is the common one (12 of 15 resets).
-  So compare candidates A/B/B/A across resets, and only within the same speed class. `bench.py` records `psram_tuning`.
-  The official baseline (8 boots) is in `docs/bench-log.md`.
+  Indices 4 and 10 gave identical fast numbers (the fast class); 5 is ~0.4–0.7 % slower and is the common one (7 of the
+  10 boots in `docs/baseline-m1.jsonl`). A code-layout change alone also moves fps by ~±0.5 %.
+  So compare candidates A/B/B/A across resets, and only within the same speed class, and accept a win only at ≥1 %.
+  `bench.py` records `psram_tuning`. The official baseline (8 boots) is in `docs/bench-log.md`; its records are in
+  `docs/baseline-m1.jsonl`.
 
-  | Stream | fps | ms/frame |
-  |---|---|---|
-  | aux_card | 17.24 | 58 |
-  | aux_map | 9.73 | 103 |
-  | full_map | 5.62 | 178 |
-  | aux_map_dark | 9.32 | 107 |
-  | test_640x360 | 12.98 | |
-  | JVT (QCIF) | 57–63 | |
+  Baseline fps by speed class. The held-out rows come from the smoke boot, whose search fps put it in the fast class.
+
+  | Stream | fast class {4,10} fps | class 5 fps (common) | fast class ms/frame |
+  |---|---|---|---|
+  | aux_card | 17.24 | 17.12 | 58 |
+  | aux_map | 9.73 | 9.69 | 103 |
+  | full_map | 5.62 | 5.60 | 178 |
+  | aux_map_dark | 9.32 | n/a | 107 |
+  | test_640x360 | 12.98 | n/a | |
+  | JVT (QCIF) | 57–63 | n/a | |
 
   A near-static card still costs ~9k cycles per skipped MB, so skip elision is the first lever.
