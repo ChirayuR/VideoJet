@@ -138,7 +138,7 @@ def score(lines, expected_names, runs, which, profile=False):
             continue
         seen[key] += 1
         tag = "{}/{}/run{}".format(*key)
-        if "error" in d:  # `error=nomem|init` rows have no stats at all
+        if "error" in d:  # `error=nomem|init|read` rows can have no stats at all
             reasons.append(f"{tag}: board error={d['error']}")
             continue
         bad = [k for k, rx in FIELDS.items() if not rx.fullmatch(d.get(k, ""))]

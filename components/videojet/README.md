@@ -39,9 +39,11 @@ vj_decoder_destroy(dec);
 ## 3. Requirements
 - PSRAM in the heap: `CONFIG_SPIRAM=y` with `CONFIG_SPIRAM_USE_MALLOC` (the default) or `CONFIG_SPIRAM_USE_CAPS_ALLOC`.
   `CONFIG_SPIRAM_USE_MEMMAP` leaves the library no PSRAM to allocate from, so the frames fail with `VJ_ERR_NOMEM`.
-- Memory at 800x480: frames (about 1.5 x width x height bytes each, refs + 1 of them) and the per-macroblock state live in
-  PSRAM: 2 x 576 KB of frames plus about 0.3 MB of per-MB state (1500 MBs x 216 B = 324,000 B), about 1.5 MB in all. About
-  13 KB goes to internal RAM. These are sums of the S3 structure sizes, not measurements.
+- Memory at 800x480, measured on the board (`docs/bench-log.md`, M2 section): 1,507,340 B of PSRAM and 13,544 B of internal
+  RAM, the same on every run and boot. The PSRAM holds the frames (about 1.5 x width x height bytes each, refs + 1 of them,
+  so 2 for a one-reference stream) and the per-macroblock state (1500 MBs x 216 B). Each extra reference frame adds
+  589,828 B. IDF's heap rounds every block up to its size class, so the PSRAM figure is 2.1 % above the sum of the structure
+  sizes.
 - The library places its own buffers, whatever your `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL`: above 16 KiB PSRAM first, below it
   internal RAM first, each falling back to the other. It asks for the same memory as IDF's `malloc`, so it never takes the
   internal DMA reserve (`CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL`).

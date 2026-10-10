@@ -13,6 +13,9 @@ Use this file as an ongoing file, and optimise your usage.
   Nothing display-, USB- or protocol-related goes in this repo. `bench/` and `host/` are test apparatus. (user, 2026-10-10)
 - Target is the ESP32-S3 only. The P4 is out of scope; P4 facts below are reference only.
 - Spec: `docs/superpowers/specs/2026-10-10-videojet-design.md`. Plans live in `docs/superpowers/plans/`.
+- API (M2): the component is `components/videojet`; the vendored decoder is private (`h264bsd/`), consumers see
+  `include/videojet.h` only. `vj_decode_au(dec, au, len, &frame)` takes **one** Annex-B access unit and returns one I420
+  picture; `vj_au_length()` splits a byte stream into AUs. Consumer guide: `components/videojet/README.md`.
 
 ## Working conventions
 - Ponytail + caveman + superpowers (brainstorm → spec → plan → build).
@@ -20,7 +23,8 @@ Use this file as an ongoing file, and optimise your usage.
   Escalate to an **Opus agent when capability is the bottleneck**: BLOCKED, a fix loop past round 3, or deep-judgment
   work (PIE asm, decoder internals, meta-harness proposers). **If Opus is blocked, escalate to a an external consult agent.**
 - Meta-harness drives optimisation (M3). The scorer is the board bench (fps). Hard floor: every frame hash matches the golden.
-- Deferred work and every M1 decision live in `docs/superpowers/m1-carryover.md`. Read it before planning M2 or M3.
+- Deferred work and every M1 decision live in `docs/superpowers/m1-carryover.md`. Read it before planning M3 (its M2 items
+  are closed).
   The scorer identifies the firmware from the INFO-level boot log (`ELF file SHA256`), so never lower the log level.
   Profile runs need `--profile --elf bench/build-prof/videojet_bench.elf`.
 - **Read the related projects' notes before asking the user anything** (see Related).
@@ -71,7 +75,12 @@ Toolchain traps (found in M1):
 - Board loop: `tools/flash_streams.sh` (only when streams change), then `idf.py -C bench -p /dev/ttyACM0 flash`,
   then `$IDF_PY tools/bench.py --label X --set search`, with `IDF_PY=/path/to/idf-python-env/bin/python`
   (it has pyserial). `bench.py` FAILs unless the boot log's ELF SHA256 matches `bench/build/videojet_bench.elf`
-  (`--elf PATH` for another build dir): flash what you built. A `CONFIG_VJ_PROFILE` image needs
+  (`--elf PATH` for another build dir): flash what you built. `--set all` adds the held-out streams (about 8 min).
+  A `VJ` row ends `... fps int_min psram_min total_us int_used psram_used`: the exact timed µs and the decoder's
+  internal-RAM / PSRAM high-water bytes (grammar in `tools/bench.py`).
+  `python3 tools/compare.py LABEL` checks a search-set record against the M1 baseline in the same speed class (±5 %); it
+  cannot pass a `--set all` record, whose held-out streams have no baseline.
+  A `CONFIG_VJ_PROFILE` image needs
   `--profile --elf bench/build-prof/videojet_bench.elf`. Build it with the overlay, so the timed `bench/sdkconfig` never
   sees the switch, and reflash the timed build afterwards:
   ```
@@ -119,12 +128,22 @@ h264bsd: Android's Hantro baseline decoder, Apache-2.0, plain C (github.com/onea
 - `$WORK/the consumer project` (CLAUDE.md, docs/) + its memory dir.
 
 ## Status
+- 2026-10-10: **M2 complete** on branch `m2-library-api` (`19c1a23..89bd8c9`, then the M2 docs commit).
+  Next: M3 step 0 (see the layout bullet below), then the meta-harness search.
+  - Delivered: the public API, one component with a private decoder, Kconfig `VJ_PROFILE` / `VJ_ERROR_PRINT`, library-owned
+    memory placement, the consumer README, and a bench that reports exact `total_us` and the decoder's `int_used` / `psram_used`.
+  - Final firmware (app `89bd8c9`, ELF `6a270d064`, record `m2-final-all`: PASS, all 11 streams). Search fps against the M1
+    baseline of the same class: −0.06 / −0.21 / −0.36 % (aux_card / aux_map / full_map), inside the ±5 % M2 bar. The
+    committed M2 builds spread −2.14 … +1.25 % with no decoder change: that is code layout (below).
+  - Cost axes at 800x480, M3's baseline (`docs/bench-log.md`, M2 section): `int_used` 13,544 B, `psram_used` 1,507,340 B
+    (+589,828 B per extra reference frame); `libvideojet.a` static: 0 B IRAM, 0 B DRAM, 58,071 B flash.
+  - Held-out fps at index 5 (slow class, no same-class baseline): aux_map_dark 9.27, test_640x360 12.99; JVT QCIF
+    56.5–62.5 (correctness only).
 - 2026-10-10: **M1 complete, merged to `main`** (`7c9c628..3c174ad`).
   - Local repo only, no remote yet: the user will grant GitHub access later.
   - `backups/` (board flash dump, incl. NVS) and `results/` are gitignored. Keep it that way when pushing.
   - What it delivered: the eval harness, a hardened scorer and the baseline + profile.
   - Review: the final review came back clean after one fix wave.
-  - Next: M2 (library API + packaging), then M3 (meta-harness search).
 - 2026-10-10: the spec is approved.
   - M1 plan: `docs/superpowers/plans/2026-10-10-videojet-m1-eval-harness.md`. It runs through subagent-driven development.
   - The ledger lives in `.superpowers/sdd/`, branch `m1-eval-harness`.
@@ -133,16 +152,10 @@ h264bsd: Android's Hantro baseline decoder, Apache-2.0, plain C (github.com/onea
 - 2026-10-10 baseline, unmodified h264bsd on the S3, decode-only (M1 smoke run). Noise is ≤0.02 fps within one boot,
   but **bimodal ~0.4–0.7 % across boots**: it follows the boot log line `MSPI Timing: PSRAM timing tuning index`.
   Indices 4 and 10 gave identical fast numbers (the fast class); 5 is ~0.4–0.7 % slower and is the common one (7 of the
-  10 boots in `docs/baseline-m1.jsonl`). A code-layout change alone also moves fps by ~±0.5 %.
-  So compare candidates A/B/B/A across resets, and only within the same speed class, and accept a win only at ≥1 %.
+  10 boots in `docs/baseline-m1.jsonl`). Compare candidates A/B/B/A across resets, and only within the same speed class.
+  (M1 also put code layout at ~±0.5 % and the acceptance bar at ≥1 %: both are void, see the layout bullet below.)
   `bench.py` records `psram_tuning`. The official baseline (8 boots) is in `docs/bench-log.md`; its records are in
   `docs/baseline-m1.jsonl`.
-- **Code layout sensitivity is several percent** (M2 Task 1, 2026-10-10). Identical decoder logic shifted by ~16 B
-  measured −3.1 % (aux_map) and −4.3 % (full_map). A +0x51c shift measured +0.6/+0.7 %.
-  - Likely cause: the default 16 KB I-cache is smaller than the hot decode code.
-  - Consequence: any rebuild that moves code is a ±4 % lottery. M2 acceptance is ±5 % (`compare.py --tol 5`).
-  - The ≥1 % bar above is void until **M3 step 0**: pin hot-code placement (libvideojet in IRAM via a
-    linker fragment, and/or a 32 KB I-cache), then re-measure the build-to-build noise floor.
 
   Baseline fps by speed class. The held-out rows come from the smoke boot, whose search fps put it in the fast class.
 
@@ -156,3 +169,11 @@ h264bsd: Android's Hantro baseline decoder, Apache-2.0, plain C (github.com/onea
   | JVT (QCIF) | 57–63 | n/a | |
 
   A near-static card still costs ~9k cycles per skipped MB, so skip elision is the first lever.
+- **Code layout sensitivity is several percent** (M2 Task 1, 2026-10-10). Identical decoder logic measured −4.3 … +0.7 % with
+  placement alone: the M1 logic shifted by ~16 B gave −3.1 % (aux_map) and −4.3 % (full_map), and the M2 wrapper linked in
+  front of it (+0x51c) gave +0.6 / +0.7 %.
+  - Likely cause: the default 16 KB I-cache is smaller than the hot decode code.
+  - Consequence: any rebuild that moves code is a ±4 % lottery. The committed M2 builds drew −2.14 … +1.25 %.
+    M2 acceptance was ±5 % (`compare.py --tol 5`).
+  - The ≥1 % bar of M1 is void until **M3 step 0** (blocking): pin hot-code placement (libvideojet in IRAM via a
+    linker fragment, and/or a 32 KB I-cache), then re-measure the build-to-build noise floor.

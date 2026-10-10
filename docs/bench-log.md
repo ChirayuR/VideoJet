@@ -6,13 +6,15 @@ Correctness floor: every hash passes. Search set only. Each value is the mean ov
 Source: `results/bench.jsonl` (gitignored), records `baseline-r1` to `baseline-r8`: 8 boots, each `tools/bench.py
 --set search`, all PASS (6 rows each), each record carries its `psram_tuning`. The records this log cites
 (`baseline-r1` to `baseline-r8`, `baseline-prof`, `timed-restore-check`) are versioned, unmodified, in
-`docs/baseline-m1.jsonl`. They predate the `elf_sha` and `app_version` fields, so the binaries are named below, from the
-boot logs.
+`docs/baseline-m1.jsonl`. They predate the `elf_sha` and `app_version` fields, so no record names its binary. The timed
+baseline image is named below (Results), from its boot log; the binaries of `baseline-prof` and `timed-restore-check` are
+not recorded anywhere.
 "From row times" below means fps recomputed as frames·10⁶ / (idr_us + p_mean_us·(frames−1)). The firmware prints fps
-with 2 decimals only, and p_mean_us is the mean truncated to a whole µs. The formula reproduces the printed fps on 98 of
-the 100 rows in `bench.jsonl`: all 84 search-set rows (so all 60 rows of the versioned records) and 14 of the 16
-held-out rows of the `m1-smoke` record. The two misses are that record's BA_MW_D and MIDR_MW_D run 1 (printed 60.41 and
-60.44, formula 60.42 and 60.45: the truncation).
+with 2 decimals only, and p_mean_us is the mean truncated to a whole µs. Through `timed-restore-check` (when `bench.jsonl`
+held 100 rows; it has grown since) the formula reproduces the printed fps on 98 of the 100 rows: all 84 search-set rows
+(so all 60 rows of the versioned records) and 14 of the 16 held-out rows of the `m1-smoke` record. The two misses are that
+record's BA_MW_D and MIDR_MW_D run 1 (printed 60.41 and 60.44, formula 60.42 and 60.45: the truncation). Since M2 a row
+carries `total_us`, the exact sum of the timed µs, and fps is computed from it, so M2 rows need no reconstruction.
 
 ## Noise
 - within one boot: max |run0 − run1| fps per stream = 0.00 for aux_map, aux_card and full_map (printed fps, 8 boots).
@@ -27,21 +29,38 @@ held-out rows of the `m1-smoke` record. The two misses are that record's BA_MW_D
   (those 8, `baseline-prof` and `timed-restore-check`) the index was 5 ×7, 10 ×2, 4 ×1.
   Index 4 has no row below, because the 8 baseline boots did not draw it. Record `timed-restore-check` (the timed
   firmware rebuilt after the profile build, tuning 4) printed 17.24 / 9.73 / 5.62 (aux_card / aux_map / full_map), the same
-  as the index 10 row (within 0.002 % from row times). So 4 and 10 form one fast speed class, and 5 is the slower, more
+  as the index 10 row (within 0.0022 % from row times). So 4 and 10 form one fast speed class, and 5 is the slower, more
   common one. The `m1-fix1*` records predate the `psram_tuning` field.
-- code layout: a change of code layout alone moves fps by about ±0.5 %. The profile firmware (`baseline-prof`) and the
-  timed one (`baseline-r5`) both booted at index 10 and do the same decoder work, yet from row times the profile firmware
-  is −0.43 % on aux_card, +0.22 % on aux_map and +0.50 % on full_map (printed fps: −0.46 / +0.31 / +0.53 %). That mixed-sign
-  difference comes from code placement (and the counters), not from the speed class. So the candidate-to-candidate noise
-  floor is about ±0.5 %, not the 0.0022 % above: that figure is same-binary, same-speed-class noise, i.e. how well one
-  binary repeats.
+  Through `m2-final-all`, the 34 records of `bench.jsonl` that carry an index (M1 and M2) show 4 ×9, 5 ×19, 10 ×6: no other
+  index has appeared, and `tools/compare.py` knows only these three.
+- code layout: **moving code alone shifts fps by several percent, not by ±0.5 %.**
+  - M1 saw the effect first but measured it too small. The profile firmware (`baseline-prof`) and the timed one
+    (`baseline-r5`) both booted at index 10 and do the same decoder work, yet from row times the profile firmware is −0.43 %
+    on aux_card, +0.22 % on aux_map and +0.50 % on full_map (printed fps: −0.46 / +0.31 / +0.53 %). That mixed-sign
+    difference comes from code placement (and the counters), not from the speed class.
+  - M2 Task 1 measured the band with the decoder's logic unchanged (records `ctl-m1-code` and `ctl-m1-shift16` in
+    `results/bench.jsonl`; Δ against the same-class baseline, aux_card / aux_map / full_map):
+    - the untouched M1 sources, rebuilt (ELF 758558c2b, index 4): 0.00 / 0.00 / 0.00 %, so a rebuild alone changes nothing;
+    - the M1 logic with the decoder's code shifted by 16 B (ELF ae66914a5, index 10; other code moved too):
+      −0.12 / −3.08 / −4.27 %;
+    - the M2 wrapper linked in front of the decoder, which moved the decoder by about +0x51c (ELF a91706eed): +0.06 / +0.62 /
+      +0.71 % at index 4 (+0.12 / +0.62 / +0.71 % at index 5).
+    So identical decoder logic measured **−4.3 % … +0.7 %** with code placement alone. The committed M2 builds, which changed
+    no decoder algorithm, drew −2.14 % … +1.25 % (table in M2 below).
+  - Likely cause: the default 16 KB I-cache is smaller than the hot decode code, so which functions share cache lines decides
+    the fps. This is a hypothesis; nothing here tested it.
+  - The 0.0022 % above is same-binary, same-speed-class noise, i.e. how well one binary repeats. The build-to-build noise floor
+    is unknown: it has not been measured with a pinned layout.
 - rule for M3: compare candidates A/B/B/A across resets, and only within the same tuning index (or report both).
   An A/B pair from boots at different indexes can fake a 0.4–0.7 % gain or loss. `bench.py` cannot choose the index:
   every reset draws it afresh, so a boot at the odd index has to be re-run, or compared only with its own index.
 - acceptance rules:
-  - M3 accepts a win only at ≥ 1 % over the baseline in the same speed class, or after it survives a layout perturbation
-    (the same candidate relinked with `-falign-functions=64`, for example).
-  - M2's "fps unchanged" means the same speed class and |Δ| ≤ 0.6 % per stream against `docs/baseline-m1.jsonl`.
+  - M2's "fps unchanged" was enforced as the same speed class and |Δ| ≤ 5 % per stream against `docs/baseline-m1.jsonl`
+    (`tools/compare.py`, default `--tol 5`; ruling R1 of the M2 ledger). M1's ≤ 0.6 % sits inside the layout band above: the
+    first M2 build, with no decoder change, measured +0.62 % on aux_map and +0.71 % on full_map and missed it.
+  - M3 step 0, blocking: pin hot-code placement (libvideojet in IRAM via a linker fragment, and/or a 32 KB I-cache), then
+    re-measure the build-to-build noise floor with deliberate layout perturbations (`-falign-functions=64`, for example). The
+    ≥ 1 % bar, M1's "accept a win only at ≥ 1 %", is void until then.
 
 ## Results
 | date | label | tuning | aux_map fps | aux_card fps | full_map fps | aux_map IDR ms / P p95 ms | int_min KB | notes |
@@ -49,11 +68,14 @@ held-out rows of the `m1-smoke` record. The two misses are that record's BA_MW_D
 | 2026-10-10 | baseline (unmodified h264bsd, IDF defaults + -O2) | 5 | 9.69 | 17.12 | 5.60 | 139.36 / 113.69 | 346.3 | 7 boots (r1–r4, r6–r8) |
 | 2026-10-10 | baseline (same binary) | 10 | 9.73 | 17.24 | 5.62 | 139.06 / 113.25 | 346.3 | 1 boot (r5) |
 
-int_min is 354,655 B in every row of every boot (KB = 1024 B). Per-stream P p95 and IDR on the other streams:
+int_min is 354,655 B in every M1 row of every boot (KB = 1024 B); the M2 builds before Task 3 read the same. Per-stream
+P p95 and IDR on the other streams:
 index 5 aux_card 60.36 / 116.78 ms (P p95 / IDR), full_map 197.31 / 217.46 ms; index 10 aux_card 59.96 / 116.46 ms,
 full_map 196.62 / 217.19 ms.
 Binary: the Task 4 image, not rebuilt for this log (boot log: app version `88ed2d6-dirty`, compiled `Oct 10 2026 04:13:34`,
 ELF SHA256 `c31a1eec3…`).
+M2 rows are in the M2 section below; their int_min and psram_min are not comparable byte for byte with these (see
+"Row format").
 
 ## Baseline profile
 Where a frame's decode time goes, per search stream: the `VJP` lines of `results/bench.jsonl`, record `baseline-prof`
@@ -85,10 +107,10 @@ flashed back. Each stage is a CCOUNT delta around one call, summed over the stre
 | full_map | 177,038 | 27,883 (15.7 %) | 105,726 (59.7 %) | 84,257 (47.6 %) | 34,963 (19.7 %) | 8,466 (4.8 %) |
 
 Counter cost: the profile firmware printed 17.16 / 9.76 / 5.65 fps (aux_card / aux_map / full_map) against 17.24 / 9.73 / 5.62
-for the timed baseline at index 10 (Results table): within about 0.5 %, mixed sign. That is the size of the code-layout noise
-(Noise section), so the counter cost cannot be told apart from it. The timed firmware rebuilt with these changes and flashed
-back printed 17.24 / 9.73 / 5.62 at index 4 (record `timed-restore-check`, no `VJP` lines), the same numbers as the index 10
-row.
+for the timed baseline at index 10 (Results table): within about 0.5 %, mixed sign. That is inside the code-layout band
+(Noise section: several percent), so the counter cost cannot be told apart from it. The timed firmware rebuilt with these
+changes and flashed back printed 17.24 / 9.73 / 5.62 at index 4 (record `timed-restore-check`, no `VJP` lines), the same
+numbers as the index 10 row.
 
 Reading: `inter` (MV prediction + motion compensation + residual add/clip + write-out) dominates all three streams; this
 profile does not split motion compensation from the write-out. aux_card is skip-heavy (parse is 0.9 % of the frame, which
@@ -97,3 +119,107 @@ mostly the skipped-macroblock copy path (MV prediction, reference copy, `h264bsd
 aux_map and full_map spend about half the frame in `inter` (49 % / 48 %); the rest is deblock 17 % / 20 %, parse 14 % / 16 %,
 recon minus `inter` (residual dequantisation and inverse transform, intra prediction with its write-out) 13.5 % / 12 %,
 and other 6 % / 5 %.
+
+## M2 (library API)
+The M2 firmware is the committed tree at `89bd8c9`: one `videojet` component with a private decoder, Kconfig switches, and the
+bench on the public API. Two records ran on it, both PASS and both tied by `bench.py` to its ELF (SHA256 `6a270d064…`, app
+version `89bd8c9`): `m2-t3-final` (search set, 6 rows, PSRAM tuning index 4) and `m2-final-all` (all 11 streams, 22 rows,
+index 5). The held-out fps and every stream's memory come from `m2-final-all`, the search comparison from `m2-t3-final`
+(`tools/compare.py` cannot pass a `--set all` record: the held-out streams have no baseline). Every number below is from
+`results/bench.jsonl` (gitignored) or from the command shown with it.
+
+### Row format
+`VJ run=R set=S stream=NAME frames=GOT/WANT fail first_fail idr_us p_mean_us p50_us p95_us max_us fps int_min psram_min
+total_us int_used psram_used`, then ` error=...` if the board hit one (`tools/bench.py` has the exact grammar).
+- `total_us`: the exact sum of every timed µs of the stream, parameter-set-only and failing AUs included. fps is computed from it.
+- `int_used`, `psram_used`: the decoder's high-water marks in bytes, from the IDF heap monitor
+  (`heap_caps_monitor_local_minimum_free_size_start/stop`) around one stream's decode: how far the free internal and PSRAM heap
+  fell below its level just before `vj_decoder_create()`. The bench's own buffers and AU index are allocated first, so they
+  are not counted.
+- `int_min`, `psram_min` keep their boot-wide meaning (lowest free size since boot) but no longer match M1 byte for byte. With
+  the monitor linked (M2 Task 3), `int_min` reads 354,639 B, not the 354,655 B of M1 and of the M2 builds before Task 3: −16 B,
+  because the monitor pulls in IDF's `min_free_bytes_monitoring` (16 B of `.data`), a link-time effect. `psram_min` is 28 B
+  lower (the monitor's own table), and 2,436 B lower since M2 Task 1 (the AU index): aux_card run 0 reads 6,810,676 B in M1,
+  6,808,240 B in M2 Task 1 and 2, 6,808,212 B now. None of it is a placement change.
+
+### fps against the M1 baseline
+M2 acceptance is |Δ| ≤ 5 % per stream in the same speed class (ruling R1; Noise above). `python3 tools/compare.py m2-t3-final`:
+```
+aux_card                    17.23 vs    17.24 fps (fast)  -0.06 %  ok
+aux_map                      9.71 vs     9.73 fps (fast)  -0.21 %  ok
+full_map                     5.60 vs     5.62 fps (fast)  -0.36 %  ok
+PASS
+```
+`m2-final-all` is the same firmware at index 5 (slow class): 17.11 / 9.67 / 5.58 fps against 17.12 / 9.69 / 5.60, the same
+−0.06 / −0.21 / −0.36 % (`compare.py` prints FAIL for that record only because of the held-out "no baseline" lines). Exactly,
+from `total_us` against the baseline from row times: −0.051 / −0.205 / −0.447 % (fast) and −0.061 / −0.201 / −0.441 % (slow).
+The two classes agree: the Δ belongs to the binary, and it sits well inside the layout band (Noise above).
+
+Every committed M2 firmware against the same-class baseline, as `compare.py` computes it from the printed fps (aux_card /
+aux_map / full_map, %). No decoder algorithm changed in any of them: the spread is code placement (Noise above). The two
+controls are M1 logic.
+
+| firmware | record | ELF | index (class) | aux_card | aux_map | full_map |
+|---|---|---|---|---|---|---|
+| `291405e` public API | `m2-t1` | a91706eed | 4 (fast) | +0.06 | +0.62 | +0.71 |
+| `291405e` public API | `m2-t1` | a91706eed | 5 (slow) | +0.12 | +0.62 | +0.71 |
+| `d691aff` API fix | `m2-t1-fix1` | 5b446cd93 | 5 (slow) | +0.12 | +1.03 | +1.25 |
+| `c9e6510` one component, Kconfig, placement | `m2-t2-final` | 970f7357f | 5 (slow) | +0.18 | −0.93 | −1.43 |
+| `9137edb` S3 sizing, DMA-safe alloc | `m2-t2-fix1-final` | dc5ae7a67 | 4 (fast) | +0.12 | −1.34 | −2.14 |
+| `89bd8c9` bench measures (final) | `m2-t3-final` | 6a270d064 | 4 (fast) | −0.06 | −0.21 | −0.36 |
+| `89bd8c9` (final) | `m2-final-all` | 6a270d064 | 5 (slow) | −0.06 | −0.21 | −0.36 |
+| control: M1 sources rebuilt | `ctl-m1-code` | 758558c2b | 4 (fast) | 0.00 | 0.00 | 0.00 |
+| control: M1 logic, decoder +16 B | `ctl-m1-shift16` | ae66914a5 | 10 (fast) | −0.12 | −3.08 | −4.27 |
+
+The boot log's `App version` is taken when the build is configured, so a firmware built just before its commit names the
+previous one (`m2-t1` says `19c1a23-dirty`; it was built from the `291405e` sources): the ELF SHA is the identity.
+
+### Memory: int_used and psram_used (M3's cost-axis baseline)
+Record `m2-final-all`, both runs of every stream. The two runs agree exactly, and so do the same streams in `m2-t3` (index 4,
+a pre-commit build) and the search streams in `m2-t3-final` (index 4): the figures do not change with run, boot or build.
+Streams are the search set first, then the held-out set. `refs` is the SPS `max_num_ref_frames`, read from each stream. The
+JVT QCIF streams are correctness-only (ruling R9): their fps are listed, not for aggregates or for 30 fps headroom
+arguments. The held-out rows have no same-class M1 baseline (`m1-smoke` is fast class), so they carry no Δ.
+
+| stream | size | refs | int_used B | psram_used B | fps run 0 / run 1 (index 5) |
+|---|---|---|---|---|---|
+| aux_card | 800x480 | 1 | 13,544 | 1,507,340 | 17.11 / 17.11 |
+| aux_map | 800x480 | 1 | 13,544 | 1,507,340 | 9.67 / 9.67 |
+| full_map | 800x480 | 1 | 13,544 | 1,507,340 | 5.58 / 5.58 |
+| aux_map_dark | 800x480 | 1 | 13,544 | 1,507,340 | 9.27 / 9.27 |
+| test_640x360 | 640x360 | 3 | 12,224 | 1,642,516 | 12.99 / 12.99 |
+| BA1_Sony_D | 176x144 | 1 | 6,964 | 99,340 | 56.54 / 56.56 |
+| BA2_Sony_F | 176x144 | 5 | 7,016 | 255,004 | 58.35 / 58.35 |
+| BANM_MW_D | 176x144 | 1 | 6,964 | 99,340 | 62.54 / 62.54 |
+| BA_MW_D | 176x144 | 4 | 7,000 | 216,088 | 60.27 / 60.27 |
+| MIDR_MW_D | 176x144 | 4 | 7,000 | 216,088 | 60.29 / 60.29 |
+| NRF_MW_E | 176x144 | 3 | 6,984 | 177,172 | 59.15 / 59.15 |
+
+At the target 800x480 stream (1 reference frame): 13,544 B internal and 1,507,340 B PSRAM. The PSRAM is the per-macroblock
+state (1500 MBs x 216 B = 324,000 B requested, 327,684 B taken) plus 2 frames (576,047 B requested, 589,828 B taken each).
+IDF's TLSF allocator rounds every block up to its size class (+4 B header), so the measured figure is 2.1 % above the sum of
+the structure sizes (1,476,094 B), and each extra reference frame at 800x480 costs 589,828 B. The internal figure is 1.0 %
+above its sum (13,544 B against 13,404 B). The per-allocation sizes come from a scratch log of every allocation's change in
+free heap (M2 Task 3), not from a committed tool.
+
+### Static footprint of `libvideojet.a`
+`$IDF_PY -m esp_idf_size --archives bench/build/videojet_bench.map` on the committed firmware's map (the ELF the board ran;
+`--archive_details libvideojet.a` lists nothing in `.dram0.data` or `.dram0.bss`):
+
+| flash code | flash rodata | IRAM | DRAM .data / .bss | flash total |
+|---|---|---|---|---|
+| 50,981 B | 7,090 B | 0 B | 0 B / 0 B | 58,071 B |
+
+The archive holds the wrapper and the vendored decoder. It keeps no static RAM: its code runs from flash through the I-cache,
+and everything it uses at run time is heap, counted in `int_used` and `psram_used` above. The whole image is 258,798 B.
+
+### Cost axes for M3 (800x480)
+| axis | M2 value |
+|---|---|
+| internal RAM, decoder heap (`int_used`) | 13,544 B |
+| internal RAM, static (IRAM + DRAM of `libvideojet.a`) | 0 B |
+| PSRAM (`psram_used`) | 1,507,340 B |
+| flash (`libvideojet.a` code + rodata) | 58,071 B |
+
+The spec's library budget is ≤ 100 KB of internal RAM. M3 step 0 would move libvideojet's `.text` into IRAM, which adds 50,981 B
+of internal RAM: 13,544 B + 50,981 B = 64,525 B, under 100 KB whether KB is 1000 or 1024 B.
