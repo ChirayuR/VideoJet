@@ -459,6 +459,26 @@ def test_capture_psram_tuning_is_the_last_line_before_the_start():
     assert psram_tuning([b"VJ start streams=2\n" + TUNING % 7 + b"VJ search_done\n"]) is None
 
 
+def test_capture_stops_at_the_start_when_the_tuning_index_is_not_wanted():
+    (lines, _, abort, tuning, *_), _ = run([TUNING % 4 + START_DONE], want={5})
+    assert abort.startswith(bench.WRONG_TUNING) and tuning == 4 and lines == ["VJ start streams=2"]
+    (lines, _, abort, tuning, *_), _ = run([TUNING % 5 + START_DONE], want={5})  # wanted: runs to the end
+    assert abort is None and tuning == 5 and lines[-1] == "VJ search_done"
+    (_, _, abort, tuning, *_), _ = run([TUNING % 4 + TUNING % 5 + START_DONE], want={5})  # the last line counts
+    assert abort is None and tuning == 5
+    (_, _, abort, tuning, *_), _ = run([START_DONE], want={5})  # no index line: not provably wanted
+    assert abort.startswith(bench.WRONG_TUNING) and tuning is None
+
+
+def test_main_resets_until_the_wanted_tuning_and_gives_up_after_the_limit():
+    wrong = f"{bench.WRONG_TUNING} 4"
+    code, out, records, calls = run_main(good("search"), 4, wrong, "--tuning", "5", "--tuning", "10")
+    assert len(calls) == bench.TUNING_TRIES and calls[0][4] == {5, 10}  # every boot asks for the same set
+    assert code == 1 and not records[-1]["ok"] and "boots" in records[-1]["reasons"][0]
+    code, _, records, calls = run_main(good("search"), 5)  # without --tuning: one boot, nothing wanted
+    assert code == 0 and len(calls) == 1 and calls[0][4] is None
+
+
 def test_capture_gives_up_when_the_board_goes_quiet_after_start():
     _, _, abort, board = cap([b"VJ start streams=2\n"] + silence(400))
     assert abort == "no VJ output for 180 s" and 180 < board.now - 1000.0 < 182  # the default

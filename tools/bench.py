@@ -46,6 +46,8 @@ START_TIMEOUT = 30  # s from the reset to `VJ start` (a healthy boot takes about
 IDLE_TIMEOUT = 180  # s without a `VJ` line after `VJ start` (the slowest row, full_map's 300 frames, takes about 55 s)
 # ESP-IDF boot log: this boot's PSRAM timing calibration. The bench's fps shifts with it (docs/bench-log.md).
 TUNING = re.compile(r"PSRAM timing tuning index: ([0-9]{1,6})(?![0-9])")
+WRONG_TUNING = "PSRAM tuning index not wanted:"  # capture() stopped at `VJ start`: reset and try another boot
+TUNING_TRIES = 20  # boots --tuning may spend; the wanted class came up in 70 % of boots so far
 # The same boot log names the firmware: a hex prefix of the sha256 of the ELF file (`ELF file SHA256:  67cc60d0c...`,
 # 9 digits by default; fewer than 8 identify nothing) and the app version (`App version:      7f97d6a-dirty`).
 ELF_SHA = re.compile(r"ELF file SHA256:\s+([0-9a-f]{8,64})(?![0-9a-f])")
@@ -195,7 +197,7 @@ def open_port(port, tries=20):
             time.sleep(0.5)
 
 
-def capture(port, stop, timeout, idle=IDLE_TIMEOUT):
+def capture(port, stop, timeout, idle=IDLE_TIMEOUT, want=None):
     """Reset the S3 via the USB-Serial-JTAG RTS line and collect its console until `stop`, the end marker.
     Returns (VJ lines, last 20 non-VJ lines, why the capture itself failed or None, PSRAM tuning index or None,
     ELF SHA256 hex prefix or None, app version or None). Each of the last three is the last TUNING, ELF_SHA or
@@ -203,7 +205,8 @@ def capture(port, stop, timeout, idle=IDLE_TIMEOUT):
     boot, or the previous run's leftovers still in the pipe: a stop or error marker there is ignored. After it the
     capture stops early on a second `VJ start`, a `VJ ... error=` line without stream= (the board gave up), or a ROM
     boot banner (a reboot: the tail then still ends with the panic text). It gives up when `VJ start` has not come
-    START_TIMEOUT s after the reset, or `idle` s pass without a `VJ` line after it (a hung candidate)."""
+    START_TIMEOUT s after the reset, or `idle` s pass without a `VJ` line after it (a hung candidate). With `want`
+    (a set of PSRAM tuning indices) it stops at `VJ start` when the boot's index is not in it: abort WRONG_TUNING."""
     if serial is None:
         return [], [], "pyserial is not importable: run with the IDF python", None, None, None
     try:
@@ -250,6 +253,10 @@ def capture(port, stop, timeout, idle=IDLE_TIMEOUT):
                 lines.append(line)
                 last_vj = now
                 if START.match(line):
+                    if not started and want is not None and tuning not in want:
+                        abort = f"{WRONG_TUNING} {tuning}"  # decided on the boot's last index line
+                        finished = True
+                        break
                     finished = started  # a second `VJ start`: score() reports the reboot
                     started = True
                 elif started and line.startswith("VJ ") and (line == stop or gave_up(line)):
@@ -291,6 +298,9 @@ def main():
     ap.add_argument("--elf", type=Path, default=ROOT / "bench" / "build" / "videojet_bench.elf",
                     help="the ELF the board was flashed from: the boot log's ELF SHA256 must be a prefix of its "
                          "sha256 (default %(default)s)")
+    ap.add_argument("--tuning", type=int, action="append",
+                    help=f"reset until the boot's PSRAM tuning index is one of these (repeatable, at most "
+                         f"{TUNING_TRIES} boots): pins the speed class; the default takes any boot")
     ap.add_argument("--profile", action="store_true",
                     help="the board runs a VJ_PROFILE firmware: allow its VJP lines (never a timed score)")
     a = ap.parse_args()
@@ -298,8 +308,14 @@ def main():
     # frame count is what the board must say it wants.
     expected = {s: {p.stem[:23]: golden_frames(p) for p in sorted((ROOT / "streams" / s).glob("*.h264"))}
                 for s in ("search", "heldout")}
-    lines, tail, abort, tuning, elf_sha, app_version = capture(
-        a.port, "VJ search_done" if a.set == "search" else "VJ done", a.timeout, a.idle_timeout)
+    want = set(a.tuning) if a.tuning else None
+    for _ in range(TUNING_TRIES if want else 1):
+        lines, tail, abort, tuning, elf_sha, app_version = capture(
+            a.port, "VJ search_done" if a.set == "search" else "VJ done", a.timeout, a.idle_timeout, want)
+        if not (abort or "").startswith(WRONG_TUNING):
+            break
+    else:
+        abort += f" (every one of {TUNING_TRIES} boots)"
     _, reasons = score(lines, expected, VJ_RUNS, a.set, a.profile)
     reasons = ([abort] if abort else []) + firmware_reasons(elf_sha, a.elf) + reasons  # the weightiest first
     ok = not reasons
