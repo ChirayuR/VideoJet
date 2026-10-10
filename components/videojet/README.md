@@ -72,7 +72,7 @@ aux_card / aux_map / full_map (800x480) from 17.11 / 9.67 / 5.58 fps (M2: code i
 - **D-cache 64 KB** (`CONFIG_ESP32S3_DATA_CACHE_64KB=y`): another +8 / +6 / +7 % on top of the 64 B line, for 32 KB of
   internal RAM (31,996 B less heap, measured).
 - **Decoder code and tables in internal RAM** (`CONFIG_VJ_IRAM=y`, the default): 43,843 B IRAM + 7,058 B DRAM (default
-  config; `CONFIG_VJ_ERROR_PRINT=y` adds ~1.3 KB of strings). The code in IRAM gained +1 / +11 / +21 % over flash code with
+  config; `CONFIG_VJ_ERROR_PRINT=y` adds ~0.8 KB of strings). The code in IRAM gained +1 / +11 / +21 % over flash code with
   the default 16 KB I-cache (step 0), and with it moving the code changed fps by at most 0.11 %. The tables in DRAM gained
   another +0.7 / +1.4 / +2.0 % on top of that (in flash they cost up to ~2,350 cache misses per frame).
 - The small-RAM alternative, 16 KB of internal RAM instead of 50,901 B: `CONFIG_VJ_IRAM=n` with

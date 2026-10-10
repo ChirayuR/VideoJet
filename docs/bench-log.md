@@ -374,6 +374,8 @@ are copied into `.superpowers/sdd/2026-10-10-videojet-m3-speed/baseline-t{3,6c}.
 | T6c lazy mbLayer clear (c4fbb31) | `m3-lazyclear` | 5 | e0fa69db4 | 59.9155 / 16.2917 / 7.9250 | +0.17 / +0.80 / +0.86 | 21,136 |
 | tables in DRAM, linker `noflash` (9301581) | `m3-rodata` | 5 | c28ae06da | 60.3359 / 16.5266 / 8.0799 | +0.70 / +1.44 / +1.95 | 21,136 |
 | T10 deblock records + edge-less skip (bc05b06) | `m3-bsrec` | 5 | bcfa20de0 | 73.0733 / 16.9407 / 8.1067 | +21.11 / +2.51 / +0.33 | 39,572 |
+| T6a inlined bit reader, clz Exp-Golomb (0c01292) | `m3-bitreader` | 5 | a98083e73 | 73.8422 / 17.2162 / 8.2398 | +1.05 / +1.63 / +1.64 | 39,572 |
+| cold code to flash, memory axis R10 (c0d006f) | `m3-coldflash` | 5 | d23ede2cd | 73.8375 / 17.2127 / 8.2384 | -0.01 / -0.02 / -0.02 | 39,572 |
 
 Cumulative since M2 (slow class 17.11 / 9.67 / 5.58), at the T10 tip: **+327 % / +75 % / +45 %**. Skip elision elides 1,438 / 797 / 8.4 MBs
 per frame (aux_card / aux_map / full_map), against the 1,437 / 800 / 6 that the earlier cost model predicted. aux_card is at the
@@ -382,3 +384,5 @@ spec's 60 fps decode-only goal; aux_map, the ≥30 fps gate for the Android Auto
 Library internal RAM at the T10 tip: heap 39,572 B (+18,000 B of deblock records) + IRAM 51,713 B + DRAM 7,090 B = 98,375 B
 of the 100 KB budget, stack excluded. An internal-RAM row ring for `mbStorage_t` (T12, ~22 KB) no longer fits: T12 becomes a
 compaction of `mbStorage_t` in PSRAM, or the records move to PSRAM (one line, bit-exact either way).
+
+At the cold-code tip: library internal RAM = heap 39,572 + IRAM 43,843 + DRAM 7,058 = 90,473 B (IRAM −7,798 B for concealment and SPS/PPS/VUI parsing, which now run from flash: once per parameter-set NAL or error). Cumulative since M2 (17.11 / 9.67 / 5.58): +332 % / +78 % / +48 %.

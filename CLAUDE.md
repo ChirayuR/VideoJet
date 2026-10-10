@@ -156,6 +156,30 @@ h264bsd: Android's Hantro baseline decoder, Apache-2.0, plain C (github.com/onea
 - `$WORK/the consumer project` (CLAUDE.md, docs/) + its memory dir.
 
 ## Status
+- 2026-10-10: **M3 speed sprint in progress** on branch `m3-speed` (plan `docs/superpowers/plans/2026-10-10-videojet-m3-speed.md`,
+  ledger `.superpowers/sdd/2026-10-10-videojet-m3-speed/progress.md`, frontier in `docs/bench-log.md` "M3 frontier").
+  - Kept so far, every frame bit-exact:
+    - step 0: code in IRAM, tables in DRAM, D-cache 64 KB / 64 B;
+    - 5a: direct skip copy;
+    - T9: no per-picture mbStorage clear;
+    - T3: skip elision + `changed_mb`;
+    - T6c: lazy mbLayer clear;
+    - T10: deblock records + edge-less skip;
+    - T6a: inlined bit reader with clz Exp-Golomb;
+    - cold code to flash, on the memory axis.
+  - fps (slow class): aux_card / aux_map / full_map 17.11 / 9.67 / 5.58 (M2) → **73.84 / 17.21 / 8.24**. Library internal RAM
+    90,473 B of the 100 KB budget.
+  - Method:
+    - each candidate goes through `tools/score.sh` (slow class pinned, `--tuning 5`; KEEP = every stream ≥ −0.3 % and one ≥ +0.3 %,
+      or less internal RAM at equal fps, ruling R10);
+    - Opus implementer in its own worktree, with an oracle and differential tests on the host;
+    - Opus or Sonnet review.
+    The board lock is `scratchpad/board.lock`.
+  - Board facts (measure-report): a PSRAM line fill costs 172 cycles (0.72 µs), and a dirtied line ~307 (write-allocate). The two
+    cores share one fill engine, so a second core streaming halves the first's bandwidth. `EXTMEM_DBUS_ACS_SPIRAM_MISS_CNT` counts
+    D-cache misses for free.
+  - Next: motion-compensation kernels (profile split → C → PIE), then the CAVLC tables, `mbStorage_t` compaction, and autoload.
+    aux_map's ≥30 fps gate (the head-unit software bar) is the target.
 - 2026-10-10: **M3 step 0 done** on branch `m3-speed` (Task 1 of `docs/superpowers/plans/2026-10-10-videojet-m3-speed.md`).
   Next: Task 2 (the one-command scorer, which reads `docs/baseline-m3.jsonl`), then the candidate ladder.
   - Changed: libvideojet's code runs from IRAM (`components/videojet/linker.lf`, `CONFIG_VJ_IRAM`, default y, 50,831 B of internal

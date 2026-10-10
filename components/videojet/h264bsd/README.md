@@ -57,7 +57,7 @@ Every change made for VideoJet is listed here, newest last.
     - `pStrmCurrPos` and `bitPosInWord` are gone: `h264bsdIsByteAligned` and `h264bsdRbspTrailingBits` use
       `strmBuffReadBits & 7`. So is the macroblock layer's resync of `strmBuffReadBits` after the residual: an identity
       after success, and after an error the slice's stream is never read again.
-    - Exp-Golomb codes with at most 15 leading zeros, and CAVLC's level_prefix, count the zeros with `__builtin_clz`
+    - Exp-Golomb codes (up to 31 leading zeros) and CAVLC's level_prefix count the zeros with `__builtin_clz`
       (NSAU on Xtensa).
 - Apache-2.0 §4(b) modification notice: every file changed above carries the header line
   `Modified for VideoJet: see h264bsd/README.md, Local changes.` Comment-only.
