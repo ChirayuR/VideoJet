@@ -70,6 +70,14 @@
 
 ### Task 1: Public API, AU splitter, host and bench on the API
 
+> **Done (19c1a23..d691aff).** Fix round 1 superseded parts of these listings:
+> - `vj_decode_au` takes a writable `uint8_t *au` (ruling R2).
+> - The recovery reorder is in place.
+> - `test_api` has `#undef NDEBUG` plus the new contract tests.
+> - `compare.py` defaults to ±5 % (ruling R1).
+>
+> The committed files are authoritative; do not copy the code below.
+
 **Files:**
 - Create: `components/videojet/CMakeLists.txt`, `components/videojet/include/videojet.h`, `components/videojet/src/videojet.c`, `components/videojet/src/vj_au.c`
 - Create: `host/test_api.c`, `tools/compare.py`, `tools/test_compare.py`
@@ -922,9 +930,25 @@ dependencies:
    - one decoder per task
    - frame pointers valid until the next call
    - `changed_mb` NULL for now
-   - `error_mbs` > 0 means: request a keyframe
+   - after any `VJ_ERR_*`, request a keyframe and treat frames as unreliable until one with `f.idr` arrives (a lost reference can leave
+     `error_mbs` at 0); `error_mbs` counts concealed macroblocks in a returned frame and is rarely non-zero
 5. Kconfig options.
 6. Licensing: the h264bsd core is Apache-2.0 (`h264bsd/LICENSE.md`). The licence for VideoJet's own code is to be chosen by the owner before publishing.
+
+- [ ] **Step 4b: Folded-in items (Task 1 review carry-overs)**
+
+- **Vendored param-set status.** `h264bsd/h264bsd_decoder.c` (~:283 and ~:298) ignores the return value of
+  `h264bsdStoreSeqParamSet` / `h264bsdStorePicParamSet`.
+  - Result today: when the SPS/PPS slot allocation fails, the parsed SPS's VUI (952 B) leaks, and the AU returns
+    `VJ_NO_FRAME` instead of `VJ_ERR_NOMEM`.
+  - Fix: propagate a MEMORY_ALLOCATION_ERROR as `H264BSD_MEMALLOC_ERROR`, freeing what the failed store did not take ownership of.
+  - Record it under "Local changes".
+  - Prove it with a malloc fault-injection run on the host: a scratch `vj_alloc` that fails at index N, swept across the first ~80
+    allocations. Expect no LSan leak and the right status.
+- **Header.** On `VJ_ERR_STREAM` in `include/videojet.h`, add: "after any error, frames may be visibly wrong (a lost reference
+  can leave `error_mbs` at 0) until the next IDR (`f.idr`): request a keyframe and wait for it."
+- **Test buffer.** In `host/test_api.c` `resume_run`, size `big` by the larger of AU3 and AU4, so a regenerated fixture cannot
+  overflow it.
 
 - [ ] **Step 5: Verify the host side**
 
@@ -952,7 +976,7 @@ grep -c CONFIG_VJ_PROFILE=y bench/sdkconfig bench/build-prof/sdkconfig
 ```
 Expected:
 - 0 warnings in our code.
-- `m2-t2` PASS, and `compare.py` PASS: placement and `_ERROR_PRINT`-off move layout, which must stay within ±0.6 %.
+- `m2-t2` PASS, and `compare.py` PASS: placement and `_ERROR_PRINT`-off move layout, which must stay within ±5 % (ruling R1, the default).
 - `m2-t2-prof` PASS with VJP lines.
 - The final grep prints `bench/sdkconfig:0` and `bench/build-prof/sdkconfig:1`: the profile overlay never leaks into the timed config.
 
