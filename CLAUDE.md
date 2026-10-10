@@ -21,7 +21,8 @@ Use this file as an ongoing file, and optimise your usage.
 - Ponytail + caveman + superpowers (brainstorm → spec → plan → build).
 - Agents: Haiku 5.5 / Sonnet 5.5 for search, research, mechanical work. Opus 5.5 max effort for planning.
   Escalate to an **Opus agent when capability is the bottleneck**: BLOCKED, a fix loop past round 3, or deep-judgment
-  work (PIE asm, decoder internals, meta-harness proposers). **If Opus is blocked, escalate to a an external consult agent.**
+  work (PIE asm, decoder internals, meta-harness proposers). **No an external consult agents** (user, 2026-10-11: "stop an external consult usage"):
+  if Opus is blocked, stop and ask the user.
 - Meta-harness drives optimisation (M3). The scorer is the board bench (fps). Hard floor: every frame hash matches the golden.
 - Deferred work and every M1 decision live in `docs/superpowers/m1-carryover.md`. Read it before planning M3 (its M2 items
   are closed).
