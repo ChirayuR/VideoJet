@@ -26,6 +26,7 @@
      4. Local function prototypes
      5. Functions
           DecodeCoeffToken
+          CoeffTokenLong
           DecodeLevelPrefix
           DecodeTotalZeros
           DecodeRunBefore
@@ -74,7 +75,10 @@
  * element has the following structure:
  * [5 bits for tot.coeff.] [6 bits for tr.ones] [5 bits for VLC length]
  * If there is a 0x0000 value, it means that there is not corresponding VLC
- * codeword for that index. */
+ * codeword for that index. The tables of the codes over 6 bits for
+ * 0 <= nC < 4 (Long) have a row for each number of leading zeros of the 16
+ * bits from 4 (all such codes have 4 or more) to 16, indexed by the 3 bits
+ * after the first 1. */
 
 /* VLC lengths up to 6 bits, 0 <= nC < 2 */
 static const u16 coeffToken0_0[32] = {
@@ -83,31 +87,21 @@ static const u16 coeffToken0_0[32] = {
     0x0822,0x0822,0x0822,0x0822,0x0822,0x0822,0x0822,0x0822,
     0x0822,0x0822,0x0822,0x0822,0x0822,0x0822,0x0822,0x0822};
 
-/* VLC lengths up to 10 bits, 0 <= nC < 2 */
-static const u16 coeffToken0_1[48] = {
-    0x0000,0x0000,0x0000,0x0000,0x406a,0x304a,0x282a,0x200a,
-    0x3869,0x3869,0x2849,0x2849,0x2029,0x2029,0x1809,0x1809,
-    0x3068,0x3068,0x3068,0x3068,0x2048,0x2048,0x2048,0x2048,
-    0x1828,0x1828,0x1828,0x1828,0x1008,0x1008,0x1008,0x1008,
-    0x2867,0x2867,0x2867,0x2867,0x2867,0x2867,0x2867,0x2867,
-    0x1847,0x1847,0x1847,0x1847,0x1847,0x1847,0x1847,0x1847};
-
-/* VLC lengths up to 14 bits, 0 <= nC < 2 */
-static const u16 coeffToken0_2[56] = {
-    0x606e,0x584e,0x502e,0x500e,0x586e,0x504e,0x482e,0x480e,
-    0x400d,0x400d,0x484d,0x484d,0x402d,0x402d,0x380d,0x380d,
-    0x506d,0x506d,0x404d,0x404d,0x382d,0x382d,0x300d,0x300d,
-    0x486b,0x486b,0x486b,0x486b,0x486b,0x486b,0x486b,0x486b,
-    0x384b,0x384b,0x384b,0x384b,0x384b,0x384b,0x384b,0x384b,
-    0x302b,0x302b,0x302b,0x302b,0x302b,0x302b,0x302b,0x302b,
-    0x280b,0x280b,0x280b,0x280b,0x280b,0x280b,0x280b,0x280b};
-
-/* VLC lengths up to 16 bits, 0 <= nC < 2 */
-static const u16 coeffToken0_3[32] = {
-    0x0000,0x0000,0x682f,0x682f,0x8010,0x8050,0x8030,0x7810,
-    0x8070,0x7850,0x7830,0x7010,0x7870,0x7050,0x7030,0x6810,
-    0x706f,0x706f,0x684f,0x684f,0x602f,0x602f,0x600f,0x600f,
-    0x686f,0x686f,0x604f,0x604f,0x582f,0x582f,0x580f,0x580f};
+/* VLC lengths 7 to 16 bits, 0 <= nC < 2 */
+static const u16 coeffToken0Long[13][8] = {
+    {0x2867,0x2867,0x1847,0x1847,0x2066,0x2066,0x2066,0x2066},
+    {0x3068,0x3068,0x2048,0x2048,0x1828,0x1828,0x1008,0x1008},
+    {0x3869,0x3869,0x2849,0x2849,0x2029,0x2029,0x1809,0x1809},
+    {0x406a,0x406a,0x304a,0x304a,0x282a,0x282a,0x200a,0x200a},
+    {0x486b,0x486b,0x384b,0x384b,0x302b,0x302b,0x280b,0x280b},
+    {0x400d,0x484d,0x402d,0x380d,0x506d,0x404d,0x382d,0x300d},
+    {0x606e,0x584e,0x502e,0x500e,0x586e,0x504e,0x482e,0x480e},
+    {0x706f,0x684f,0x602f,0x600f,0x686f,0x604f,0x582f,0x580f},
+    {0x8070,0x7850,0x7830,0x7010,0x7870,0x7050,0x7030,0x6810},
+    {0x8010,0x8010,0x8050,0x8050,0x8030,0x8030,0x7810,0x7810},
+    {0x682f,0x682f,0x682f,0x682f,0x682f,0x682f,0x682f,0x682f},
+    {0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000},
+    {0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000}};
 
 /* VLC lengths up to 6 bits, 2 <= nC < 4 */
 static const u16 coeffToken2_0[32] = {
@@ -116,31 +110,21 @@ static const u16 coeffToken2_0[32] = {
     0x2064,0x2064,0x2064,0x2064,0x1864,0x1864,0x1864,0x1864,
     0x1043,0x1043,0x1043,0x1043,0x1043,0x1043,0x1043,0x1043};
 
-/* VLC lengths up to 9 bits, 2 <= nC < 4 */
-static const u16 coeffToken2_1[32] = {
-    0x0000,0x0000,0x0000,0x0000,0x4869,0x3849,0x3829,0x3009,
-    0x2808,0x2808,0x3048,0x3048,0x3028,0x3028,0x2008,0x2008,
-    0x4067,0x4067,0x4067,0x4067,0x2847,0x2847,0x2847,0x2847,
-    0x2827,0x2827,0x2827,0x2827,0x1807,0x1807,0x1807,0x1807};
-
-/* VLC lengths up to 14 bits, 2 <= nC < 4 */
-static const u16 coeffToken2_2[128] = {
-    0x0000,0x0000,0x786d,0x786d,0x806e,0x804e,0x802e,0x800e,
-    0x782e,0x780e,0x784e,0x702e,0x704d,0x704d,0x700d,0x700d,
-    0x706d,0x706d,0x684d,0x684d,0x682d,0x682d,0x680d,0x680d,
-    0x686d,0x686d,0x604d,0x604d,0x602d,0x602d,0x600d,0x600d,
-    0x580c,0x580c,0x580c,0x580c,0x584c,0x584c,0x584c,0x584c,
-    0x582c,0x582c,0x582c,0x582c,0x500c,0x500c,0x500c,0x500c,
-    0x606c,0x606c,0x606c,0x606c,0x504c,0x504c,0x504c,0x504c,
-    0x502c,0x502c,0x502c,0x502c,0x480c,0x480c,0x480c,0x480c,
-    0x586b,0x586b,0x586b,0x586b,0x586b,0x586b,0x586b,0x586b,
-    0x484b,0x484b,0x484b,0x484b,0x484b,0x484b,0x484b,0x484b,
-    0x482b,0x482b,0x482b,0x482b,0x482b,0x482b,0x482b,0x482b,
-    0x400b,0x400b,0x400b,0x400b,0x400b,0x400b,0x400b,0x400b,
-    0x506b,0x506b,0x506b,0x506b,0x506b,0x506b,0x506b,0x506b,
-    0x404b,0x404b,0x404b,0x404b,0x404b,0x404b,0x404b,0x404b,
-    0x402b,0x402b,0x402b,0x402b,0x402b,0x402b,0x402b,0x402b,
-    0x380b,0x380b,0x380b,0x380b,0x380b,0x380b,0x380b,0x380b};
+/* VLC lengths 7 to 14 bits, 2 <= nC < 4 */
+static const u16 coeffToken2Long[13][8] = {
+    {0x4067,0x4067,0x2847,0x2847,0x2827,0x2827,0x1807,0x1807},
+    {0x2808,0x2808,0x3048,0x3048,0x3028,0x3028,0x2008,0x2008},
+    {0x4869,0x4869,0x3849,0x3849,0x3829,0x3829,0x3009,0x3009},
+    {0x586b,0x484b,0x482b,0x400b,0x506b,0x404b,0x402b,0x380b},
+    {0x580c,0x584c,0x582c,0x500c,0x606c,0x504c,0x502c,0x480c},
+    {0x706d,0x684d,0x682d,0x680d,0x686d,0x604d,0x602d,0x600d},
+    {0x782e,0x780e,0x784e,0x702e,0x704d,0x704d,0x700d,0x700d},
+    {0x806e,0x806e,0x804e,0x804e,0x802e,0x802e,0x800e,0x800e},
+    {0x786d,0x786d,0x786d,0x786d,0x786d,0x786d,0x786d,0x786d},
+    {0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000},
+    {0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000},
+    {0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000},
+    {0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000}};
 
 /* VLC lengths up to 6 bits, 4 <= nC < 8 */
 static const u16 coeffToken4_0[64] = {
@@ -303,21 +287,44 @@ static const u8 totalZeros_13[8] = {0x03,0x13,0x32,0x32,0x21,0x21,0x21,0x21};
 
 static const u8 totalZeros_14[4] = {0x02,0x12,0x21,0x21};
 
+static const u8 totalZeros_15[2] = {0x01,0x11};
+
+/* totalCoeff 1..15: the table and the shift that takes its index from the 9
+ * bits. totalCoeff 1 has a second level, totalZeros_1_1, for codes of 6 to 9
+ * bits (a 0 in totalZeros_1_0) */
+static const struct
+{
+    const u8 *table;
+    u32 shift;
+} totalZerosLuma[16] = {
+    {0, 0}, {totalZeros_1_0, 4}, {totalZeros_2, 3}, {totalZeros_3, 3},
+    {totalZeros_4, 4}, {totalZeros_5, 4}, {totalZeros_6, 3}, {totalZeros_7, 3},
+    {totalZeros_8, 3}, {totalZeros_9, 3}, {totalZeros_10, 4}, {totalZeros_11, 5},
+    {totalZeros_12, 5}, {totalZeros_13, 6}, {totalZeros_14, 7}, {totalZeros_15, 8}};
+
+/* chroma DC, indexed by totalCoeff (1..3) and the first 3 of the 9 bits */
+static const u8 totalZerosChromaDC[4][8] = {
+    {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
+    {0x33,0x23,0x12,0x12,0x01,0x01,0x01,0x01},
+    {0x22,0x22,0x12,0x12,0x01,0x01,0x01,0x01},
+    {0x11,0x11,0x11,0x11,0x01,0x01,0x01,0x01}};
+
 /* VLC tables for run_before. Table elements have the following structure:
  * [4 bits for info] [4bits for VLC length]
  */
 
-static const u8 runBefore_6[8] = {0x13,0x23,0x43,0x33,0x63,0x53,0x02,0x02};
-
-static const u8 runBefore_5[8] = {0x53,0x43,0x33,0x23,0x12,0x12,0x02,0x02};
-
-static const u8 runBefore_4[8] = {0x43,0x33,0x22,0x22,0x12,0x12,0x02,0x02};
-
-static const u8 runBefore_3[4] = {0x32,0x22,0x12,0x02};
-
-static const u8 runBefore_2[4] = {0x22,0x12,0x01,0x01};
-
-static const u8 runBefore_1[2] = {0x11,0x01};
+/* indexed by MIN(zerosLeft, 7) and the first 3 of the 11 bits; 0 means
+ * zerosLeft > 6 and a code longer than 3 bits. Row 0, zerosLeft 0, is never
+ * decoded; it gives what the zerosLeft > 6 code gives there. */
+static const u8 runBefore[8][8] = {
+    {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x03},
+    {0x11,0x11,0x11,0x11,0x01,0x01,0x01,0x01},
+    {0x22,0x22,0x12,0x12,0x01,0x01,0x01,0x01},
+    {0x32,0x32,0x22,0x22,0x12,0x12,0x02,0x02},
+    {0x43,0x33,0x22,0x22,0x12,0x12,0x02,0x02},
+    {0x53,0x43,0x33,0x23,0x12,0x12,0x02,0x02},
+    {0x13,0x23,0x43,0x33,0x63,0x53,0x02,0x02},
+    {0x00,0x63,0x53,0x43,0x33,0x23,0x13,0x03}};
 
 /* following four macros are used to handle stream buffer "cache" in the CAVLC
  * decoding function */
@@ -372,6 +379,8 @@ static const u8 runBefore_1[2] = {0x11,0x01};
 
 static u32 DecodeCoeffToken(u32 bits, u32 nc);
 
+static u32 CoeffTokenLong(const u16 (*table)[8], u32 bits);
+
 static u32 DecodeLevelPrefix(u32 bits);
 
 static u32 DecodeTotalZeros(u32 bits, u32 totalCoeff, u32 isChromaDC);
@@ -415,12 +424,8 @@ u32 DecodeCoeffToken(u32 bits, u32 nc)
         }
         else if (bits >= 0x0C00)
             value = coeffToken0_0[bits >> 10];
-        else if (bits >= 0x0100)
-            value = coeffToken0_1[bits >> 6];
-        else if (bits >= 0x0020)
-            value = coeffToken0_2[(bits>>2)-8];
         else
-            value = coeffToken0_3[bits];
+            value = CoeffTokenLong(coeffToken0Long, bits);
     }
     else if (nc < 4)
     {
@@ -430,10 +435,8 @@ u32 DecodeCoeffToken(u32 bits, u32 nc)
         }
         else if (bits >= 0x1000)
             value = coeffToken2_0[bits >> 10];
-        else if (bits >= 0x0200)
-            value = coeffToken2_1[bits >> 7];
         else
-            value = coeffToken2_2[bits>>2];
+            value = CoeffTokenLong(coeffToken2Long, bits);
     }
     else if (nc < 8)
     {
@@ -453,6 +456,41 @@ u32 DecodeCoeffToken(u32 bits, u32 nc)
     }
 
     return(value);
+
+}
+
+/*------------------------------------------------------------------------------
+
+    Function: CoeffTokenLong
+
+        Functional description:
+          Second level of the coeff_token decode, 0 <= nC < 4: a code of
+          more than 6 bits
+
+        Inputs:
+          table                     coeffToken0Long or coeffToken2Long
+          u32 bits                  next 16 stream bits, below 0x1000
+
+        Outputs:
+          u32  information field as DecodeCoeffToken, 0 for an invalid code
+
+------------------------------------------------------------------------------*/
+
+u32 CoeffTokenLong(const u16 (*table)[8], u32 bits)
+{
+
+/* Variables */
+
+    /* the 16 bits, then a stop bit: 15 + 0..16 leading zeros */
+    u32 value = (bits << 1) | 1;
+    u32 lz = (u32)__builtin_clz(value);
+
+/* Code */
+
+    ASSERT(lz >= 15 + 4);
+
+    /* row lz - 15 - 4, then the 3 bits after the first 1 */
+    return(table[lz - 19][(value << lz) >> 28 & 7]);
 
 }
 
@@ -510,7 +548,7 @@ u32 DecodeTotalZeros(u32 bits, u32 totalCoeff, u32 isChromaDC)
 
 /* Variables */
 
-    u32 value = 0x0;
+    u32 value;
 
 /* Code */
 
@@ -519,92 +557,15 @@ u32 DecodeTotalZeros(u32 bits, u32 totalCoeff, u32 isChromaDC)
     if (!isChromaDC)
     {
         ASSERT(totalCoeff < 16);
-        switch (totalCoeff)
-        {
-            case 1:
-                value = totalZeros_1_0[bits >> 4];
-                if (!value)
-                    value = totalZeros_1_1[bits];
-                break;
-
-            case 2:
-                value = totalZeros_2[bits >> 3];
-                break;
-
-            case 3:
-                value = totalZeros_3[bits >> 3];
-                break;
-
-            case 4:
-                value = totalZeros_4[bits >> 4];
-                break;
-
-            case 5:
-                value = totalZeros_5[bits >> 4];
-                break;
-
-            case 6:
-                value = totalZeros_6[bits >> 3];
-                break;
-
-            case 7:
-                value = totalZeros_7[bits >> 3];
-                break;
-
-            case 8:
-                value = totalZeros_8[bits >> 3];
-                break;
-
-            case 9:
-                value = totalZeros_9[bits >> 3];
-                break;
-
-            case 10:
-                value = totalZeros_10[bits >> 4];
-                break;
-
-            case 11:
-                value = totalZeros_11[bits >> 5];
-                break;
-
-            case 12:
-                value = totalZeros_12[bits >> 5];
-                break;
-
-            case 13:
-                value = totalZeros_13[bits >> 6];
-                break;
-
-            case 14:
-                value = totalZeros_14[bits >> 7];
-                break;
-
-            default: /* case 15 */
-                value = (bits >> 8) ? 0x11 : 0x01;
-                break;
-        }
+        value = totalZerosLuma[totalCoeff].table[
+            bits >> totalZerosLuma[totalCoeff].shift];
+        if (!value && totalCoeff == 1)
+            value = totalZeros_1_1[bits];
     }
     else
     {
         ASSERT(totalCoeff < 4);
-        bits >>= 6;
-        if (bits > 3)
-            value = 0x01;
-        else
-        {
-            if (totalCoeff == 3)
-                value = 0x11;
-            else if (bits > 1)
-            {
-                value = 0x12;
-            }
-            else if (totalCoeff == 2)
-                value = 0x22;
-            else if (bits)
-                value = 0x23;
-            else
-                value = 0x33;
-        }
+        value = totalZerosChromaDC[totalCoeff][bits >> 6];
     }
 
     return(value);
@@ -632,58 +593,18 @@ u32 DecodeRunBefore(u32 bits, u32 zerosLeft)
 
 /* Variables */
 
-    u32 value = 0x0;
+    u32 value, lz;
 
 /* Code */
 
-    switch (zerosLeft)
+    value = runBefore[MIN(zerosLeft, 7)][bits >> 8];
+    if (!value && bits)
     {
-        case 1:
-            value = runBefore_1[bits>>10];
-            break;
-
-        case 2:
-            value = runBefore_2[bits>>9];
-            break;
-
-        case 3:
-            value = runBefore_3[bits>>9];
-            break;
-
-        case 4:
-            value = runBefore_4[bits>>8];
-            break;
-
-        case 5:
-            value = runBefore_5[bits>>8];
-            break;
-
-        case 6:
-            value = runBefore_6[bits>>8];
-            break;
-
-        default:
-            if (bits >= 0x100)
-                value = ((7-(bits>>8))<<4)+0x3;
-            else if (bits >= 0x80)
-                value = 0x74;
-            else if (bits >= 0x40)
-                value = 0x85;
-            else if (bits >= 0x20)
-                value = 0x96;
-            else if (bits >= 0x10)
-                value = 0xa7;
-            else if (bits >= 0x8)
-                value = 0xb8;
-            else if (bits >= 0x4)
-                value = 0xc9;
-            else if (bits >= 0x2)
-                value = 0xdA;
-            else if (bits)
-                value = 0xeB;
-            if (INFO(value) > zerosLeft)
-                value = 0;
-            break;
+        /* zerosLeft > 6, a 1 after 3..10 zeros: run_before is zeros + 4 */
+        lz = (u32)__builtin_clz(bits) - 21;
+        value = ((lz + 4) << 4) | (lz + 1);
+        if (INFO(value) > zerosLeft)
+            value = 0;
     }
 
     return(value);

@@ -72,5 +72,12 @@ Every change made for VideoJet is listed here, newest last.
     - The eight luma `h264bsdInterpolate*` functions and `lumaFracPos` are gone. Chroma (`h264bsdInterpolateChroma*`,
       `PredictChroma`) is unchanged.
     - Upstream's left shifts of negative values (UBSan shift-base) in this file went with the old kernels.
+  - CAVLC symbol tables (`h264bsd_cavlc.c`). IDF builds with `-fno-jump-tables`, so the old `switch`es were compare
+    trees. Each decoder returns the old information word for every input (checked exhaustively).
+    - run_before: one table indexed by `MIN(zerosLeft, 7)` and the next 3 bits. A 0 there is a code of 4 to 11 bits
+      (zerosLeft > 6): `run_before` = leading zeros + 4.
+    - total_zeros: a (table, shift) entry per totalCoeff replaces the `switch`; chroma DC has a table.
+    - coeff_token, 0 <= nC < 4: codes over 6 bits come from one table indexed by the leading zeros (`__builtin_clz`)
+      and the next 3 bits, in place of 2 or 3 more range tests and tables. The 1- and 2-bit codes keep their tests.
 - Apache-2.0 §4(b) modification notice: every file changed above carries the header line
   `Modified for VideoJet: see h264bsd/README.md, Local changes.` Comment-only.
