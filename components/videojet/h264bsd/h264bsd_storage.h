@@ -99,6 +99,11 @@ typedef struct storage
     /* store information needed for handling of slice decoding */
     sliceStorage_t slice[1];
 
+    /* "slice id 0" of the current picture. mb[] is not cleared per picture:
+     * slice ids only grow, so an MB whose sliceId is below this has not been
+     * touched in this picture (see h264bsdMbDecoded) */
+    u32 picSliceBase;
+
     /* number of concealed macroblocks in the current image */
     u32 numConcealedMbs;
 
@@ -150,6 +155,14 @@ typedef struct storage
     u32* conversionBuffer; // used to perform yuv conversion
     size_t conversionBufferSize;
 } storage_t;
+
+/* decoded count of mb in the current picture: 0 for an MB no slice of this
+ * picture has touched yet, as the old per-picture clear left it. Use it
+ * wherever mb may be untouched; once SetMbParams ran on mb, read it raw */
+static inline u32 h264bsdMbDecoded(const mbStorage_t *mb, u32 picSliceBase)
+{
+    return mb->sliceId >= picSliceBase ? mb->decoded : 0;
+}
 
 /*------------------------------------------------------------------------------
     4. Function prototypes

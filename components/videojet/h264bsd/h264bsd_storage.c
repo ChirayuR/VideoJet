@@ -450,6 +450,19 @@ void h264bsdResetStorage(storage_t *pStorage)
     ASSERT(pStorage);
 
     pStorage->slice->numDecodedMbs = 0;
+
+    /* No clear of mb[]: the next picture's slice ids start above every id
+     * used so far (DecodeSliceData pre-increments), so every MB now reads as
+     * untouched. Once half the id space is used, clear for real and restart
+     * from 0: one picture always has 2^31 ids of headroom before a wrap. */
+    if (pStorage->slice->sliceId < 0x80000000U)
+    {
+        pStorage->picSliceBase = pStorage->slice->sliceId + 1;
+        pStorage->slice->sliceId = pStorage->picSliceBase;
+        return;
+    }
+
+    pStorage->picSliceBase = 0;
     pStorage->slice->sliceId = 0;
 
     for (i = 0; i < pStorage->picSizeInMbs; i++)
@@ -543,7 +556,8 @@ u32 h264bsdIsEndOfPicture(storage_t *pStorage)
     else
     {
         for (i = 0, tmp = 0; i < pStorage->picSizeInMbs; i++)
-            tmp += pStorage->mb[i].decoded ? 1 : 0;
+            tmp += h264bsdMbDecoded(pStorage->mb + i,
+                pStorage->picSliceBase) ? 1 : 0;
 
         if (tmp == pStorage->picSizeInMbs)
             return(HANTRO_TRUE);

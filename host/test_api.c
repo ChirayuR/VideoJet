@@ -6,6 +6,7 @@
 #include <string.h>
 #include "videojet.h"
 #include "vj_hash.h"
+#include "h264bsd_storage.h" /* test_twice moves the slice ids to the restart point */
 
 #define LEN(a) (sizeof(a))
 
@@ -295,6 +296,83 @@ static void test_resume(const char *dir)
     free(s);
 }
 
+/* mb[] is not cleared per picture (slice ids only grow, h264bsdResetStorage). Decode aux_map_dark (4 slices per
+ * picture) twice through one decoder, IDR to end: every frame of both passes hashes to the golden. Pass 2 starts with
+ * the ids 600 below the half-range restart, so it also crosses the restart (the real clear, then ids from 0). */
+static void test_twice(const char *dir)
+{
+    char path[512];
+    snprintf(path, sizeof path, "%s/heldout/aux_map_dark.golden", dir);
+    FILE *g = fopen(path, "r");
+    assert(g);
+    unsigned gold[1000], ng = 0;
+    while (ng < 1000 && fscanf(g, "%x", &gold[ng]) == 1)
+        ng++;
+    fclose(g);
+    assert(ng > 0 && ng < 1000);
+    snprintf(path, sizeof path, "%s/heldout/aux_map_dark.h264", dir);
+    vj_decoder_t *d = vj_decoder_create();
+    storage_t *st = (storage_t *)(void *)d;
+    for (int pass = 0; pass < 2; pass++) {
+        size_t len;
+        uint8_t *s = slurp(path, &len); /* decoding rewrites the AUs in place: a fresh copy per pass */
+        unsigned n = 0;
+        for (size_t o = 0; o < len;) {
+            size_t au = vj_au_length(s + o, len - o);
+            assert(au);
+            vj_frame_t f;
+            vj_status_t r = vj_decode_au(d, s + o, au, &f);
+            o += au;
+            assert(r == VJ_FRAME || r == VJ_NO_FRAME);
+            if (r == VJ_FRAME) {
+                assert(n < ng);
+                assert(vj_hash_i420(f.y, f.y_stride, f.u, f.v, f.uv_stride, f.crop_x, f.crop_y, f.crop_w, f.crop_h) ==
+                       gold[n]);
+                n++;
+            }
+        }
+        assert(n == ng);
+        free(s);
+        if (pass == 0)
+            st->picSliceBase = st->slice->sliceId = 0x80000000u - 600; /* as if a reset had just made it so */
+    }
+    assert(st->picSliceBase < 0x80000000u - 600); /* the restart ran */
+    vj_decoder_destroy(d);
+}
+
+/* Concealment next to older pictures' MBs. aux_map_dark's IDR cut after 2 of its 4 slices is concealed from its
+ * decoded neighbours (intra, no reference) and AU 1 decodes on it. Concealment reads only this picture's MBs, so the
+ * frame must hash the same on a fresh decoder and on one that decoded the whole stream first (its mb[] is all old). */
+static uint32_t cut_idr_run(const char *path, int warm)
+{
+    size_t len;
+    uint8_t *s = slurp(path, &len);
+    vj_frame_t f;
+    vj_decoder_t *d = vj_decoder_create();
+    for (size_t o = 0, au; warm && o < len; o += au) {
+        au = vj_au_length(s + o, len - o);
+        assert(au && vj_decode_au(d, s + o, au, &f) >= 0);
+    }
+    if (warm) {
+        free(s);
+        s = slurp(path, &len); /* decoding rewrote the AUs */
+    }
+    size_t n0 = vj_au_length(s, len), n1 = vj_au_length(s + n0, len - n0);
+    assert(vj_decode_au(d, s, slice_at(s, n0, 2), &f) == VJ_ERR_STREAM); /* SPS, PPS, SEI, IDR slices 0 and 1 */
+    assert(vj_decode_au(d, s + n0, n1, &f) == VJ_FRAME);
+    uint32_t h = vj_hash_i420(f.y, f.y_stride, f.u, f.v, f.uv_stride, f.crop_x, f.crop_y, f.crop_w, f.crop_h);
+    vj_decoder_destroy(d);
+    free(s);
+    return h;
+}
+
+static void test_conceal_history(const char *dir)
+{
+    char path[512];
+    snprintf(path, sizeof path, "%s/heldout/aux_map_dark.h264", dir);
+    assert(cut_idr_run(path, 0) == cut_idr_run(path, 1));
+}
+
 int main(int argc, char **argv)
 {
     const char *dir = argc > 1 ? argv[1] : "../streams";
@@ -306,6 +384,8 @@ int main(int argc, char **argv)
     test_contract(dir);
     test_lost_slice(dir);
     test_resume(dir);
+    test_twice(dir);
+    test_conceal_history(dir);
     puts("test_api: all passed");
     return 0;
 }

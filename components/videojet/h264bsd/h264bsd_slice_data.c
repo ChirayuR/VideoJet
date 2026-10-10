@@ -132,6 +132,12 @@ u32 h264bsdDecodeSliceData(strmData_t *pStrmData, storage_t *pStorage,
     qpY = (i32)pStorage->activePps->picInitQp + pSliceHeader->sliceQpDelta;
     do
     {
+        /* first touch of this MB in the picture (its sliceId is older): drop
+         * an older picture's decoded count, the per-picture clear done
+         * lazily. SetMbParams and decoded++ write both lines anyway. */
+        if (pStorage->mb[currMbAddr].sliceId < pStorage->picSliceBase)
+            pStorage->mb[currMbAddr].decoded = 0;
+
         /* primary picture and already decoded macroblock -> error */
         if (!pSliceHeader->redundantPicCnt && pStorage->mb[currMbAddr].decoded)
         {

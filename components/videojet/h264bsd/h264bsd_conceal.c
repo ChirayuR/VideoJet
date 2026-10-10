@@ -54,7 +54,9 @@
 ------------------------------------------------------------------------------*/
 
 static u32 ConcealMb(mbStorage_t *pMb, image_t *currImage, u32 row, u32 col,
-    u32 sliceType, u8 *data);
+    u32 sliceType, u8 *data, u32 picSliceBase);
+
+static void SetConcealed(mbStorage_t *mb, u32 picSliceBase);
 
 static void Transform(i32 *data);
 
@@ -131,6 +133,7 @@ u32 h264bsdConceal(storage_t *pStorage, image_t *currImage, u32 sliceType)
     u32 width, height;
     u8 *refData;
     mbStorage_t *mb;
+    u32 base = pStorage->picSliceBase;
 
 /* Code */
 
@@ -158,7 +161,8 @@ u32 h264bsdConceal(storage_t *pStorage, image_t *currImage, u32 sliceType)
 
     i = row = col = 0;
     /* find first properly decoded macroblock -> start point for concealment */
-    while (i < pStorage->picSizeInMbs && !pStorage->mb[i].decoded)
+    while (i < pStorage->picSizeInMbs &&
+           !h264bsdMbDecoded(pStorage->mb + i, base))
     {
         i++;
         col++;
@@ -204,16 +208,16 @@ u32 h264bsdConceal(storage_t *pStorage, image_t *currImage, u32 sliceType)
     mb = pStorage->mb + row * width;
     for (j = col; j--;)
     {
-        ConcealMb(mb+j, currImage, row, j, sliceType, refData);
-        mb[j].decoded = 1;
+        ConcealMb(mb+j, currImage, row, j, sliceType, refData, base);
+        SetConcealed(mb+j, base);
         pStorage->numConcealedMbs++;
     }
     for (j = col + 1; j < width; j++)
     {
-        if (!mb[j].decoded)
+        if (!h264bsdMbDecoded(mb+j, base))
         {
-            ConcealMb(mb+j, currImage, row, j, sliceType, refData);
-            mb[j].decoded = 1;
+            ConcealMb(mb+j, currImage, row, j, sliceType, refData, base);
+            SetConcealed(mb+j, base);
             pStorage->numConcealedMbs++;
         }
     }
@@ -226,8 +230,8 @@ u32 h264bsdConceal(storage_t *pStorage, image_t *currImage, u32 sliceType)
             mb = pStorage->mb + i*width + j;
             do
             {
-                ConcealMb(mb, currImage, i, j, sliceType, refData);
-                mb->decoded = 1;
+                ConcealMb(mb, currImage, i, j, sliceType, refData, base);
+                SetConcealed(mb, base);
                 pStorage->numConcealedMbs++;
                 mb -= width;
             } while(i--);
@@ -241,10 +245,10 @@ u32 h264bsdConceal(storage_t *pStorage, image_t *currImage, u32 sliceType)
 
         for (j = 0; j < width; j++)
         {
-            if (!mb[j].decoded)
+            if (!h264bsdMbDecoded(mb+j, base))
             {
-                ConcealMb(mb+j, currImage, i, j, sliceType, refData);
-                mb[j].decoded = 1;
+                ConcealMb(mb+j, currImage, i, j, sliceType, refData, base);
+                SetConcealed(mb+j, base);
                 pStorage->numConcealedMbs++;
             }
         }
@@ -264,7 +268,7 @@ u32 h264bsdConceal(storage_t *pStorage, image_t *currImage, u32 sliceType)
 ------------------------------------------------------------------------------*/
 
 u32 ConcealMb(mbStorage_t *pMb, image_t *currImage, u32 row, u32 col,
-    u32 sliceType, u8 *refData)
+    u32 sliceType, u8 *refData, u32 picSliceBase)
 {
 
 /* Variables */
@@ -289,7 +293,7 @@ u32 ConcealMb(mbStorage_t *pMb, image_t *currImage, u32 row, u32 col,
 /* Code */
 
     ASSERT(pMb);
-    ASSERT(!pMb->decoded);
+    ASSERT(!h264bsdMbDecoded(pMb, picSliceBase));
     ASSERT(currImage);
     ASSERT(col < currImage->width);
     ASSERT(row < currImage->height);
@@ -348,7 +352,7 @@ u32 ConcealMb(mbStorage_t *pMb, image_t *currImage, u32 row, u32 col,
     /* counter for number of neighbours used */
     j = 0;
     hor = ver = 0;
-    if (row && (pMb-width)->decoded)
+    if (row && h264bsdMbDecoded(pMb-width, picSliceBase))
     {
         A = HANTRO_TRUE;
         pData = mbPos - width*16;
@@ -361,7 +365,7 @@ u32 ConcealMb(mbStorage_t *pMb, image_t *currImage, u32 row, u32 col,
         firstPhase[0] += a[0] + a[1] + a[2] + a[3];
         firstPhase[1] += a[0] + a[1] - a[2] - a[3];
     }
-    if ((row != height - 1) && (pMb+width)->decoded)
+    if ((row != height - 1) && h264bsdMbDecoded(pMb+width, picSliceBase))
     {
         B = HANTRO_TRUE;
         pData = mbPos + 16*width*16;
@@ -374,7 +378,7 @@ u32 ConcealMb(mbStorage_t *pMb, image_t *currImage, u32 row, u32 col,
         firstPhase[0] += b[0] + b[1] + b[2] + b[3];
         firstPhase[1] += b[0] + b[1] - b[2] - b[3];
     }
-    if (col && (pMb-1)->decoded)
+    if (col && h264bsdMbDecoded(pMb-1, picSliceBase))
     {
         L = HANTRO_TRUE;
         pData = mbPos - 1;
@@ -394,7 +398,7 @@ u32 ConcealMb(mbStorage_t *pMb, image_t *currImage, u32 row, u32 col,
         firstPhase[0] += l[0] + l[1] + l[2] + l[3];
         firstPhase[4] += l[0] + l[1] - l[2] - l[3];
     }
-    if ((col != width - 1) && (pMb+1)->decoded)
+    if ((col != width - 1) && h264bsdMbDecoded(pMb+1, picSliceBase))
     {
         R = HANTRO_TRUE;
         pData = mbPos + 16;
@@ -584,6 +588,26 @@ u32 ConcealMb(mbStorage_t *pMb, image_t *currImage, u32 row, u32 col,
 
     return(HANTRO_OK);
 
+}
+
+/*------------------------------------------------------------------------------
+
+    Function name: SetConcealed
+
+        Functional description:
+            Mark a concealed macroblock decoded in this picture. One that no
+            slice of this picture touched takes the picture's base slice id
+            (the 0 the old per-picture clear gave it), so h264bsdMbDecoded
+            sees it; one a corrupted slice touched keeps that slice's id, as
+            before (deblocking compares slice ids).
+
+------------------------------------------------------------------------------*/
+
+void SetConcealed(mbStorage_t *mb, u32 picSliceBase)
+{
+    if (mb->sliceId < picSliceBase)
+        mb->sliceId = picSliceBase;
+    mb->decoded = 1;
 }
 
 
