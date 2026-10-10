@@ -498,10 +498,11 @@ and the SPS change in between, all matched their golden hashes. 25 checks, 0 fai
 `CONFIG_VJ_PIE` kernels (`src/vj_mc_pie.S`) for 8 and 16 wide partitions whose window lies inside the picture: all 16 luma
 positions (1D 6-tap rows/columns, diagonal = horizontal then vertical-averaged, centre = 16-bit two-pass j then a 1D
 average) and both chroma planes.
-- Bit-exactness, on the board: a scratch IDF app (`scratchpad/t8/mctest`) links the library's PIE `h264bsdPredictSamples`
+- Bit-exactness, on the board: the IDF app `test/mc_pie` links the library's PIE `h264bsdPredictSamples`
   and a second copy of `h264bsd_reconstruct.c` built with PIE off, and compares their 384-byte outputs over host/test_mc.c's
   whole case space (8,314,432 cases) plus a 6x4-MB picture where most windows are inside (7,379,984): **15,694,416 cases,
-  0 mismatches**, and 115,312 sampled cases against the standard's equations, 0 mismatches.
+  0 mismatches**, and 115,312 sampled cases against the standard's equations, 0 mismatches. Any change to
+  `vj_mc_pie.S` (or to the C kernels it mirrors) must re-run it on the board (`test/mc_pie/README.md`).
 - Cycles per `h264bsdPredictSamples` call (luma + chroma), 16x16, reference in internal RAM (compute only), C → PIE:
   G 2,654 → 628; d/h/n 7,269 / 6,498 / 7,267 → 1,165 / 1,082 / 1,172; a/b/c 7,163 / 6,380 / 7,167 → 1,088 / 989 / 1,095;
   e/g/p/r ~12,210 → ~1,710; f/q 12,874 / 12,926 → 2,828 / 2,812; i/k 13,520 / 13,562 → 2,917 / 2,922; j 11,223 → 2,266.

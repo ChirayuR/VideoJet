@@ -77,8 +77,9 @@ Every change made for VideoJet is listed here, newest last.
     `h264bsdPredictSamples` calls the PIE kernels (`LumaInside`, `ChromaPie`); edge windows, 4 wide partitions and
     the host build keep the C kernels. The kernels read whole 16-byte chunks: up to 47 bytes past a luma row start and
     31 past a chroma row start, inside the DPB buffers (luma is followed by chroma; 32 bytes of slack after Cr).
-    Bit-exact against the C kernels: an on-board test app compares them over test_mc.c's case space plus a 6x4-MB
-    picture (15.7M cases), and against the standard's equations on a sample (bench-log, T8).
+    Bit-exact against the C kernels: the on-board app `test/mc_pie` compares them over test_mc.c's case space plus a
+    6x4-MB picture (15.7M cases), and against the standard's equations on a sample (bench-log, T8). Any change to
+    `vj_mc_pie.S`, or to the C kernels it mirrors, must re-run `test/mc_pie` on the board: `MC PASS`, 0 mismatches.
   - CAVLC symbol tables (`h264bsd_cavlc.c`). IDF builds with `-fno-jump-tables`, so the old `switch`es were compare
     trees. Each decoder returns the old information word for every input: `host/test_cavlc.c` holds the original
     routines and compares the two over every input.
