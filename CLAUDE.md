@@ -73,9 +73,13 @@ Toolchain traps (found in M1):
   (it has pyserial). `bench.py` FAILs unless the boot log's ELF SHA256 matches `bench/build/videojet_bench.elf`
   (`--elf PATH` for another build dir): flash what you built. A `CONFIG_VJ_PROFILE` image needs
   `--profile --elf bench/build-prof/videojet_bench.elf`. Build it with the overlay, so the timed `bench/sdkconfig` never
-  sees the switch (`rm -rf bench/build-prof` first; flash it with the same `-B`, then reflash the timed build):
-  `idf.py -C bench -B "$PWD/bench/build-prof" -DSDKCONFIG="$PWD/bench/build-prof/sdkconfig"
-  -DSDKCONFIG_DEFAULTS="$PWD/bench/sdkconfig.defaults;$PWD/bench/sdkconfig.profile" build`.
+  sees the switch, and reflash the timed build afterwards:
+  ```
+  rm -rf bench/build-prof
+  idf.py -C bench -B "$PWD/bench/build-prof" -DSDKCONFIG="$PWD/bench/build-prof/sdkconfig" \
+    -DSDKCONFIG_DEFAULTS="$PWD/bench/sdkconfig.defaults;$PWD/bench/sdkconfig.profile" build
+  idf.py -C bench -B "$PWD/bench/build-prof" -p /dev/ttyACM0 flash
+  ```
 
 ## Jet lessons that transfer
 - Consumer project: a ring of internal-SRAM DMA bands with the converter writing straight into them.

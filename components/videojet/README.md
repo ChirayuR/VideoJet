@@ -12,7 +12,10 @@ decoded I420 picture out. The decoder inside is a private, vendored copy of h264
 ```c
 #include "videojet.h"
 
-vj_decoder_t *dec = vj_decoder_create();                 /* NULL: out of memory */
+vj_decoder_t *dec = vj_decoder_create();
+if (!dec)                                                /* out of memory */
+    return;
+bool need_idr = true;                                    /* frames are unreliable until an IDR arrives */
 for (size_t off = 0, n; off < len; off += n) {           /* buf: the byte stream, in writable RAM */
     n = vj_au_length(buf + off, len - off);              /* one access unit; 0: no start code left */
     if (n == 0)
@@ -20,10 +23,13 @@ for (size_t off = 0, n; off < len; off += n) {           /* buf: the byte stream
     vj_frame_t f;
     vj_status_t st = vj_decode_au(dec, buf + off, n, &f);
     if (st < 0) {                                        /* VJ_ERR_*: see the contract */
+        need_idr = true;
         request_keyframe();
         continue;
     }
-    if (st == VJ_FRAME) /* the cropped picture; crop offsets are even, so the chroma offsets are exact */
+    if (st == VJ_FRAME && f.idr)
+        need_idr = false;
+    if (st == VJ_FRAME && !need_idr) /* the cropped picture; crop offsets are even, so the chroma offsets are exact */
         show(f.y + f.crop_y * f.y_stride + f.crop_x, f.u + (f.crop_y / 2) * f.uv_stride + f.crop_x / 2,
              f.v + (f.crop_y / 2) * f.uv_stride + f.crop_x / 2, f.y_stride, f.uv_stride, f.crop_w, f.crop_h);
 }
@@ -31,10 +37,14 @@ vj_decoder_destroy(dec);
 ```
 
 ## 3. Requirements
-- PSRAM enabled (`CONFIG_SPIRAM=y`). Frames (about 1.5 x width x height bytes each, refs + 1 of them) and the per-macroblock
-  state live there: 800x480 needs 2 x 576 KB of frames plus about 0.4 MB of per-MB state (384,000 B), and about 15 KB of
-  internal RAM. The library places its own buffers, whatever your `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL`: above 16 KiB PSRAM
-  first, below it internal RAM first, each falling back to the other.
+- PSRAM in the heap: `CONFIG_SPIRAM=y` with `CONFIG_SPIRAM_USE_MALLOC` (the default) or `CONFIG_SPIRAM_USE_CAPS_ALLOC`.
+  `CONFIG_SPIRAM_USE_MEMMAP` leaves the library no PSRAM to allocate from, so the frames fail with `VJ_ERR_NOMEM`.
+- Memory at 800x480: frames (about 1.5 x width x height bytes each, refs + 1 of them) and the per-macroblock state live in
+  PSRAM: 2 x 576 KB of frames plus about 0.3 MB of per-MB state (1500 MBs x 216 B = 324,000 B), about 1.5 MB in all. About
+  13 KB goes to internal RAM. These are sums of the S3 structure sizes, not measurements.
+- The library places its own buffers, whatever your `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL`: above 16 KiB PSRAM first, below it
+  internal RAM first, each falling back to the other. It asks for the same memory as IDF's `malloc`, so it never takes the
+  internal DMA reserve (`CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL`).
 - Recommended: 240 MHz CPU, octal PSRAM at 80 MHz, `-O2` (`CONFIG_COMPILER_OPTIMIZATION_PERF`).
   The speed reference is `docs/bench-log.md`.
 

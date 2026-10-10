@@ -11,9 +11,9 @@ Every change made for VideoJet is listed here, newest last.
 - Moved into `components/videojet/h264bsd/` (was `components/h264bsd/src/`). The old component is gone: `videojet` builds
   every `h264bsd/*.c` as private code.
 - Allocations go through `vj_alloc()` (`components/videojet/src/vj_alloc.h`), so the library, not the consumer's malloc
-  settings, decides internal RAM versus PSRAM: the `ALLOCATE` macro in `h264bsd_util.h`, `mbLayer` in `h264bsdInit`, and the
-  storage in `h264bsdAlloc`. `free()` releases either heap. The `conversionBuffer` mallocs serve the unused RGBA converters
-  and are left.
+  settings, decides internal RAM versus PSRAM: `h264bsd_util.h` gains `#include "vj_alloc.h"` and its `ALLOCATE` macro calls
+  `vj_alloc`; `mbLayer` in `h264bsdInit` and the storage in `h264bsdAlloc` do too. `free()` releases either heap. The
+  `conversionBuffer` mallocs serve the unused RGBA converters and are left.
 - `vj_prof.h` keys on `CONFIG_VJ_PROFILE` (a Kconfig switch, off by default), not on `-DVJ_PROFILE`.
 - Parameter-set status in `h264bsdDecode` (`h264bsd_decoder.c`):
   - `h264bsdStoreSeqParamSet` / `h264bsdStorePicParamSet` returned `MEMORY_ALLOCATION_ERROR` when the SPS/PPS slot could not

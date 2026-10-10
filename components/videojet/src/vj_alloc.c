@@ -7,8 +7,10 @@
 void *vj_alloc(size_t n)
 {
 #ifdef ESP_PLATFORM
-    uint32_t first = (n > VJ_INTERNAL_MAX ? MALLOC_CAP_SPIRAM : MALLOC_CAP_INTERNAL) | MALLOC_CAP_8BIT;
-    return heap_caps_malloc_prefer(n, 2, first, MALLOC_CAP_8BIT);
+    /* The capability sets of heap_caps_malloc_default (IDF's malloc): MALLOC_CAP_DEFAULT excludes the internal DMA
+     * reserve, which is registered as DMA | INTERNAL | 8BIT without DEFAULT and so would match a bare 8BIT request. */
+    uint32_t first = (n > VJ_INTERNAL_MAX ? MALLOC_CAP_SPIRAM : MALLOC_CAP_INTERNAL) | MALLOC_CAP_DEFAULT;
+    return heap_caps_malloc_prefer(n, 2, first, MALLOC_CAP_DEFAULT);
 #else
     return malloc(n);
 #endif

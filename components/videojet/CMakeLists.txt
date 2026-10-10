@@ -12,8 +12,9 @@ idf_component_register(SRCS "src/videojet.c" "src/vj_au.c" "src/vj_alloc.c" ${de
                        PRIV_REQUIRES heap)
 # IDF's -Werror=all beats a bare -Wno-error, so this is a point fix for a known GCC false positive in
 # h264bsd_pic_order_cnt.c (both variables are set and read under the same absFrameNum > 0 test). Other tags may
-# need the same as optimisation flags change.
-target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-error=maybe-uninitialized)
+# need the same as optimisation flags change. It is set on the vendored sources only: our own code stays strict.
+# (IDF's requirements scan returns from idf_component_register, so nothing below runs in script mode.)
+set_source_files_properties(${dec_srcs} PROPERTIES COMPILE_OPTIONS -Wno-error=maybe-uninitialized)
 if(CONFIG_VJ_ERROR_PRINT)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE _ERROR_PRINT)
 endif()
