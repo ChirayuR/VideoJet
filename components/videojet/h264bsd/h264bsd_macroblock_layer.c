@@ -152,7 +152,23 @@ u32 h264bsdDecodeMacroblockLayer(strmData_t *pStrmData,
 #ifdef H264DEC_NEON
     h264bsdClearMbLayer(pMbLayer, ((sizeof(macroblockLayer_t) + 63) & ~0x3F));
 #else
-    memset(pMbLayer, 0, sizeof(macroblockLayer_t));
+    /* Lazy clear (was all 2,088 B): zero only what a reader can see unwritten.
+     * mbQpDelta is absent for a non-Intra16x16 MB with cbp == 0, refIdxL0 with
+     * one active reference (and for P_8x8ref0); totalCoeff and coeffMap are set
+     * only for decoded blocks; the DC blocks level[24..25] are read whatever
+     * their totalCoeff. Any other level[] block is read beyond [0] only when its
+     * totalCoeff != 0 (ProcessResidual), so DecodeResidual zeroes only the coded
+     * ones, before the CAVLC decoder writes their nonzero levels. */
+    pMbLayer->mbQpDelta = 0;
+    memset(pMbLayer->mbPred.refIdxL0, 0, sizeof(pMbLayer->mbPred.refIdxL0));
+    memset(pMbLayer->subMbPred.refIdxL0, 0,
+        sizeof(pMbLayer->subMbPred.refIdxL0));
+    memset(pMbLayer->residual.totalCoeff, 0,
+        sizeof(pMbLayer->residual.totalCoeff));
+    memset(pMbLayer->residual.level[24], 0,
+        2 * sizeof(pMbLayer->residual.level[24]));
+    memset(pMbLayer->residual.coeffMap, 0,
+        sizeof(pMbLayer->residual.coeffMap));
 #endif
 
     tmp = h264bsdDecodeExpGolombUnsigned(pStrmData, &value);
@@ -739,6 +755,8 @@ u32 DecodeResidual(strmData_t *pStrmData, residual_t *pResidual,
         codedBlockPattern >>= 1;
         if (blockCoded)
         {
+            /* lazy clear: CAVLC writes only the nonzero levels */
+            memset(level[blockIndex], 0, 4 * sizeof(*level));
             for (j = 4; j--; blockIndex++)
             {
                 nc = (i32)DetermineNc(pMb, blockIndex, pResidual->totalCoeff);
@@ -781,6 +799,7 @@ u32 DecodeResidual(strmData_t *pStrmData, residual_t *pResidual,
     blockCoded = codedBlockPattern & 0x2;
     if (blockCoded)
     {
+        memset(level[16], 0, 8 * sizeof(*level)); /* lazy clear, as luma */
         for (i = 8; i--;blockIndex++)
         {
             nc = (i32)DetermineNc(pMb, blockIndex, pResidual->totalCoeff);
