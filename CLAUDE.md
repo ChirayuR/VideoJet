@@ -156,45 +156,42 @@ h264bsd: Android's Hantro baseline decoder, Apache-2.0, plain C (github.com/onea
 - `$WORK/the consumer project` (CLAUDE.md, docs/) + its memory dir.
 
 ## Status
-- 2026-10-10: **M3 speed sprint in progress** on branch `m3-speed` (plan `docs/superpowers/plans/2026-10-10-videojet-m3-speed.md`,
-  ledger `.superpowers/sdd/2026-10-10-videojet-m3-speed/progress.md`, frontier in `docs/bench-log.md` "M3 frontier").
-  - Kept so far, every frame bit-exact:
+- 2026-10-11: **M3 speed sprint in progress.** The full resume procedure is the "RESUME HERE" block at the end of the ledger
+  `.superpowers/sdd/2026-10-10-videojet-m3-speed/progress.md` (gitignored, on disk). The plan is
+  `docs/superpowers/plans/2026-10-10-videojet-m3-speed.md` (queue revision R5). Every score is in the `docs/bench-log.md`
+  "M3 frontier" table.
+  - Branch `m3-speed` (checked out in the main repo dir) holds the kept candidates, every frame bit-exact:
     - step 0: code in IRAM, tables in DRAM, D-cache 64 KB / 64 B;
     - 5a: direct skip copy;
     - T9: no per-picture mbStorage clear;
     - T3: skip elision + `changed_mb`;
     - T6c: lazy mbLayer clear;
     - T10: deblock records + edge-less skip;
-    - T6a: inlined bit reader with clz Exp-Golomb;
-    - cold code to flash, on the memory axis.
-  - fps (slow class): aux_card / aux_map / full_map 17.11 / 9.67 / 5.58 (M2) → **73.84 / 17.21 / 8.24**. Library internal RAM
-    90,473 B of the 100 KB budget.
+    - T6a: inlined bit reader with clz;
+    - cold code to flash (memory axis);
+    - MC stage B: C luma kernels;
+    - T6d: table-driven CAVLC.
+  - Tip fps (slow class): **73.87 / 17.84 / 8.82** (aux_card / aux_map / full_map), against M2's 17.11 / 9.67 / 5.58. Library
+    internal RAM ≈ 87.5 KB (heap 39,572 + IRAM 40,968 + DRAM 7,010) of the 100 KB budget.
+  - In flight on 2026-10-11:
+    - **T11, D-cache autoload** (branch `m3/autoload` 62c6806): scored KEEP, **80.77 / 18.74 / 9.22**. Waiting for its safety
+      review (the region must never reach 0x3E000000), then a fast-forward merge.
+    - **MC stage C, PIE SIMD kernels** (branch `m3/mc-pie`, WIP commit a2ed4c4): in progress.
   - Method:
-    - each candidate goes through `tools/score.sh` (slow class pinned, `--tuning 5`; KEEP = every stream ≥ −0.3 % and one ≥ +0.3 %,
-      or less internal RAM at equal fps, ruling R10);
-    - Opus implementer in its own worktree, with an oracle and differential tests on the host;
-    - Opus or Sonnet review.
-    The board lock is `scratchpad/board.lock`.
-  - Board facts (measure-report): a PSRAM line fill costs 172 cycles (0.72 µs), and a dirtied line ~307 (write-allocate). The two
-    cores share one fill engine, so a second core streaming halves the first's bandwidth. `EXTMEM_DBUS_ACS_SPIRAM_MISS_CNT` counts
-    D-cache misses for free.
-  - Next: motion-compensation kernels (profile split → C → PIE), then the CAVLC tables, `mbStorage_t` compaction, and autoload.
-    aux_map's ≥30 fps gate (the head-unit software bar) is the target.
-- 2026-10-10: **M3 step 0 done** on branch `m3-speed` (Task 1 of `docs/superpowers/plans/2026-10-10-videojet-m3-speed.md`).
-  Next: Task 2 (the one-command scorer, which reads `docs/baseline-m3.jsonl`), then the candidate ladder.
-  - Changed: libvideojet's code runs from IRAM (`components/videojet/linker.lf`, `CONFIG_VJ_IRAM`, default y, 50,831 B of internal
-    RAM) and the bench builds with a 64 KB / 64 B-line D-cache (`bench/sdkconfig.defaults`). No decoder logic changed; the
-    consumer README has a "Recommended config" section.
-  - New M3 baseline, exact fps (frames·10⁶/total_us), 7 boots all PASS, ELF `e85969831…`, records `m3-base-*` in
-    `docs/baseline-m3.jsonl`, aux_card / aux_map / full_map:
-    - slow class (idx 5, 5 boots): 22.2074 / 12.7163 / 7.6810 fps = 45.03 / 78.64 / 130.19 ms/frame;
-    - fast class (idx 10, 2 boots, no idx 4 drawn): 22.3206 / 12.7590 / 7.6987 fps = 44.80 / 78.38 / 129.89 ms/frame;
-    - +29.8 / +31.5 / +37.8 % over M2 in the slow class (`docs/bench-log.md`, M3 step 0).
-  - Noise now: layout at most 0.11 %, same binary at most 0.0019 % on the 7 baseline boots (0.004 % is the spike's bound), class gap
-    +0.51 / +0.34 / +0.23 %. M3's bar: every search stream ≥ −0.3 % and one ≥ +0.3 %, within one class.
-  - Cost axes: heap `int_used` 13,544 B + IRAM 50,831 B = 64,375 B of library internal RAM (budget ≤ 100 KB, stack still
-    unmeasured); `psram_used` 1,507,340 B unchanged; bench `int_min` 271,699 B (IRAM 50,944 B and the bigger D-cache 31,996 B).
-  - New trap: `idf.py -B dir flash` rebuilds from the current tree; flash `@flash_args` (Toolchain traps).
+    - `tools/score.sh LABEL [BASELINE]`, slow class pinned with `--tuning 5`. KEEP = every stream ≥ −0.3 % and one ≥ +0.3 %,
+      or less internal RAM at equal fps (ruling R10).
+    - Wrap every board command in `flock -w 7200 <scratchpad>/board.lock`.
+    - Implementers work in their own worktrees; Opus or Sonnet reviews each candidate. The kept candidate's score record
+      becomes `docs/baseline-m3.jsonl` (R8).
+  - Board facts (measure-report): a PSRAM line fill costs 172 cycles (0.72 µs), and a dirtied line ~307. The two cores share
+    one fill engine. `EXTMEM_DBUS_ACS_SPIRAM_MISS_CNT` counts D-cache misses. Autoload traps: a region ending at 0x3E000000
+    panics, and IDF flash operations clear the enable bit.
+  - Next after T11/PIE: MC write-out (10 ms on full_map; revisit 5b/5c), `mbStorage_t` compaction, PIE deblock/IDCT, 10b
+    (alpha == 0, QP-dependent), then the T4 deblock worker (last: the shared fill engine limits it). aux_map ≥ 30 fps (the
+    head-unit software bar) is the gate.
+  - Pending user decisions: merge M2 (`m2-library-api`) and M3 into `main`. The AA bar firmware
+    (`the consumer project/bar firmware`) is parked until VideoJet is done (memory `project-barohu-firmware`).
+
 - 2026-10-10: **M2 complete** on branch `m2-library-api` (`19c1a23..89bd8c9`, then the docs commit `d7e3516` and its fix
   round). Next was M3 step 0 (done, first entry above), then the meta-harness search.
   - Delivered: the public API, one component with a private decoder, Kconfig `VJ_PROFILE` / `VJ_ERROR_PRINT`, library-owned
