@@ -187,13 +187,14 @@ reads only the last record with a label, so a record is identified by label, ELF
 | control: M1 logic, decoder +16 B | `ctl-m1-shift16` | ae66914a5 | 10 (fast) | −0.12 | −3.08 | −4.27 |
 
 The boot log's `App version` is taken when the build is configured, so a firmware built just before its commit names the
-previous one (`m2-t1` says `19c1a23-dirty`; it was built from the `291405e` sources): the ELF SHA is the identity.
+previous one (`m2-t1`'s a91706eed says `19c1a23-dirty`; the table lists it as the `291405e` firmware on the strength of the
+Task 1 build notes, not of its record): the ELF SHA is the identity.
 
 ### Memory: int_used and psram_used (M3's cost-axis baseline)
 Record `m2-final-all`, both runs of every stream. The two runs agree exactly, and so do the same streams in `m2-t3` (index 4,
 a pre-commit build) and the search streams in `m2-t3-final` (index 4): the figures do not change with run, boot or build.
 Streams are the search set first, then the held-out set. `refs` is the SPS `max_num_ref_frames`, read from each stream. The
-JVT QCIF streams are correctness-only (ruling R9): their fps are listed, not for aggregates or for 30 fps headroom
+JVT QCIF streams are correctness-only (M1 ruling R9): their fps are listed, not for aggregates or for 30 fps headroom
 arguments. The held-out rows have no same-class M1 baseline (`m1-smoke` is fast class), so they carry no Δ.
 
 | stream | size | refs | int_used B | psram_used B | fps run 0 / run 1 (index 5) |
@@ -242,4 +243,4 @@ No axis counts the stack, so a candidate that moves state from the heap to the s
 has to measure the decode task's stack high-water mark per stream (`docs/superpowers/m1-carryover.md`).
 
 The spec's library budget is ≤ 100 KB of internal RAM. M3 step 0 would move libvideojet's `.text` into IRAM, which adds 50,981 B
-of internal RAM: 13,544 B + 50,981 B = 64,525 B, under 100 KB whether KB is 1000 or 1024 B.
+of internal RAM: 13,544 B + 50,981 B = 64,525 B, under 100 KB whether KB is 1000 or 1024 B, excluding the unmeasured stack.

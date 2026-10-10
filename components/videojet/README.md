@@ -29,6 +29,10 @@ for (size_t off = 0, n; off < len; off += n) {           /* buf: the byte stream
     }
     if (st == VJ_FRAME && f.idr)
         need_idr = false;
+    if (st == VJ_FRAME && f.error_mbs) {                 /* concealed macroblocks, even in an IDR: a keyframe cue too */
+        need_idr = true;
+        request_keyframe();
+    }
     if (st == VJ_FRAME && !need_idr) /* the cropped picture; crop offsets are even, so the chroma offsets are exact */
         show(f.y + f.crop_y * f.y_stride + f.crop_x, f.u + (f.crop_y / 2) * f.uv_stride + f.crop_x / 2,
              f.v + (f.crop_y / 2) * f.uv_stride + f.crop_x / 2, f.y_stride, f.uv_stride, f.crop_w, f.crop_h);
@@ -59,8 +63,11 @@ vj_decoder_destroy(dec);
 - The call rewrites the AU in place (it removes emulation-prevention bytes): pass writable RAM, never flash-mapped data, and
   decode each AU once.
 - `f.changed_mb` is NULL for now: treat every macroblock as changed.
-- After any `VJ_ERR_*`, request a keyframe and treat frames as unreliable until one with `f.idr` arrives (a lost reference
-  can leave `error_mbs` at 0). `error_mbs` counts concealed macroblocks in a returned frame and is rarely non-zero.
+- Frames are unreliable until one with `f.idr` arrives: before the first IDR of a stream (a P-frame can decode as a
+  clean-looking `VJ_FRAME`) and after any `VJ_ERR_*` (a lost reference can leave `error_mbs` at 0). After an error,
+  request a keyframe. `error_mbs` counts concealed macroblocks in a returned frame and is rarely non-zero, but
+  `error_mbs` > 0 on a returned frame is also a keyframe cue: the frame is damaged, so request one and show nothing
+  until the next IDR.
 
 ## 5. Kconfig (menu "VideoJet", both off by default)
 - `CONFIG_VJ_ERROR_PRINT`: print the decoder's bitstream errors to stderr (about 60 messages, from the decoding task).

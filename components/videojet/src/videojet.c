@@ -105,9 +105,14 @@ vj_status_t vj_decode_au(vj_decoder_t *dec, uint8_t *au, size_t len, vj_frame_t 
         if (used)
             stalls = 0;
     }
-    if (frames)
-        return VJ_FRAME;
-    return s->picStarted ? VJ_ERR_STREAM : VJ_NO_FRAME; /* slices that did not finish a picture */
+    /* The AU ended inside a picture, whether or not it also completed one. The next call conceals and drops that
+     * picture and every later one decodes on it: only an error now makes the consumer ask for a keyframe, VJ_FRAME
+     * would hide it. (picStarted also stays set when a slice failed before the first activation, activeSps == NULL:
+     * parameter-set-only AUs then return VJ_ERR_STREAM until a picture completes. Harmless: that slice's own error
+     * already asked for a keyframe.) */
+    if (s->picStarted)
+        return VJ_ERR_STREAM;
+    return frames ? VJ_FRAME : VJ_NO_FRAME;
 }
 
 #if defined(ESP_PLATFORM) && defined(CONFIG_VJ_PROFILE)

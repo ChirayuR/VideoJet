@@ -22,7 +22,7 @@ typedef enum {
     VJ_NO_FRAME = 0,     /* the AU held no slice (parameter sets, SEI) */
     VJ_ERR_STREAM = -1,  /* bitstream error, unsupported stream, or the AU ended inside a picture. After any error,
                           * frames may be visibly wrong (a lost reference can leave error_mbs at 0) until the next
-                          * IDR (f.idr): request a keyframe and wait for it. */
+                          * IDR (f.idr), including before the first one: request a keyframe and wait for it. */
     VJ_ERR_NOMEM = -2,   /* a buffer could not be allocated (frames need PSRAM) */
     VJ_ERR_ARG = -3,     /* NULL decoder, AU or out; empty AU, or one over 4 GiB */
 } vj_status_t;
@@ -36,7 +36,7 @@ typedef struct {
     uint8_t matrix;             /* VUI matrix_coefficients: 1 BT.709, 5 or 6 BT.601, 2 unspecified */
     bool idr;                   /* an IDR picture: decoding can (re)start here */
     uint32_t error_mbs;         /* macroblocks concealed in this returned frame, rarely non-zero: concealment normally
-                                 * surfaces as VJ_ERR_STREAM on the damaged AU, the cue to request a keyframe */
+                                 * surfaces as VJ_ERR_STREAM on the damaged AU. Either is a cue to request a keyframe */
     const uint8_t *changed_mb;  /* NULL: unknown, treat every macroblock as changed */
 } vj_frame_t;
 

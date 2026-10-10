@@ -23,3 +23,6 @@ Every change made for VideoJet is listed here, newest last.
   - `MEMORY_ALLOCATION_ERROR` from `h264bsdDecodeSeqParamSet` / `h264bsdDecodePicParamSet` (a VUI or array allocation) now
     also returns `H264BSD_MEMALLOC_ERROR` instead of `H264BSD_ERROR`, so every allocation failure reaches the caller as
     "out of memory", not "bad stream".
+- Apache-2.0 §4(b) modification notice: `h264bsd_decoder.c`, `h264bsd_macroblock_layer.c`, `h264bsd_slice_data.c` and
+  `h264bsd_util.h`, the four files changed above, carry the header line `Modified for VideoJet: see h264bsd/README.md, Local
+  changes.` Comment-only.

@@ -11,8 +11,8 @@ lines of the repo's streams/<set>/<stream>.golden: a board that wants another N 
 A row is `VJ run=R set=S stream=NAME` then frames=GOT/WANT fail first_fail idr_us p_mean_us p50_us p95_us max_us fps
 int_min psram_min total_us int_used psram_used (see FIELDS), then ` error=...` if the board hit one. total_us is the
 exact sum of the timed microseconds (fps is computed from it); int_used and psram_used are the decoder's internal-RAM
-and PSRAM high-water marks over the stream, in bytes. All are required: an M1-format row, without the last three, is
-a FAIL that names them.
+and PSRAM heap high-water marks over the stream, in bytes. All are required: an M1-format row, without the last three,
+is a FAIL that names them.
 Anything else (a bad or missing field, a dropped line, a reboot, a silent board, a hung one, a lost port) is a FAIL with
 reasons.
 The score is tied to a build: the boot log's `ELF file SHA256` must be a prefix of the sha256 of --elf (default

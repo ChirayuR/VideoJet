@@ -175,6 +175,7 @@ h264bsd: Android's Hantro baseline decoder, Apache-2.0, plain C (github.com/onea
   (`docs/bench-log.md`): the M1 logic shifted by ~16 B gave −3.1 % (aux_map) and −4.3 % (full_map), the M2 wrapper linked in
   front of it (+0x51c) +0.6 / +0.7 %, the final M2 build −0.06 / −0.21 / −0.36 %.
   - Likely cause: the default 16 KB I-cache is smaller than the hot decode code.
-  - Consequence: any rebuild that moves code draws from that band. M2 acceptance was ±5 % (`compare.py --tol 5`).
+  - Consequence: any rebuild that moves code has landed anywhere in that band so far. M2 acceptance was ±5 %
+    (`compare.py --tol 5`).
   - The ≥1 % bar of M1 is void until **M3 step 0** (blocking): pin hot-code placement (libvideojet in IRAM via a
     linker fragment, and/or a 32 KB I-cache), then re-measure the build-to-build noise floor.

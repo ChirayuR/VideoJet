@@ -35,6 +35,9 @@ Each item carries the commit that closed it (branch `m2-library-api`). What M2 d
   `tools/compare.py`, default set by `d691aff`), because the ±0.6 % rule sits inside the layout band. The final firmware
   measured −0.06 / −0.21 / −0.36 % (`docs/bench-log.md`, M2 section).
 - **Output reordering** option: not done, and not needed so far. Pictures come out in decode order (`videojet.h`).
+- **`vj_alloc.h` comment (a Task 2 minor). Closed by the M2 final fix wave:** it said the DMA reserve serves only explicit DMA
+  requests, but IDF also serves FreeRTOS stacks and `MALLOC_CAP_INTERNAL` requests without `MALLOC_CAP_DEFAULT` from it. It now
+  calls it a reserve that plain malloc never touches.
 
 ## M3: meta-harness scorer setup
 - **Pipeline.**
@@ -88,9 +91,8 @@ Each item carries the commit that closed it (branch `m2-library-api`). What M2 d
     passes. Have `VJ start` print a container checksum and compare it with `tools/pack_streams.py`'s output.
   - **README example regression guard:** the example in `components/videojet/README.md` was checked by extracting it and
     running it (ASan, bit-exact on all 11 streams), but nothing committed repeats that. Promote the extract-and-run check to a
-    host make target.
-  - **`vj_alloc.h` comment:** it says the DMA reserve serves only explicit DMA requests. In IDF it also serves FreeRTOS stacks
-    and `MALLOC_CAP_INTERNAL` requests without `MALLOC_CAP_DEFAULT`.
+    host make target, with a damaged stream, a lost first slice (`VJ_ERR_STREAM`, nothing shown until the next IDR) and a
+    consumer-framed AU that conceals a picture (`VJ_FRAME` with `error_mbs` > 0: a keyframe request, not shown).
   - **Fault-injection (OOM) coverage in `make check`:** M2 Task 2's malloc fault-injection sweep (over 100 allocations: 0 leaks,
     0 wrong statuses) was scratch-only.
   - **Untested guards in `vj_decode_au()`** (`host/test_api.c` has no direct test for them): the stall guard (three
@@ -100,6 +102,19 @@ Each item carries the commit that closed it (branch `m2-library-api`). What M2 d
     wide).
   - **`make check` prints 8 deliberate `ERROR:` lines** (the damage tests, built with `-D_ERROR_PRINT`). A CI grep for
     "ERROR" would trip on them: grep the exit status instead, or quiet the tests.
+- **Carried over from the M2 final review:**
+  - **Static internal-RAM axis:** score it per candidate from `$IDF_PY -m esp_idf_size --archives bench/build/videojet_bench.map`.
+    `int_used` is a heap delta, so it cannot see IRAM or DRAM statics. Assert from the same map that `libvideojet.a` has 0 B of
+    `.data` and `.bss`: static state is the only way a candidate could carry work across `vj_decoder_destroy()` from run 0 to
+    run 1.
+  - **Scorer:** check run 0 against run 1 (a faster run 1 is suspicious), take the objective from `total_us`, and keep the
+    ASan/UBSan mutation fuzz as a cheap reject (the final review's was clean on 14,400 adversarial calls).
+  - **Noise floor:** at least 3 deliberate layout perturbations (dummy functions of 16, 32 and 64 B ahead of the decoder), in
+    both PSRAM speed classes, before the acceptance bar is set.
+  - **Idle timeout:** `bench.py`'s 180 s idle timeout is per row, not per frame. A candidate more than 3.3x slower on `full_map`
+    (about 55 s per row today) scores as hung: pass `--idle-timeout` for debug runs.
+  - **32 KB I-cache:** it takes 16 KB from the internal pool, so `int_min` shifts; the delta axes (`int_used` and the like) do
+    not.
 
 ## Parked M1 doc nits (closed by `d7e3516`)
 - `bench-log.md`: the "98 of 100 rows" and "84 search rows" counts are now qualified as "through `timed-restore-check`".
@@ -140,7 +155,8 @@ Each item carries the commit that closed it (branch `m2-library-api`). What M2 d
   - M2 Task 1 found that identical decoder logic moves fps by −4.3 % … +0.7 % depending only on code placement. The default 16 KB I-cache is the likely cause.
   - Before any candidate is scored:
     - pin the decoder's hot code: libvideojet `.text` in IRAM via a linker fragment (50,981 B measured, `docs/bench-log.md`:
-      64,525 B of internal RAM with the decoder's 13,544 B heap, inside the 100 KB budget), and/or the 32 KB I-cache;
+      64,525 B of internal RAM with the decoder's 13,544 B heap, inside the 100 KB budget excluding the unmeasured stack),
+      and/or the 32 KB I-cache;
     - re-measure the build-to-build noise floor with deliberate layout perturbations;
     - only then set M3's acceptance bar. The planned ≥1 % bar is void.
 - M2's "fps unchanged" was enforced as ±5 % (ruling R1 of the M2 plan, Global Constraints). The final firmware measured

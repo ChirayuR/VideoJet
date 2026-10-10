@@ -10,7 +10,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-import bench
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # python3 -I leaves the script's directory off sys.path
+import bench  # noqa: E402
 
 FRAMES = 300  # frames in every fake golden, and what row() says the board wants
 NAMES = {"search": {"aux_card": FRAMES, "aux_map": FRAMES}, "heldout": {"BA1_Sony_D": FRAMES}}

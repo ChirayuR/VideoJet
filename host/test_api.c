@@ -226,6 +226,33 @@ static void test_contract(const char *dir)
     free(s);
 }
 
+/* A byte stream that lost the FIRST slice of picture N+1 (aux_map_dark, 4 slices per picture). vj_au_length() sees a
+ * boundary only at a slice with first_mb_in_slice 0, so N+1's other slices ride along with AU N: one call that
+ * completes a picture and leaves the next one unfinished. That is an error, not a frame: the next call conceals and
+ * drops the unfinished picture, and every picture after it would decode on a lost reference with nothing to say so. */
+static void test_lost_slice(const char *dir)
+{
+    char path[512];
+    snprintf(path, sizeof path, "%s/heldout/aux_map_dark.h264", dir);
+    size_t total;
+    uint8_t *s = slurp(path, &total);
+    size_t n0 = vj_au_length(s, total), n1 = vj_au_length(s + n0, total - n0);
+    size_t n2 = vj_au_length(s + n0 + n1, total - n0 - n1);
+    size_t cut = slice_at(s + n0 + n1, n2, 1); /* AU2's slice 1 starts here: everything before it is the lost slice 0 */
+    memmove(s + n0 + n1, s + n0 + n1 + cut, total - n0 - n1 - cut);
+    total -= cut;
+    size_t merged = vj_au_length(s + n0, total - n0);
+    assert(merged == n1 + n2 - cut); /* the splitter itself hands over AU1 plus the rest of AU2 */
+    size_t n3 = vj_au_length(s + n0 + merged, total - n0 - merged);
+    vj_frame_t f;
+    vj_decoder_t *d = vj_decoder_create();
+    assert(vj_decode_au(d, s, n0, &f) == VJ_FRAME);
+    assert(vj_decode_au(d, s + n0, merged, &f) == VJ_ERR_STREAM); /* picture 1 is done, picture 2 is left unfinished */
+    assert(vj_decode_au(d, s + n0 + merged, n3, &f) == VJ_FRAME); /* and the next AU still decodes, not swallowed */
+    vj_decoder_destroy(d);
+    free(s);
+}
+
 /* A call never continues the last one. Hand over [AU1][AU2 cut after 2 of its 4 slices][AU3] as one call: an error
  * (AU3's first slice conceals the cut picture, which makes a second picture) that leaves h264bsd expecting a re-call at
  * AU3's address. Then decode AU4 where AU3 began, or in a fresh block: it must decode either way. */
@@ -277,6 +304,7 @@ int main(int argc, char **argv)
     test_reuse(dir);
     test_recovery(dir);
     test_contract(dir);
+    test_lost_slice(dir);
     test_resume(dir);
     puts("test_api: all passed");
     return 0;
