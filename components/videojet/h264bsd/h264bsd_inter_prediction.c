@@ -391,6 +391,42 @@ u32 h264bsdInterPrediction(mbStorage_t *pMb, macroblockLayer_t *pMbLayer,
             if (MvPrediction16x16(pMb, &pMbLayer->mbPred, dpb) != HANTRO_OK)
                 return(HANTRO_NOK);
             refImage.data = pMb->refAddr[0];
+            /* skipped MB, even integer MV (chroma is integer too), 16x16 block
+             * inside the reference: the prediction is a plain copy, so copy
+             * it straight into the picture (no data[] staging and no
+             * h264bsdWriteMacroblock) */
+            if (pMb->mbType == P_Skip && pMb->decoded <= 1 &&
+                !(pMb->mv[0].hor & 7) && !(pMb->mv[0].ver & 7))
+            {
+                i32 xInt = (i32)col + (pMb->mv[0].hor >> 2);
+                i32 yInt = (i32)row + (pMb->mv[0].ver >> 2);
+                u32 width = 16 * refImage.width;
+                u32 height = 16 * refImage.height;
+
+                if (xInt >= 0 && yInt >= 0 && (u32)xInt + 16 <= width &&
+                    (u32)yInt + 16 <= height)
+                {
+                    u32 cw = width >> 1;
+                    const u8 *rl = refImage.data +
+                        (u32)yInt * width + (u32)xInt;
+                    const u8 *rcb = refImage.data + width * height +
+                        (u32)(yInt >> 1) * cw + (u32)(xInt >> 1);
+                    const u8 *rcr = rcb + width * height / 4;
+                    u8 *dl = currImage->luma;
+                    u8 *dcb = currImage->cb;
+                    u8 *dcr = currImage->cr;
+
+                    for (i = 0; i < 16; i++, rl += width, dl += width)
+                        memcpy(dl, rl, 16);
+                    for (i = 0; i < 8; i++, rcb += cw, rcr += cw, dcb += cw,
+                        dcr += cw)
+                    {
+                        memcpy(dcb, rcb, 8);
+                        memcpy(dcr, rcr, 8);
+                    }
+                    return HANTRO_OK;
+                }
+            }
             h264bsdPredictSamples(data, pMb->mv, &refImage, col, row, 0, 0,
                 16, 16);
             break;
