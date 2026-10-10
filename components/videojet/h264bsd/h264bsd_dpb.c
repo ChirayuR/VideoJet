@@ -1026,7 +1026,8 @@ u32 h264bsdInitDpb(
          * image size + 32 + 15, where 32 cames from the fact that in ARM OpenMax
          * DL implementation Functions may read beyond the end of an array,
          * by a maximum of 32 bytes. And +15 cames for the need to align memory
-         * to 16-byte boundary */
+         * to 16-byte boundary. The PIE kernels (src/vj_mc_pie.S) read up to 16 B past Cr,
+         * so this slack is load-bearing even without OpenMAX DL */
         ALLOCATE(dpb->buffer[i].pAllocatedData, (picSizeInMbs*384 + 32+15), u8);
         if (dpb->buffer[i].pAllocatedData == NULL)
             return(MEMORY_ALLOCATION_ERROR);

@@ -29,7 +29,7 @@ MC pic 48x32 content 0: 2927376 cases, 0 mismatches so far (105 s)
 ...
 MC BASE 8314432 cases (host/test_mc.c's space), 0 mismatches PIE vs C
 MC pic 96x64 content 0: 7379984 cases, 0 mismatches so far (552 s)
-MC RESULT 15694416 cases, 0 mismatches PIE vs C; 115312 spec cases, 0 mismatches
+MC RESULT 15694416 cases (N also misaligned), 0 mismatches PIE vs C; 115312 spec cases, 0 mismatches
 MC PASS
 MC TIME iram <position> <WxH> <C cycles> <PIE cycles>
 ...

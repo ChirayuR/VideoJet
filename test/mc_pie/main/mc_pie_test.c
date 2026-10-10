@@ -87,25 +87,36 @@ static int chroma(int c, int x, int y, int xf, int yf)
             xf * yf * px(c, x + 1, y + 1) + 32) >> 6;
 }
 
-static unsigned long cases, bad, badSpec, specCases;
+static unsigned long cases, bad, badSpec, specCases, misCases;
+static u8 ob[384];
 static int checkSpec;
 
 static void one(int xA, int yA, int px0, int py0, int w, int h, int vx, int vy)
 {
-    static u8 a[384] __attribute__((aligned(16))), b[384] __attribute__((aligned(16)));
+    /* 16 guard bytes each side of the 384-byte output: the PIE stores must not touch them. Every 16th case runs a
+     * second time at a misaligned destination (offset 1..15): the dispatch must take the C path, 0 mismatches */
+    static u8 A[416] __attribute__((aligned(16))), B[416] __attribute__((aligned(16)));
     image_t img = {pic, (u32)W / 16, (u32)H / 16, 0, 0, 0};
     mv_t mv = {(i16)vx, (i16)vy};
-    memset(a, 0xA5, sizeof a);
-    memset(b, 0xA5, sizeof b);
-    c_PredictSamples(a, &mv, &img, (u32)xA, (u32)yA, (u32)px0, (u32)py0, (u32)w, (u32)h);
-    h264bsdPredictSamples(b, &mv, &img, (u32)xA, (u32)yA, (u32)px0, (u32)py0, (u32)w, (u32)h);
-    cases++;
-    if (memcmp(a, b, sizeof a) && bad++ < 8) {
-        int i = 0;
-        while (a[i] == b[i]) i++;
-        printf("MC MISMATCH pic %dx%d mb (%d,%d) part (%d,%d) %dx%d mv (%d,%d): byte %d C %d PIE %d\n", W, H, xA, yA,
-               px0, py0, w, h, vx, vy, i, a[i], b[i]);
+    for (int v = 0; v < 2; v++) {
+        if (v && (cases & 15)) break;
+        int off = v ? 1 + (int)((cases >> 4) % 15) : 0;
+        u8 *a = A + 16 + off, *b = B + 16 + off;
+        memset(A, 0xA5, sizeof A);
+        memset(B, 0xA5, sizeof B);
+        c_PredictSamples(a, &mv, &img, (u32)xA, (u32)yA, (u32)px0, (u32)py0, (u32)w, (u32)h);
+        h264bsdPredictSamples(b, &mv, &img, (u32)xA, (u32)yA, (u32)px0, (u32)py0, (u32)w, (u32)h);
+        misCases += v;
+        if (memcmp(A, B, sizeof A) && bad++ < 8) {
+            int i = 0;
+            while (A[i] == B[i]) i++;
+            printf("MC MISMATCH pic %dx%d mb (%d,%d) part (%d,%d) %dx%d mv (%d,%d) off %d: byte %d C %d PIE %d\n", W, H,
+                   xA, yA, px0, py0, w, h, vx, vy, off, i - 16, A[i], B[i]);
+        }
+        if (!v) memcpy(ob, b, 384);
     }
+    u8 *b = ob;
+    cases++;
     if (checkSpec && (cases & 63) == 0) {
         int lx = xA + px0 + (vx >> 2), ly = yA + py0 + (vy >> 2), cx = (xA + px0) / 2 + (vx >> 3), cy = (yA + py0) / 2 + (vy >> 3);
         int ok = 1;
@@ -204,8 +215,8 @@ static void run(void *arg)
                 printf("MC BASE %lu cases (host/test_mc.c's space), %lu mismatches PIE vs C\n", cases, bad);
             free_pic();
         }
-    printf("MC RESULT %lu cases, %lu mismatches PIE vs C; %lu spec cases, %lu mismatches\n", cases, bad, specCases,
-           badSpec);
+    printf("MC RESULT %lu cases (%lu also misaligned), %lu mismatches PIE vs C; %lu spec cases, %lu mismatches\n", cases,
+           misCases, bad, specCases, badSpec);
     printf("MC %s\n", bad || badSpec ? "FAIL" : "PASS");
     alloc_pic(320, 192, MALLOC_CAP_INTERNAL);
     fill(0);

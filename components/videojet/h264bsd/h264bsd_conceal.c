@@ -282,7 +282,7 @@ u32 ConcealMb(mbStorage_t *pMb, image_t *currImage, u32 row, u32 col,
     u32 mbNum;
     u32 width, height;
     u8 *mbPos;
-    u8 data[384];
+    u8 data[384] __attribute__((aligned(16))); /* PIE MC stores need a 16-B destination */
     u8 *pData;
     i32 tmp;
     i32 firstPhase[16];

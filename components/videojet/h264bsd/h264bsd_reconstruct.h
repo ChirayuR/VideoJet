@@ -50,6 +50,9 @@
     4. Function prototypes
 ------------------------------------------------------------------------------*/
 #ifndef H264DEC_OMXDL
+/* data: the prediction buffer (stride 16; Cb at +256, Cr at +320). It SHOULD be 16-byte aligned: the PIE kernels
+ * (CONFIG_VJ_PIE) store 16 B at a time and round the address down, so an unaligned data silently takes the (slower)
+ * C kernels instead. Keep every caller's buffer 16-aligned. */
 void h264bsdPredictSamples(
   u8 *data,
   mv_t *mv,

@@ -77,6 +77,8 @@ Every change made for VideoJet is listed here, newest last.
     `h264bsdPredictSamples` calls the PIE kernels (`LumaInside`, `ChromaPie`); edge windows, 4 wide partitions and
     the host build keep the C kernels. The kernels read whole 16-byte chunks: up to 47 bytes past a luma row start and
     31 past a chroma row start, inside the DPB buffers (luma is followed by chroma; 32 bytes of slack after Cr).
+    The destination must be 16-byte aligned (PIE stores round the address down): the dispatch checks and falls back to
+    C, and `ConcealMb`'s `data[384]` is `aligned(16)` (it was aligned only by luck, not under IDF stack protector modes).
     Bit-exact against the C kernels: the on-board app `test/mc_pie` compares them over test_mc.c's case space plus a
     6x4-MB picture (15.7M cases), and against the standard's equations on a sample (bench-log, T8). Any change to
     `vj_mc_pie.S`, or to the C kernels it mirrors, must re-run `test/mc_pie` on the board: `MC PASS`, 0 mismatches.

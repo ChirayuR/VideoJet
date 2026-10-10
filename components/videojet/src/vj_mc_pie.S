@@ -228,6 +228,8 @@ vj_pie_luma_ver\q:
  * |b1'| < 6700) in 16-bit lanes, stored per 8-column group: group 0 rows at a1, group 1 (w 16) after h + 5 rows.
  * Pass 2: the vertical 6-tap of b1' per group (EE.SRCMB.S8.QACC leaves s8-saturated values in 16-bit lanes), then
  * EE.VUNZIP.8 packs the groups' low bytes.
+ * Headroom: the S16-accumulated QACC lanes (40-bit) are read by SRCMB.S8, exact while |512 + j1'| < 2^19; the worst case
+ * (20, -5, ... taps over b1' = +-6700) is 345,272, so there is no overflow.
  */
 /* 6-tap of the 16-bit vector pair {\qhi:\qlo} (shifted in place, lane by lane) into \qo; QACC starts at 0 */
 .macro HSUM16 qlo, qhi, qo, z

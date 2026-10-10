@@ -18,7 +18,7 @@ config VJ_IRAM
     bool "Run the decoder from internal RAM (code and tables)"
     default y
     help
-        Puts libvideojet's hot code (43,843 B, IRAM) and its tables (7,058 B, DRAM) in internal RAM;
+        Puts libvideojet's hot code (44,423 B, IRAM) and its tables (7,110 B, DRAM) in internal RAM;
         concealment and parameter-set parsing (once per error or SPS/PPS) stay in flash. On the
         bench the code gained +1 / +11 / +21 % fps (aux_card / aux_map / full_map) over flash code with the
         default 16 KB I-cache, and moving it changed fps by at most 0.11 %; the tables in DRAM gained another
@@ -79,5 +79,7 @@ config VJ_PIE
         Luma and chroma interpolation of partitions 8 or 16 wide whose reference window lies inside the picture run
         as ESP32-S3 PIE (128-bit SIMD) kernels; the rest, and every host build, use the C kernels, which the PIE ones
         match bit for bit.
+
+        IDF pins a task to its current core at its first PIE instruction (portasm.S _frxt_coproc_exc_hook), so an unpinned decode task is pinned at its first P-frame.
 
 endmenu
