@@ -1,0 +1,2 @@
+# SPIKE e4: 32 KB instruction cache, code stays in flash
+CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y
