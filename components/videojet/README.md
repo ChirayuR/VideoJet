@@ -43,12 +43,14 @@ vj_decoder_destroy(dec);
 ## 3. Requirements
 - PSRAM in the heap: `CONFIG_SPIRAM=y` with `CONFIG_SPIRAM_USE_MALLOC` (the default) or `CONFIG_SPIRAM_USE_CAPS_ALLOC`.
   `CONFIG_SPIRAM_USE_MEMMAP` leaves the library no PSRAM to allocate from, so the frames fail with `VJ_ERR_NOMEM`.
-- Memory at 800x480, measured on the board (`docs/bench-log.md`, M2 and M3 step 0 sections): 1,507,340 B of PSRAM and
-  13,544 B of internal RAM, both heap, the same on every run and boot. The PSRAM holds the frames (about 1.5 x width x height
-  bytes each, refs + 1 of them, so 2 for a one-reference stream) and the per-macroblock state (1500 MBs x 216 B). Each extra
-  reference frame adds 589,828 B. IDF's heap rounds every block up to its size class, so the PSRAM figure is 2.1 % above the
-  sum of the structure sizes. On top of the heap, `CONFIG_VJ_IRAM` (the default) puts the decoder's code, 50,831 B, in
-  internal RAM: 13,544 + 50,831 = 64,375 B in all, excluding the stack.
+- Memory at 800x480, heap, measured on the board: 1,507,340 B of PSRAM (`docs/bench-log.md`, M2 and M3 step 0, the same
+  on every run and boot) and 21,136 B of internal RAM (the M3 skip-elision score run). The PSRAM holds the frames (about
+  1.5 x width x height bytes each, refs + 1 of them, so 2 for a one-reference stream) and the per-macroblock state
+  (1500 MBs x 216 B). Each extra reference frame adds 589,828 B. IDF's heap rounds every block up to its size class, so
+  the PSRAM figure is 2.1 % above the sum of the structure sizes. Internal RAM includes 5 B per macroblock for skip
+  elision and `changed_mb` (7,500 B here; each of its two blocks moves to PSRAM above 16 KiB). On top of the heap,
+  `CONFIG_VJ_IRAM` (the default) puts the decoder's code, 51,662 B (link map), in internal RAM:
+  21,136 + 51,662 = 72,798 B in all, excluding the stack.
 - Stack: decoding runs on the stack of the task that calls `vj_decode_au()`. The stack it needs has not been measured; only a
   16 KiB task stack (the bench's) has been tested.
 - The library places its own buffers, whatever your `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL`: above 16 KiB PSRAM first, below it
@@ -64,9 +66,9 @@ aux_card / aux_map / full_map (800x480) from 17.11 / 9.67 / 5.58 fps (M2: code i
   code in IRAM it gained +19 / +11 / +7 %.
 - **D-cache 64 KB** (`CONFIG_ESP32S3_DATA_CACHE_64KB=y`): another +8 / +6 / +7 % on top of the 64 B line, for 32 KB of
   internal RAM (31,996 B less heap, measured).
-- **Decoder code in IRAM** (`CONFIG_VJ_IRAM=y`, the default): 50,831 B of internal RAM. It gained +1 / +11 / +21 % over flash
+- **Decoder code in IRAM** (`CONFIG_VJ_IRAM=y`, the default): 51,662 B of internal RAM. It gained +1 / +11 / +21 % over flash
   code with the default 16 KB I-cache, and with it, moving the code changed fps by at most 0.11 % on the bench. The alternative, for
-  16 KB of internal RAM instead of 51 KB: `CONFIG_VJ_IRAM=n` with `CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y`, which stayed within
+  16 KB of internal RAM instead of 52 KB: `CONFIG_VJ_IRAM=n` with `CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y`, which stayed within
   1 % of IRAM on the bench's code layout (flash code has no layout pin, so treat it as an estimate) (22.17 / 12.60 / 7.63).
 - With 64 B lines, a PSRAM buffer that DMA reads or writes needs 64 B alignment in address and size
   (`CONFIG_ESP32S3_DATA_CACHE_LINE_SIZE`; for example `heap_caps_aligned_alloc(64, n, MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA)`
@@ -82,9 +84,10 @@ aux_card / aux_map / full_map (800x480) from 17.11 / 9.67 / 5.58 fps (M2: code i
 - `f.changed_mb` has one byte per 16x16 macroblock of the coded frame, `(width / 16) x (height / 16)`, row by row, valid
   as long as `f.y`. 0 means the macroblock is bit-identical to the same macroblock in the previous `VJ_FRAME` this
   decoder returned, so a consumer that converted that frame can skip it; 1 means it may differ. Frames decoded in between
-  but never returned (an error call, a dropped concealed picture) are accounted for. If you skipped a frame yourself,
-  treat every macroblock of the next one as changed. NULL means the same as all 1. The first frame, an IDR, and a frame
-  with concealed macroblocks have every byte at 1.
+  but never returned (an error call, a dropped concealed picture) are accounted for. If you skip converting a `VJ_FRAME`,
+  copy its map (it lives only until the next call) and OR it into the next frame's: the result is the change since the
+  last frame you converted. Treating every macroblock of the next frame as changed is the simple fallback. NULL means the
+  same as all 1. The first frame, an IDR, and a frame with concealed macroblocks have every byte at 1.
 - Frames are unreliable until one with `f.idr` arrives: before the first IDR of a stream (a P-frame can decode as a
   clean-looking `VJ_FRAME`) and after any `VJ_ERR_*` (a lost reference can leave `error_mbs` at 0). After an error,
   request a keyframe. `error_mbs` counts concealed macroblocks in a returned frame and is rarely non-zero, but
@@ -92,7 +95,7 @@ aux_card / aux_map / full_map (800x480) from 17.11 / 9.67 / 5.58 fps (M2: code i
   until the next IDR.
 
 ## 6. Kconfig (menu "VideoJet")
-- `CONFIG_VJ_IRAM` (default y): run the decoder from IRAM, 50,831 B of internal RAM (section 4).
+- `CONFIG_VJ_IRAM` (default y): run the decoder from IRAM, 51,662 B of internal RAM (section 4).
 - `CONFIG_VJ_ERROR_PRINT` (default n): print the decoder's bitstream errors to stderr (about 60 messages, from the decoding task).
 - `CONFIG_VJ_PROFILE` (default n): per-stage cycle counters, read with `vj_profile_take()`. Their cost is not separable from code-layout
   noise (`docs/bench-log.md`) and they move code layout: profiling builds only, never timed scores (the bench enables it

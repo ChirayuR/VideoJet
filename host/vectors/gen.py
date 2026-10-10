@@ -76,12 +76,13 @@ def p_slice(first, fn, skip, rpc=0, idc=0, bad_after=False, redundant=1):
     if bad_after: b.ue(31)             # invalid P mb_type -> macroblock_layer error
     b.trailing(); return nal(2, 1, b.bytes())
 
-def p_pcm_slice(first, fn, luma, skip, rpc=0, idc=0):
+def p_pcm_slice(first, fn, luma, skip, rpc=0, idc=0, bad_after=False):
     b = BW(); hdr(b, first, 0, fn, False, rpc, idc); b.ue(0)
     b.ue(30); b.align0()               # I_PCM in a P slice: mb_type 5 + 25
     for _ in range(256): b.u(8, luma)
     for _ in range(128): b.u(8, 128)
     b.ue(skip)
+    if bad_after: b.ue(31)             # invalid P mb_type -> macroblock_layer error
     b.trailing(); return nal(2, 1, b.bytes())
 
 mode = sys.argv[1]
@@ -108,6 +109,16 @@ elif mode == 'elide':
     # MB 0 only if frame 5 wrongly recorded MB 0 as unchanged.
     s += p_slice(0, 3, N) + p_slice(0, 4, N)
     s += p_pcm_slice(0, 5, 200, 5, idc=1) + p_slice(0, 5, N, rpc=1, idc=1) + p_slice(0, 6, N)
+    sys.stdout.buffer.write(s)
+    sys.exit()
+elif mode == 'slerr':
+    # frames 3 and 4 copy: skip elision runs by frame 4. Frame 5: a slice writes MB 0 (I_PCM) and fails at MB 1, its
+    # resend skips all N: MB 0 must be rebuilt, not elided. Frame 6: a slice skips MB 0 and fails at MB 1, its resend
+    # makes MB 0 an I_PCM without deblocking: MB 0 must count as changed. Frames 7 and 8 copy.
+    s += p_slice(0, 3, N) + p_slice(0, 4, N)
+    s += p_pcm_slice(0, 5, 200, 0, idc=1, bad_after=True) + p_slice(0, 5, N, idc=1)
+    s += p_slice(0, 6, 1, idc=1, bad_after=True) + p_pcm_slice(0, 6, 50, N - 1, idc=1)
+    s += p_slice(0, 7, N, idc=1) + p_slice(0, 8, N, idc=1)
     sys.stdout.buffer.write(s)
     sys.exit()
 s += p_slice(0, 4, N)                                     # frame 4

@@ -385,7 +385,9 @@ static void test_conceal_history(const char *dir)
 /* Redundant slices (host/vectors, made by gen.py there): failed redundant slices can leave MBs untouched in a complete
  * picture (attack) or keep a concealed MB's corrupted-slice id (attack2), and idc 2 deblocking compares those ids. In
  * elide, a redundant slice re-decodes as a skip an MB that its primary slice changed: skip elision must still count it
- * changed, or the next picture keeps that MB's old pixels. Expected: the per-picture-clear decoder (m3-speed 2063e44), one entry per vj_decode_au call ("-" = VJ_ERR_STREAM);
+ * changed, or the next picture keeps that MB's old pixels. In slerr, a slice fails after writing an MB and the same
+ * picture continues: elision must stop for the rest of the picture and the picture must count as all changed.
+ * Expected: the per-picture-clear decoder (m3-speed 2063e44), one entry per vj_decode_au call ("-" = VJ_ERR_STREAM);
  * every frame hashes the same with DPB memory filled 0x00, 0xA5, 0x5A or a byte pattern, so none reads uninitialised
  * memory. */
 static void test_vectors(const char *vec)
@@ -394,8 +396,9 @@ static void test_vectors(const char *vec)
         {"attack.h264", "ed86bcae ed86bcae - - - - c946cd05 c946cd05 "},
         {"attack2.h264", "ed86bcae ed86bcae - - 2c2cceb1 "},
         {"elide.h264", "ed86bcae ed86bcae - ed86bcae ed86bcae - 45efe711 45efe711 "},
+        {"slerr.h264", "ed86bcae ed86bcae - ed86bcae ed86bcae - ed86bcae - 8a96d75d 8a96d75d 8a96d75d "},
     };
-    for (int k = 0; k < 3; k++) {
+    for (int k = 0; k < (int)(sizeof want / sizeof *want); k++) {
         char path[512], got[256] = "";
         snprintf(path, sizeof path, "%s/%s", vec, want[k][0]);
         size_t len;
