@@ -378,6 +378,7 @@ are copied into `.superpowers/sdd/2026-10-10-videojet-m3-speed/baseline-t{3,6c}.
 | cold code to flash, memory axis R10 (c0d006f) | `m3-coldflash` | 5 | d23ede2cd | 73.8375 / 17.2127 / 8.2384 | -0.01 / -0.02 / -0.02 | 39,572 |
 | MC stage B: C luma kernels, register 6-tap (6f69e98) | `m3-mc-c` | 5 | e2efde94c | 73.8374 / 17.7296 / 8.7834 | -0.00 / +3.00 / +6.62 | 39,572 |
 | T6d table-driven CAVLC (8f61f57; 2459a4c adds host/test_cavlc.c) | `m3-cavlctab2` | 5 | 63aeed1ae | 73.8668 / 17.8425 / 8.8237 | +0.04 / +0.64 / +0.46 | 39,572 |
+| T11 D-cache autoload over the decoder's span (931adda; docs 3930d59) | `m3-autoload` | 5 | 2b2cd7855 | 80.7704 / 18.7441 / 9.2244 | +9.35 / +5.05 / +4.54 | 39,572 |
 
 Cumulative since M2 (slow class 17.11 / 9.67 / 5.58), at the T10 tip: **+327 % / +75 % / +45 %**. Skip elision elides 1,438 / 797 / 8.4 MBs
 per frame (aux_card / aux_map / full_map), against the 1,437 / 800 / 6 that the earlier cost model predicted. aux_card is at the
@@ -425,7 +426,7 @@ a host count (`-Wl,--wrap=h264bsdPredictSamples`, deterministic, so the board ra
 
 ### D-cache autoload (T11): hardware rules and trap evidence
 Measured on the bench board on 2026-10-11 with two scratch apps (kept in the session scratchpad, not in the repo; the comment in
-`components/videojet/src/videojet.c` cites this section): a probe that masks the cache-error interrupt and reads
+`components/videojet/src/videojet.c` summarises these rules): a probe that masks the cache-error interrupt and reads
 `EXTMEM_CACHE_ILG_INT_ST` instead of panicking, and a re-arm test that drives the library through its public API on streams from
 the `streams` partition. In the probe a line counts as cached when a timed load of it, with autoload switched off again, takes under
 60 cycles. 64 KB / 64 B D-cache. `EXTMEM_DCACHE_AUTOLOAD_CTRL`: bit 0 SCT0_ENA, bit 2 ENA, bit 3 DONE, bit 4 ORDER, bits 6:5 RQST,
@@ -474,7 +475,7 @@ So the start is rounded down and the end up to a line, and the end is kept below
 | after `esp_partition_read()` | **0x089** | **0** | unchanged |
 | after the next `vj_decode_au()` | **0x085** | **1** | unchanged |
 | after `esp_flash_read()`, then after the next call | 0x089, 0x085 | 0, 1 | unchanged |
-| after `vj_decode_au(NULL, ...)` (VJ_ERR_ARG) | 0x089 | 0 | an argument error arms nothing |
+| after another `esp_partition_read()`, then `vj_decode_au(NULL, ...)` (VJ_ERR_ARG) | 0x089 | 0 | the read cleared it; an argument error arms nothing |
 | someone else's setting (descending, both triggers, size 3, another region), then one call | 0x1D5, 0x085 | 1, 1 | replaced by the right one |
 
 At 800x480 the blocks were `mb` 0x3C07A750 (+324,000 B) and frames 0x3C0CA754 and 0x3C15A758 (+576,000 B each): region
