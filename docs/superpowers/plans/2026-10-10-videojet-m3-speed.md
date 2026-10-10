@@ -256,3 +256,25 @@ Each candidate task runs this loop. The proposer is an **Opus** agent (CLAUDE.md
 - [ ] Held-out run: `--set all` on the final `m3-speed` tip. Every hash must pass. Log the held-out fps.
 - [ ] Final whole-branch review on the most capable model; one fix wave.
 - [ ] Update the CLAUDE.md status, the m1-carryover M3 items closed or moved, and the bench-log frontier table.
+
+## Queue revision R5 (2026-10-10, after candidate 5a and a brainstorming consult)
+Evidence:
+- **5a** was merged with +4.35 / +1.51 / +0.18 %. It saved only ~300 cycles per MB, so a skipped MB is bound by PSRAM line fills, not by copying.
+- **The brainstorming consult** (`.superpowers/sdd/2026-10-10-videojet-m3-speed/brainstorm.md`) estimates that ~28–30 ms of every frame is PSRAM line traffic, and that ~40 % of it is the 216 B × 1,500 `mbStorage_t` array, touched three times per frame.
+
+New execution order. Each item is one candidate under the candidate protocol; [E] figures are the consult's slow-class estimates.
+
+| # | candidate | mechanism | [E] aux_map / full_map / aux_card fps after |
+|---|---|---|---|
+| T9 | ResetStorage → generation counter | no per-picture clear of `sliceId`/`decoded`: each picture reserves a base id, slice ids only grow, `decoded` resets lazily in SetMbParams, concealed MBs take `sliceId = base` | 13.3 / 7.9 / 24.1 |
+| T3 | skip elision + `changed_mb` | Task 3, with the consult's holes closed (see task-3-brief) | 16.7 / 7.9 / ~57 |
+| T10 | bS precompute + edge-less MB skip | compute filtering flags and bS at decode time while the lines are hot, store a small per-MB record with a "has edges" bit; the deblock pass skips MBs without edges and never reads `mbStorage_t` (sequential fallback for slice groups). 10b: an MB-level all-alpha==0 skip, QP-dependent and reported separately (R4) | 18.1 (20.4 with 10b) / 8.0 / ~100 |
+| T6 | CAVLC reader | 6a: inlined 32-bit cached reader + NSAU exp-Golomb + flat coeff_token tables; 6b: hot tables `DRAM_ATTR`; 6c: lazy `mbLayer` clear (zero only cbp blocks, not 2,088 B per coded MB) | 20.0 / 8.6 |
+| T11 | PSRAM microbench, then D-cache preload | measure t64, write-allocate and `Cache_Start_DCache_Preload` on the board; then preload the next ref band and current row at each MB-row start (a hint, bit-exact by construction) | 21.5–24 / 9.0–9.6 |
+| T12 | `mbStorage_t` row ring in internal RAM | 2 MB rows (≤ 22 KB) + byte sidecars for `decoded`/`sliceId`/`qpY`; ring = picSizeInMbs under FMO/ASO | ~25 / ~9.6 |
+| T7/T8 | MC kernels, PIE quarter-pel first | order the targets by the counters (quarter-pel ≫ half-pel) | ~33 / ~15 |
+| T4 | row-lagged deblock worker | re-estimate after T10; the consult's holes: per-MB row completion, an FMO/ASO fallback, a join on every `h264bsdDecode` exit, FreeRTOS primitives, concealment on unfiltered rows | ~37 / ~22 |
+
+- **Dropped unless re-justified:** 5b and 5c. They save ~300 cycles per MB, the stride-16 staging is baked into every `Interpolate*`, and most of their targets disappear after T3.
+- **Fillers** (each scored in a day): `-O3`; 5a with inline word copies instead of `memcpy` calls; `h264bsdClip` and other tables `DRAM_ATTR`.
+- **Gate gaps to close** when a candidate touches them: no I_PCM, FMO/ASO or frame-num-gap stream exists in the gate.
