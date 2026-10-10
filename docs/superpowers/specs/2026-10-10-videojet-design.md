@@ -26,7 +26,7 @@ consumer: AU bytes ─► VideoJet API ─► h264bsd fork (parse, CAVLC, MC/IDC
                                     ─► I420 frame (PSRAM) + per-MB changed map
                       optional worker task on the other core (deblock / recon rows), chosen by the consumer
 ```
-- `components/h264bsd`: the vendored decoder being optimised. Builds unchanged for host (x86) and ESP-IDF.
+- `components/videojet/h264bsd`: the vendored decoder being optimised. Builds unchanged for host (x86) and ESP-IDF.
 - Public API (M2), `components/videojet/include/videojet.h`, small and stable while the internals change:
   - `vj_decoder_create()` / `vj_decoder_destroy()`.
   - `vj_decode_au(dec, au, len, &frame)` takes **exactly one Annex-B access unit**. It returns `VJ_FRAME` (a complete,

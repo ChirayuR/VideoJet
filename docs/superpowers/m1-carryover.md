@@ -32,7 +32,7 @@ are the review's.
 
 ## M3: meta-harness scorer setup
 - **Pipeline.**
-  1. Path allow-list: `components/h264bsd/**`, plus `bench/sdkconfig.defaults` for ladder step 1 only.
+  1. Path allow-list: `components/videojet/h264bsd/**`, plus `bench/sdkconfig.defaults` for ladder step 1 only.
   2. Clean host gate under `timeout`.
   3. Sanitizer gate: ASan + UBSan with `-fno-sanitize=shift-base` (clean on all 11 streams at M1).
   4. Fresh-directory IDF build with `-DSDKCONFIG=<dir>/sdkconfig`: a stale `bench/sdkconfig` beats `sdkconfig.defaults`
