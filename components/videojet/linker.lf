@@ -3,5 +3,10 @@ archive: libvideojet.a
 entries:
     if VJ_IRAM = y:
         * (noflash)
+        # Cold code: runs on parameter sets and errors only, never per frame. Flash keeps internal RAM for hot code.
+        h264bsd_conceal (default)
+        h264bsd_seq_param_set (default)
+        h264bsd_pic_param_set (default)
+        h264bsd_vui (default)
     else:
         * (default)
