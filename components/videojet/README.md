@@ -40,10 +40,12 @@ vj_decoder_destroy(dec);
 - PSRAM in the heap: `CONFIG_SPIRAM=y` with `CONFIG_SPIRAM_USE_MALLOC` (the default) or `CONFIG_SPIRAM_USE_CAPS_ALLOC`.
   `CONFIG_SPIRAM_USE_MEMMAP` leaves the library no PSRAM to allocate from, so the frames fail with `VJ_ERR_NOMEM`.
 - Memory at 800x480, measured on the board (`docs/bench-log.md`, M2 section): 1,507,340 B of PSRAM and 13,544 B of internal
-  RAM, the same on every run and boot. The PSRAM holds the frames (about 1.5 x width x height bytes each, refs + 1 of them,
-  so 2 for a one-reference stream) and the per-macroblock state (1500 MBs x 216 B). Each extra reference frame adds
-  589,828 B. IDF's heap rounds every block up to its size class, so the PSRAM figure is 2.1 % above the sum of the structure
-  sizes.
+  RAM, both heap, the same on every run and boot. The PSRAM holds the frames (about 1.5 x width x height bytes each,
+  refs + 1 of them, so 2 for a one-reference stream) and the per-macroblock state (1500 MBs x 216 B). Each extra reference
+  frame adds 589,828 B. IDF's heap rounds every block up to its size class, so the PSRAM figure is 2.1 % above the sum of
+  the structure sizes.
+- Stack: decoding runs on the stack of the task that calls `vj_decode_au()`. The stack it needs has not been measured; only a
+  16 KiB task stack (the bench's) has been tested.
 - The library places its own buffers, whatever your `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL`: above 16 KiB PSRAM first, below it
   internal RAM first, each falling back to the other. It asks for the same memory as IDF's `malloc`, so it never takes the
   internal DMA reserve (`CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL`).
@@ -62,8 +64,9 @@ vj_decoder_destroy(dec);
 
 ## 5. Kconfig (menu "VideoJet", both off by default)
 - `CONFIG_VJ_ERROR_PRINT`: print the decoder's bitstream errors to stderr (about 60 messages, from the decoding task).
-- `CONFIG_VJ_PROFILE`: per-stage cycle counters, read with `vj_profile_take()`. They cost about 0.5 % and move code layout:
-  profiling builds only, never timed scores (the bench enables it through `bench/sdkconfig.profile`).
+- `CONFIG_VJ_PROFILE`: per-stage cycle counters, read with `vj_profile_take()`. Their cost is not separable from code-layout
+  noise (`docs/bench-log.md`) and they move code layout: profiling builds only, never timed scores (the bench enables it
+  through `bench/sdkconfig.profile`).
 
 ## 6. Licensing
 The h264bsd core is Apache-2.0 (`h264bsd/LICENSE.md`). The licence for VideoJet's own code is to be chosen by the owner

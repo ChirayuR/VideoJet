@@ -6,8 +6,9 @@ its golden is parked in `failing/` with its `.golden` renamed; `host/check.sh` s
 
 ## JVT conformance streams (correctness only)
 `BA1_Sony_D`, `BA2_Sony_F`, `BA_MW_D`, `BANM_MW_D`, `MIDR_MW_D`, `NRF_MW_E`: QCIF (176x144), Baseline profile, POC type 0,
-no VUI, 1 slice per picture. Three more features describe the set as a whole, not each stream:
-- reference frames (SPS `max_num_ref_frames`) per stream, in the order above: 1 / 5 / 4 / 1 / 4 / 3;
+no VUI, 1 slice per picture, in all six. Three features differ from stream to stream, so a summary such as "several
+reference frames, non-reference pictures, multiple IDRs" holds for the set, not for each stream. Per stream:
+- reference frames (SPS `max_num_ref_frames`), in the order above: 1 / 5 / 4 / 1 / 4 / 3;
 - non-reference pictures: only `NRF_MW_E` has them (66 of its 100 pictures);
 - IDR pictures: `BA1_Sony_D` and `BA2_Sony_F` have a single one; the others have several (`BA_MW_D` 4, `BANM_MW_D` 4,
   `MIDR_MW_D` 2, `NRF_MW_E` 4).

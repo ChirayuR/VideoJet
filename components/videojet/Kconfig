@@ -5,7 +5,8 @@ config VJ_PROFILE
     default n
     help
         Brackets the decoder's parse / reconstruct / inter / deblock stages with CCOUNT reads, readable through
-        vj_profile_take(). Adds about 0.5 % to frame time and moves code layout: never use it for timed scores.
+        vj_profile_take(). Its cost is not separable from code-layout noise (docs/bench-log.md) and it moves code layout:
+        never use it for timed scores.
 
 config VJ_ERROR_PRINT
     bool "Print h264bsd bitstream errors to stderr"

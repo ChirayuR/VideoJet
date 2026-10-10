@@ -6,13 +6,13 @@ are the review's.
 
 ## M2: library API and bench rewrite (closed 2026-10-10)
 Each item carries the commit that closed it (branch `m2-library-api`). What M2 did not do moved to the M3 list below.
-- **Timing semantics (I2). Closed by `291405e`, `d691aff`.** `vj_decode_au()` takes exactly one pre-indexed AU per call and the
-  bench stops the clock when it returns. `videojet.h` states the contract: no decode work is left running when a call returns.
-  The bench does not assert it: M2's decoder has no worker, so nothing can run after a return. A multi-core M3 candidate must
-  keep the contract.
-- **Internal-RAM axis (I4). Closed by `89bd8c9` and the M2 docs commit (the one after `89bd8c9`).** `int_used` / `psram_used`
+- **Timing semantics (I2). Closed by `291405e`, `d691aff`, except the in-flight assertion (moved to M3).** `vj_decode_au()`
+  takes exactly one pre-indexed AU per call and the bench stops the clock when it returns. `videojet.h` states the contract:
+  no decode work is left running when a call returns. The bench does not assert it, see the M3 list.
+- **Internal-RAM axis (I4). Closed by `89bd8c9` (the measures) and `d7e3516` (the baselines).** `int_used` / `psram_used`
   per stream from the IDF heap monitor (`89bd8c9`); both, and `libvideojet.a`'s static footprint from
-  `esp_idf_size --archives`, are baselined in `docs/bench-log.md`, section "M2 (library API)".
+  `esp_idf_size --archives`, are baselined in `docs/bench-log.md`, section "M2 (library API)" (`d7e3516`). The heap monitor
+  does not see the decode task's stack: see the M3 list.
 - **Hide the decoder's internals. Closed by `c9e6510`.** `INCLUDE_DIRS` = `include` (the public API only), `PRIV_INCLUDE_DIRS` =
   `src` and the decoder directory. The bench includes only `videojet.h`. (`9137edb`: first-party sources build with strict
   warnings, the one `-Wno-error` is on the vendored sources only.)
@@ -30,7 +30,8 @@ Each item carries the commit that closed it (branch `m2-library-api`). What M2 d
     no start code), `89bd8c9` (`error=extra_frames` for a picture past the golden's count).
   - The hash pass is unchanged since M1 (`components/vj_hash` is untouched), so it still flushes the D-cache between frames.
   - Container identity: **not done**, see the M3 list.
-- **"fps unchanged" acceptance. Closed:** enforced as ±5 % per stream, same speed class (ruling R1 of the M2 ledger;
+- **"fps unchanged" acceptance. Closed:** enforced as ±5 % per stream, same speed class (ruling R1 of the M2 plan, Global
+  Constraints in `docs/superpowers/plans/2026-10-10-videojet-m2-library-api.md`: not the M1 ruling R1 below;
   `tools/compare.py`, default set by `d691aff`), because the ±0.6 % rule sits inside the layout band. The final firmware
   measured −0.06 / −0.21 / −0.36 % (`docs/bench-log.md`, M2 section).
 - **Output reordering** option: not done, and not needed so far. Pictures come out in decode order (`videojet.h`).
@@ -53,7 +54,7 @@ Each item carries the commit that closed it (branch `m2-library-api`). What M2 d
   candidates several times (races).
 - **Held-out:** board correctness (hashes only) for candidates with ESP-only code paths; a held-out fps baseline per speed
   class (`--set all`) before the first promotion (m6). M2 left one for the slow class only: `m2-final-all`, on the committed
-  M2 firmware (`docs/bench-log.md`).
+  M2 firmware (versioned in `docs/baseline-m2.jsonl`, described in `docs/bench-log.md`).
 - **Host stand-in** for `IRAM_ATTR` / `DRAM_ATTR`, so placement candidates build for the host gate.
 - **Scorer hygiene:** `time.monotonic()` timeouts; `capture()`'s result as a `NamedTuple` (it is a 6-tuple now); test
   constants at the top; bounded reason strings; validate `VJP` rows; an fps cross-check against the row times.
@@ -73,6 +74,13 @@ Each item carries the commit that closed it (branch `m2-library-api`). What M2 d
     - check `total_us` against `idr_us + p_mean_us × (frames − 1)`: on all 28 rows of `m2-t3-final` and `m2-final-all` the
       difference is in [0, frames − 1) µs, the truncation of `p_mean_us`; also check fps against `frames·10⁶ / total_us`
       (it matches on those 28 rows). Digit-level damage to `total_us`, `int_used` and `psram_used` is accepted today.
+  - **In-flight check** (the unfinished half of M2's I2): `videojet.h` says no decode work is left running when
+    `vj_decode_au()` returns, but the bench does not assert it. M2's decoder has no worker, so nothing can run after a return;
+    the scorer needs this check once dual-core candidates exist.
+  - **Stack use:** measure the decode task's stack high-water mark per stream (`uxTaskGetStackHighWaterMark`) and count it in
+    the internal-RAM axis. No axis counts the stack today (`int_used` is heap only, `libvideojet.a` has no static RAM), so a
+    candidate that moves state from the heap to the stack would score as an internal-RAM win. The decoder keeps stack arrays
+    (for example `i32 table[21*16]`, 1,344 B, in `h264bsd_reconstruct.c`); the bench task has 16 KiB.
   - **Bench container:** `data_len == 0` or `frames == 0` reaches `malloc(0)` and prints a mislabelled `error=nomem`, and an
     entry with `set > 1` is silently never run. Make both container violations (`VJ error=container`).
   - **Container identity** (from the M2 bench-rewrite list, not done): `bench.py` checks only that the board's `want` frame
@@ -85,10 +93,15 @@ Each item carries the commit that closed it (branch `m2-library-api`). What M2 d
     and `MALLOC_CAP_INTERNAL` requests without `MALLOC_CAP_DEFAULT`.
   - **Fault-injection (OOM) coverage in `make check`:** M2 Task 2's malloc fault-injection sweep (over 100 allocations: 0 leaks,
     0 wrong statuses) was scratch-only.
+  - **Untested guards in `vj_decode_au()`** (`host/test_api.c` has no direct test for them): the stall guard (three
+    consecutive calls into `h264bsdDecode` that consume nothing → `VJ_ERR_STREAM`), the `H264BSD_MEMALLOC_ERROR` →
+    `VJ_ERR_NOMEM` mapping (only the scratch sweep above exercised it), the `len > 0xffffffff` → `VJ_ERR_ARG` guard, and
+    `describe()`'s refusal of a frame wider or taller than 65,535 pixels (a test needs a stream at least 4,096 macroblocks
+    wide).
   - **`make check` prints 8 deliberate `ERROR:` lines** (the damage tests, built with `-D_ERROR_PRINT`). A CI grep for
     "ERROR" would trip on them: grep the exit status instead, or quiet the tests.
 
-## Parked M1 doc nits (closed by the M2 docs commit, the one after `89bd8c9`)
+## Parked M1 doc nits (closed by `d7e3516`)
 - `bench-log.md`: the "98 of 100 rows" and "84 search rows" counts are now qualified as "through `timed-restore-check`".
 - The `baseline-prof` and `timed-restore-check` records carry no `elf_sha`, so `bench-log.md` now says their binaries are not
   recorded.
@@ -118,7 +131,7 @@ Each item carries the commit that closed it (branch `m2-library-api`). What M2 d
   - exact row format.
 - R13. The final fix wave added firmware identity (ELF SHA), the container staleness check, glob dependencies, the baseline snapshot, the layout-noise acceptance rules, and this document.
   - The I2 timer change is deferred to M2's bench rewrite, so M1's numbers stay consistent with M1's code.
-- R14. M1 doc-precision nits were parked, then closed by the M2 docs commit (see above).
+- R14. M1 doc-precision nits were parked, then closed by `d7e3516` (see above).
 - R15. The frozen M1 plan's profile command lacks `--profile --elf`. CLAUDE.md and `bench-log` carry the correct command.
   - The identity check needs INFO-level boot logs, so M3 must not lower the log level.
 
@@ -130,5 +143,5 @@ Each item carries the commit that closed it (branch `m2-library-api`). What M2 d
       64,525 B of internal RAM with the decoder's 13,544 B heap, inside the 100 KB budget), and/or the 32 KB I-cache;
     - re-measure the build-to-build noise floor with deliberate layout perturbations;
     - only then set M3's acceptance bar. The planned ≥1 % bar is void.
-- M2's "fps unchanged" was enforced as ±5 % (ruling R1 of the M2 ledger). The final firmware measured −0.06 / −0.21 / −0.36 %
-  (`docs/bench-log.md`, M2 section); the committed M2 builds spread −2.14 % … +1.25 %.
+- M2's "fps unchanged" was enforced as ±5 % (ruling R1 of the M2 plan, Global Constraints). The final firmware measured
+  −0.06 / −0.21 / −0.36 % (`docs/bench-log.md`, M2 section); the committed M2 builds spread −2.14 % … +1.25 %.

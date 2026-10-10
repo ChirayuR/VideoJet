@@ -10,7 +10,7 @@
   - `src/` holds the API implementation, the AU splitter and the allocator.
   - The vendored h264bsd moves to the private `h264bsd/`.
 - `bench/` and `host/` consume only the public header.
-- Acceptance for every board-touching task is the M1 rule: same PSRAM speed class, |Δ fps| ≤ 0.6 % per stream against `docs/baseline-m1.jsonl`.
+- Acceptance for every board-touching task is the M1 rule: same PSRAM speed class, |Δ fps| ≤ 0.6 % per stream against `docs/baseline-m1.jsonl`. (Superseded after Task 1 by ruling R1 in Global Constraints: ±5 %.)
 
 **Tech Stack:** ESP-IDF v5.4.2 (C, Kconfig, CMake), host gcc, Python 3 (pyserial in the IDF env).
 

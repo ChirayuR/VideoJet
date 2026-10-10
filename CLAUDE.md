@@ -77,7 +77,7 @@ Toolchain traps (found in M1):
   (it has pyserial). `bench.py` FAILs unless the boot log's ELF SHA256 matches `bench/build/videojet_bench.elf`
   (`--elf PATH` for another build dir): flash what you built. `--set all` adds the held-out streams (about 8 min).
   A `VJ` row ends `... fps int_min psram_min total_us int_used psram_used`: the exact timed µs and the decoder's
-  internal-RAM / PSRAM high-water bytes (grammar in `tools/bench.py`).
+  internal-RAM / PSRAM heap high-water bytes, stack not counted (grammar in `tools/bench.py`).
   `python3 tools/compare.py LABEL` checks a search-set record against the M1 baseline in the same speed class (±5 %); it
   cannot pass a `--set all` record, whose held-out streams have no baseline.
   A `CONFIG_VJ_PROFILE` image needs
@@ -128,15 +128,16 @@ h264bsd: Android's Hantro baseline decoder, Apache-2.0, plain C (github.com/onea
 - `$WORK/the consumer project` (CLAUDE.md, docs/) + its memory dir.
 
 ## Status
-- 2026-10-10: **M2 complete** on branch `m2-library-api` (`19c1a23..89bd8c9`, then the M2 docs commit).
-  Next: M3 step 0 (see the layout bullet below), then the meta-harness search.
+- 2026-10-10: **M2 complete** on branch `m2-library-api` (`19c1a23..89bd8c9`, then the docs commit `d7e3516` and its fix
+  round). Next: M3 step 0 (see the layout bullet below), then the meta-harness search.
   - Delivered: the public API, one component with a private decoder, Kconfig `VJ_PROFILE` / `VJ_ERROR_PRINT`, library-owned
     memory placement, the consumer README, and a bench that reports exact `total_us` and the decoder's `int_used` / `psram_used`.
   - Final firmware (app `89bd8c9`, ELF `6a270d064`, record `m2-final-all`: PASS, all 11 streams). Search fps against the M1
     baseline of the same class: −0.06 / −0.21 / −0.36 % (aux_card / aux_map / full_map), inside the ±5 % M2 bar. The
-    committed M2 builds spread −2.14 … +1.25 % with no decoder change: that is code layout (below).
-  - Cost axes at 800x480, M3's baseline (`docs/bench-log.md`, M2 section): `int_used` 13,544 B, `psram_used` 1,507,340 B
-    (+589,828 B per extra reference frame); `libvideojet.a` static: 0 B IRAM, 0 B DRAM, 58,071 B flash.
+    committed M2 builds spread −2.14 … +1.25 % with no decoder algorithm changed: that is code layout (below).
+  - Cost axes at 800x480, M3's baseline (`docs/bench-log.md`, M2 section; records in `docs/baseline-m2.jsonl`): heap
+    `int_used` 13,544 B, heap `psram_used` 1,507,340 B (+589,828 B per extra reference frame); `libvideojet.a` static: 0 B
+    IRAM, 0 B DRAM, 58,071 B flash. The decode task's stack is not measured by any axis.
   - Held-out fps at index 5 (slow class, no same-class baseline): aux_map_dark 9.27, test_640x360 12.99; JVT QCIF
     56.5–62.5 (correctness only).
 - 2026-10-10: **M1 complete, merged to `main`** (`7c9c628..3c174ad`).
@@ -155,7 +156,7 @@ h264bsd: Android's Hantro baseline decoder, Apache-2.0, plain C (github.com/onea
   10 boots in `docs/baseline-m1.jsonl`). Compare candidates A/B/B/A across resets, and only within the same speed class.
   (M1 also put code layout at ~±0.5 % and the acceptance bar at ≥1 %: both are void, see the layout bullet below.)
   `bench.py` records `psram_tuning`. The official baseline (8 boots) is in `docs/bench-log.md`; its records are in
-  `docs/baseline-m1.jsonl`.
+  `docs/baseline-m1.jsonl` (M2's two final records: `docs/baseline-m2.jsonl`).
 
   Baseline fps by speed class. The held-out rows come from the smoke boot, whose search fps put it in the fast class.
 
@@ -169,11 +170,11 @@ h264bsd: Android's Hantro baseline decoder, Apache-2.0, plain C (github.com/onea
   | JVT (QCIF) | 57–63 | n/a | |
 
   A near-static card still costs ~9k cycles per skipped MB, so skip elision is the first lever.
-- **Code layout sensitivity is several percent** (M2 Task 1, 2026-10-10). Identical decoder logic measured −4.3 … +0.7 % with
-  placement alone: the M1 logic shifted by ~16 B gave −3.1 % (aux_map) and −4.3 % (full_map), and the M2 wrapper linked in
-  front of it (+0x51c) gave +0.6 / +0.7 %.
+- **Code layout sensitivity is several percent** (M2 Task 1, 2026-10-10). With no decoder algorithm changed, fps moved by
+  −4.3 … +1.25 % against the same-class baseline, observed over the Task 1 controls and the committed M2 builds
+  (`docs/bench-log.md`): the M1 logic shifted by ~16 B gave −3.1 % (aux_map) and −4.3 % (full_map), the M2 wrapper linked in
+  front of it (+0x51c) +0.6 / +0.7 %, the final M2 build −0.06 / −0.21 / −0.36 %.
   - Likely cause: the default 16 KB I-cache is smaller than the hot decode code.
-  - Consequence: any rebuild that moves code is a ±4 % lottery. The committed M2 builds drew −2.14 … +1.25 %.
-    M2 acceptance was ±5 % (`compare.py --tol 5`).
+  - Consequence: any rebuild that moves code draws from that band. M2 acceptance was ±5 % (`compare.py --tol 5`).
   - The ≥1 % bar of M1 is void until **M3 step 0** (blocking): pin hot-code placement (libvideojet in IRAM via a
     linker fragment, and/or a 32 KB I-cache), then re-measure the build-to-build noise floor.
