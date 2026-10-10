@@ -27,12 +27,24 @@ consumer: AU bytes ─► VideoJet API ─► h264bsd fork (parse, CAVLC, MC/IDC
                       optional worker task on the other core (deblock / recon rows), chosen by the consumer
 ```
 - `components/h264bsd`: the vendored decoder being optimised. Builds unchanged for host (x86) and ESP-IDF.
-- Public API (M2): small and stable while the internals change.
-  - `vj_decoder_create(cfg)`. The cfg names the worker core (or none) and its priority.
-  - `vj_decode(dec, au, len, &frame)`
-  - `vj_decoder_destroy(dec)`
-  - A frame carries Y/U/V pointers, strides, size, crop, the full-range flag, matrix coefficients,
-    and the changed-MB map, so consumers can skip converting unchanged regions.
+- Public API (M2), `components/videojet/include/videojet.h`, small and stable while the internals change:
+  - `vj_decoder_create()` / `vj_decoder_destroy()`.
+  - `vj_decode_au(dec, au, len, &frame)` takes **exactly one Annex-B access unit**. It returns `VJ_FRAME` (a complete,
+    deblocked picture), `VJ_NO_FRAME` (parameter sets only) or `VJ_ERR_*`.
+    - No decode work is in flight when it returns.
+    - The decoder never sees the next AU, so it cannot work ahead in untimed gaps.
+    - The USB protocol already frames AUs.
+  - `vj_au_length(data, len)` splits a raw Annex-B buffer into AUs, for byte-stream sources (files, the head unit's TCP output).
+    It handles constrained baseline without arbitrary slice order or redundant pictures.
+  - A frame carries:
+    - Y/U/V pointers and strides
+    - coded size and crop window
+    - the full-range flag and matrix coefficients
+    - the IDR flag
+    - concealed-MB count (so the consumer can ask the source for a keyframe)
+    - `changed_mb` (NULL until M3's skip tracking lands)
+  - `vj_profile_take()` returns per-stage cycle counters, or false when profiling is compiled out.
+  - No config struct yet. A worker-core option arrives with M3's dual-core candidates, as an additive API.
 - `bench/`: an ESP-IDF app that benchmarks the library on the board. It consumes `../components` like any app; it is not part of the library.
 - `host/`: the bit-exact gate on x86.
 
