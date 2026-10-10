@@ -48,5 +48,16 @@ Every change made for VideoJet is listed here, newest last.
     - Records hold only while the picture's MBs are decoded once each in raster order. Otherwise (FMO or ASO decoded out of raster order, a redundant
       re-decode, a slice error, concealment) the pass remakes every record from storage.
     - `GetLumaEdgeThresholds` / `GetChromaEdgeThresholds` became `GetEdgeThresholds`, which works from qps.
+  - Bit reader (`h264bsd_stream.c/h`, `h264bsd_vlc.c`, `h264bsd_cavlc.c`, `h264bsd_util.c`, `h264bsd_byte_stream.c`,
+    `h264bsd_decoder.c`, `h264bsd_macroblock_layer.c`).
+    - `strmData_t` holds the read position in `strmBuffReadBits` alone, plus a window `cache[2]`: the two stream words
+      from `strmBuffReadBits / 32`, first byte in the MSB, 0 past the end. `h264bsdShowBits32` and `h264bsdFlushBits` are
+      `static inline` on it. `h264bsdStrmFill` reloads it when a flush enters another word, after NAL extraction (which has
+      already stripped the 0x03 bytes in place) and on the re-decode path.
+    - `pStrmCurrPos` and `bitPosInWord` are gone: `h264bsdIsByteAligned` and `h264bsdRbspTrailingBits` use
+      `strmBuffReadBits & 7`. So is the macroblock layer's resync of `strmBuffReadBits` after the residual: an identity
+      after success, and after an error the slice's stream is never read again.
+    - Exp-Golomb codes with at most 15 leading zeros, and CAVLC's level_prefix, count the zeros with `__builtin_clz`
+      (NSAU on Xtensa).
 - Apache-2.0 §4(b) modification notice: every file changed above carries the header line
   `Modified for VideoJet: see h264bsd/README.md, Local changes.` Comment-only.

@@ -1,6 +1,7 @@
 /*
  * Copyright (C) 2009 The Android Open Source Project
  * Modified for use by h264bsd standalone library
+ * Modified for VideoJet: see h264bsd/README.md, Local changes.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -132,9 +133,8 @@ u32 h264bsdRbspTrailingBits(strmData_t *pStrmData)
 /* Code */
 
     ASSERT(pStrmData);
-    ASSERT(pStrmData->bitPosInWord < 8);
 
-    stuffingLength = 8 - pStrmData->bitPosInWord;
+    stuffingLength = 8 - (pStrmData->strmBuffReadBits & 0x7);
 
     stuffing = h264bsdGetBits(pStrmData, stuffingLength);
     if (stuffing == END_OF_STREAM)

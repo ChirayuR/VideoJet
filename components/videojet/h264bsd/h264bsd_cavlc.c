@@ -1,6 +1,7 @@
 /*
  * Copyright (C) 2009 The Android Open Source Project
  * Modified for use by h264bsd standalone library
+ * Modified for VideoJet: see h264bsd/README.md, Local changes.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -473,48 +474,16 @@ u32 DecodeCoeffToken(u32 bits, u32 nc)
 u32 DecodeLevelPrefix(u32 bits)
 {
 
-/* Variables */
-
-    u32 numZeros;
-
 /* Code */
 
-    if (bits >= 0x8000)
-        numZeros = 0;
-    else if (bits >= 0x4000)
-        numZeros = 1;
-    else if (bits >= 0x2000)
-        numZeros = 2;
-    else if (bits >= 0x1000)
-        numZeros = 3;
-    else if (bits >= 0x0800)
-        numZeros = 4;
-    else if (bits >= 0x0400)
-        numZeros = 5;
-    else if (bits >= 0x0200)
-        numZeros = 6;
-    else if (bits >= 0x0100)
-        numZeros = 7;
-    else if (bits >= 0x0080)
-        numZeros = 8;
-    else if (bits >= 0x0040)
-        numZeros = 9;
-    else if (bits >= 0x0020)
-        numZeros = 10;
-    else if (bits >= 0x0010)
-        numZeros = 11;
-    else if (bits >= 0x0008)
-        numZeros = 12;
-    else if (bits >= 0x0004)
-        numZeros = 13;
-    else if (bits >= 0x0002)
-        numZeros = 14;
-    else if (bits >= 0x0001)
-        numZeros = 15;
-    else /* more than 15 zeros encountered which is an error */
+    ASSERT(bits < 0x10000);
+
+    /* more than 15 zeros encountered which is an error */
+    if (!bits)
         return(VLC_NOT_FOUND);
 
-    return(numZeros);
+    /* leading zeros of the 16 bits; __builtin_clz is NSAU on Xtensa */
+    return((u32)__builtin_clz(bits) - 16);
 
 }
 

@@ -1,6 +1,7 @@
 /*
  * Copyright (C) 2009 The Android Open Source Project
  * Modified for use by h264bsd standalone library
+ * Modified for VideoJet: see h264bsd/README.md, Local changes.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -178,8 +179,6 @@ u32 h264bsdExtractNalUnit(u8 *pByteStream, u32 len, strmData_t *pStrmData,
     }
 
     pStrmData->pStrmBuffStart    = pByteStream + initByteCount;
-    pStrmData->pStrmCurrPos      = pStrmData->pStrmBuffStart;
-    pStrmData->bitPosInWord      = 0;
     pStrmData->strmBuffReadBits  = 0;
 
     /* return number of bytes "consumed" */
@@ -231,6 +230,8 @@ u32 h264bsdExtractNalUnit(u8 *pByteStream, u32 len, strmData_t *pStrmData,
          * prevention bytes -> subtract from stream buffer size */
         pStrmData->strmBuffSize -= (u32)(readPtr - writePtr);
     }
+
+    h264bsdStrmFill(pStrmData);
 
     return(HANTRO_OK);
 

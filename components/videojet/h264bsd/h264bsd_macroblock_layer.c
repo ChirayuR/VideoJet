@@ -250,10 +250,6 @@ u32 h264bsdDecodeMacroblockLayer(strmData_t *pStrmData,
             tmp = DecodeResidual(pStrmData, &pMbLayer->residual, pMb,
                 pMbLayer->mbType, pMbLayer->codedBlockPattern);
 
-            pStrmData->strmBuffReadBits =
-                (u32)(pStrmData->pStrmCurrPos - pStrmData->pStrmBuffStart) * 8 +
-                pStrmData->bitPosInWord;
-
             if (tmp != HANTRO_OK)
                 return(tmp);
         }

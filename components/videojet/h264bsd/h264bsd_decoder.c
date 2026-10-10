@@ -178,8 +178,8 @@ u32 h264bsdDecode(storage_t *pStorage, u8 *byteStrm, u32 len, u32 picId,
     if (pStorage->prevBufNotFinished && byteStrm == pStorage->prevBufPointer)
     {
         strm = pStorage->strm[0];
-        strm.pStrmCurrPos = strm.pStrmBuffStart;
-        strm.strmBuffReadBits = strm.bitPosInWord = 0;
+        strm.strmBuffReadBits = 0;
+        h264bsdStrmFill(&strm);
         *readBytes = pStorage->prevBytesConsumed;
     }
     else

@@ -1,6 +1,7 @@
 /*
  * Copyright (C) 2009 The Android Open Source Project
  * Modified for use by h264bsd standalone library
+ * Modified for VideoJet: see h264bsd/README.md, Local changes.
 
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -116,45 +117,21 @@ u32 h264bsdDecodeExpGolombUnsigned(strmData_t *pStrmData, u32 *codeNum)
 
     bits = h264bsdShowBits32(pStrmData);
 
-    /* first bit is 1 -> code length 1 */
-    if (bits >= 0x80000000)
+    /* at most 15 leading zeros -> the whole code word, 2*numZeros+1 bits, is
+     * in bits. The '1' is stream data, so a failing flush means the info
+     * bits run past the end. __builtin_clz is NSAU on Xtensa */
+    if (bits >= 0x00010000)
     {
-        h264bsdFlushBits(pStrmData, 1);
-        *codeNum = 0;
-        return(HANTRO_OK);
-    }
-    /* second bit is 1 -> code length 3 */
-    else if (bits >= 0x40000000)
-    {
-        if (h264bsdFlushBits(pStrmData, 3) == END_OF_STREAM)
+        numZeros = (u32)__builtin_clz(bits);
+        if (h264bsdFlushBits(pStrmData, 2*numZeros+1) == END_OF_STREAM)
             return(HANTRO_NOK);
-        *codeNum = 1 + ((bits >> 29) & 0x1);
-        return(HANTRO_OK);
-    }
-    /* third bit is 1 -> code length 5 */
-    else if (bits >= 0x20000000)
-    {
-        if (h264bsdFlushBits(pStrmData, 5) == END_OF_STREAM)
-            return(HANTRO_NOK);
-        *codeNum = 3 + ((bits >> 27) & 0x3);
-        return(HANTRO_OK);
-    }
-    /* fourth bit is 1 -> code length 7 */
-    else if (bits >= 0x10000000)
-    {
-        if (h264bsdFlushBits(pStrmData, 7) == END_OF_STREAM)
-            return(HANTRO_NOK);
-        *codeNum = 7 + ((bits >> 25) & 0x7);
+        *codeNum = (bits >> (31 - 2*numZeros)) - 1;
         return(HANTRO_OK);
     }
     /* other code lengths */
     else
     {
-#ifndef H264DEC_NEON
-        numZeros = 4 + h264bsdCountLeadingZeros(bits, 28);
-#else
-        numZeros = h264bsdCountLeadingZeros(bits);
-#endif
+        numZeros = bits ? (u32)__builtin_clz(bits) : 32;
         /* all 32 bits are zero */
         if (numZeros == 32)
         {

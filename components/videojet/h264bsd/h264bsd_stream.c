@@ -1,6 +1,7 @@
 /*
  * Copyright (C) 2009 The Android Open Source Project
  * Modified for use by h264bsd standalone library
+ * Modified for VideoJet: see h264bsd/README.md, Local changes.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,8 +26,7 @@
      4. Local function prototypes
      5. Functions
           h264bsdGetBits
-          h264bsdShowBits32
-          h264bsdFlushBits
+          h264bsdStrmFill
           h264bsdIsByteAligned
 
 ------------------------------------------------------------------------------*/
@@ -93,121 +93,55 @@ u32 h264bsdGetBits(strmData_t *pStrmData, u32 numBits)
 
 /*------------------------------------------------------------------------------
 
-    Function: h264bsdShowBits32
+    Function: h264bsdStrmFill
 
         Functional description:
-            Read 32 bits from the stream buffer. Buffer is left as it is, i.e.
-            no bits are removed. First bit read from the stream is the MSB of
-            the return value. If there is not enough bits in the buffer ->
-            bits beyong the end of the stream are set to '0' in the return
-            value.
+            Load the window (h264bsd_stream.h) for strmBuffReadBits:
+            cache[0] = stream word strmBuffReadBits/32, cache[1] = the word
+            after it, the first byte in the MSB. Bytes past the end of the
+            buffer read as 0, as h264bsdShowBits32 returns them.
 
         Input:
             pStrmData   pointer to stream data structure
 
         Output:
-            none
+            pStrmData   cache[] loaded
 
         Returns:
-            bits read from stream
+            none
 
 ------------------------------------------------------------------------------*/
 
-u32 h264bsdShowBits32(strmData_t *pStrmData)
+static u32 StrmWord(const strmData_t *pStrmData, u32 pos)
 {
 
-    i32 bits, shift;
-    u32 out;
-    u8 *pStrm;
+    const u8 *pStrm = pStrmData->pStrmBuffStart;
+    u32 i, out = 0;
 
-    ASSERT(pStrmData);
-    ASSERT(pStrmData->pStrmCurrPos);
-    ASSERT(pStrmData->bitPosInWord < 8);
-    ASSERT(pStrmData->bitPosInWord ==
-           (pStrmData->strmBuffReadBits & 0x7));
+    if (pos + 4 <= pStrmData->strmBuffSize)
+        return(((u32)pStrm[pos] << 24) | ((u32)pStrm[pos+1] << 16) |
+               ((u32)pStrm[pos+2] << 8) | (u32)pStrm[pos+3]);
 
-    pStrm = pStrmData->pStrmCurrPos;
-
-    /* number of bits left in the buffer */
-    bits = (i32)pStrmData->strmBuffSize*8 - (i32)pStrmData->strmBuffReadBits;
-
-    /* at least 32-bits in the buffer */
-    if (bits >= 32)
-    {
-        u32 bitPosInWord = pStrmData->bitPosInWord;
-        out = ((u32)pStrm[0] << 24) | ((u32)pStrm[1] << 16) |
-              ((u32)pStrm[2] <<  8) | ((u32)pStrm[3]);
-
-        if (bitPosInWord)
-        {
-            u32 byte = (u32)pStrm[4];
-            u32 tmp = (8-bitPosInWord);
-            out <<= bitPosInWord;
-            out |= byte>>tmp;
-        }
-        return (out);
-    }
-    /* at least one bit in the buffer */
-    else if (bits > 0)
-    {
-        shift = (i32)(24 + pStrmData->bitPosInWord);
-        out = (u32)(*pStrm++) << shift;
-        bits -= (i32)(8 - pStrmData->bitPosInWord);
-        while (bits > 0)
-        {
-            shift -= 8;
-            out |= (u32)(*pStrm++) << shift;
-            bits -= 8;
-        }
-        return (out);
-    }
-    else
-        return (0);
+    for (i = 0; i < 4; i++)
+        out = (out << 8) |
+              (pos + i < pStrmData->strmBuffSize ? (u32)pStrm[pos+i] : 0);
+    return(out);
 
 }
 
-/*------------------------------------------------------------------------------
-
-    Function: h264bsdFlushBits
-
-        Functional description:
-            Remove bits from the stream buffer
-
-        Input:
-            pStrmData       pointer to stream data structure
-            numBits         number of bits to remove
-
-        Output:
-            none
-
-        Returns:
-            HANTRO_OK       success
-            END_OF_STREAM   not enough bits left
-
-------------------------------------------------------------------------------*/
-#ifndef H264DEC_NEON
-u32 h264bsdFlushBits(strmData_t *pStrmData, u32 numBits)
+void h264bsdStrmFill(strmData_t *pStrmData)
 {
+
+    u32 pos = (pStrmData->strmBuffReadBits >> 5) << 2;
 
     ASSERT(pStrmData);
     ASSERT(pStrmData->pStrmBuffStart);
-    ASSERT(pStrmData->pStrmCurrPos);
-    ASSERT(pStrmData->bitPosInWord < 8);
-    ASSERT(pStrmData->bitPosInWord == (pStrmData->strmBuffReadBits & 0x7));
 
-    pStrmData->strmBuffReadBits += numBits;
-    pStrmData->bitPosInWord = pStrmData->strmBuffReadBits & 0x7;
-    if ( (pStrmData->strmBuffReadBits ) <= (8*pStrmData->strmBuffSize) )
-    {
-        pStrmData->pStrmCurrPos = pStrmData->pStrmBuffStart +
-            (pStrmData->strmBuffReadBits >> 3);
-        return(HANTRO_OK);
-    }
-    else
-        return(END_OF_STREAM);
+    pStrmData->cache[0] = StrmWord(pStrmData, pos);
+    pStrmData->cache[1] = StrmWord(pStrmData, pos + 4);
 
 }
-#endif
+
 /*------------------------------------------------------------------------------
 
     Function: h264bsdIsByteAligned
@@ -234,7 +168,7 @@ u32 h264bsdIsByteAligned(strmData_t *pStrmData)
 
 /* Code */
 
-    if (!pStrmData->bitPosInWord)
+    if (!(pStrmData->strmBuffReadBits & 0x7))
         return(HANTRO_TRUE);
     else
         return(HANTRO_FALSE);
