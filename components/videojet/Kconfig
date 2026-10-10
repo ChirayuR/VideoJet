@@ -18,7 +18,7 @@ config VJ_IRAM
     bool "Run the decoder from internal RAM (code and tables)"
     default y
     help
-        Puts libvideojet's code (51,722 B, IRAM) and its tables (7,090 B, DRAM) in internal RAM. On the
+        Puts libvideojet's code (51,713 B, IRAM) and its tables (7,090 B, DRAM) in internal RAM. On the
         bench the code gained +1 / +11 / +21 % fps (aux_card / aux_map / full_map) over flash code with the
         default 16 KB I-cache, and moving it changed fps by at most 0.11 %; the tables in DRAM gained another
         +0.7 / +1.4 / +2.0 % on top. Off: code and tables stay in flash; with a 32 KB I-cache that was within

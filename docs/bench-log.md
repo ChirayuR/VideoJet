@@ -372,7 +372,13 @@ are copied into `.superpowers/sdd/2026-10-10-videojet-m3-speed/baseline-t{3,6c}.
 | T9 reset generation (0abb6d3) | `m3-resetgen2` | 5 | 5b752d531 | 24.3856 / 13.2758 / 7.8423 | +5.23 / +2.84 / +1.92 | 13,544 |
 | T3 skip elision (088983c; af919ec adds tests only) | `m3-elide` | 5 | 48a121b56 | 59.8110 / 16.1626 / 7.8575 | +145.27 / +21.75 / +0.19 | 21,136 |
 | T6c lazy mbLayer clear (c4fbb31) | `m3-lazyclear` | 5 | e0fa69db4 | 59.9155 / 16.2917 / 7.9250 | +0.17 / +0.80 / +0.86 | 21,136 |
+| tables in DRAM, linker `noflash` (9301581) | `m3-rodata` | 5 | c28ae06da | 60.3359 / 16.5266 / 8.0799 | +0.70 / +1.44 / +1.95 | 21,136 |
+| T10 deblock records + edge-less skip (bc05b06) | `m3-bsrec` | 5 | bcfa20de0 | 73.0733 / 16.9407 / 8.1067 | +21.11 / +2.51 / +0.33 | 39,572 |
 
-Cumulative since M2 (slow class 17.11 / 9.67 / 5.58): **+250 % / +68 % / +42 %**. Skip elision elides 1,438 / 797 / 8.4 MBs
+Cumulative since M2 (slow class 17.11 / 9.67 / 5.58), at the T10 tip: **+327 % / +75 % / +45 %**. Skip elision elides 1,438 / 797 / 8.4 MBs
 per frame (aux_card / aux_map / full_map), against the 1,437 / 800 / 6 that the earlier cost model predicted. aux_card is at the
 spec's 60 fps decode-only goal; aux_map, the ≥30 fps gate for the Android Auto consumer, is next.
+
+Library internal RAM at the T10 tip: heap 39,572 B (+18,000 B of deblock records) + IRAM 51,713 B + DRAM 7,090 B = 98,375 B
+of the 100 KB budget, stack excluded. An internal-RAM row ring for `mbStorage_t` (T12, ~22 KB) no longer fits: T12 becomes a
+compaction of `mbStorage_t` in PSRAM, or the records move to PSRAM (one line, bit-exact either way).

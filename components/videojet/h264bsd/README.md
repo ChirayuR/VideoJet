@@ -45,7 +45,7 @@ Every change made for VideoJet is listed here, newest last.
     - Each MB's bS (2 bits per edge segment) and threshold inputs go into a 12 B record when it is decoded
       (`h264bsdDeblockRecord`), in internal RAM (`vj_alloc_internal`). The pass reads only records and skips MBs with
       no edge.
-    - Records hold only while the picture's MBs are decoded once each in raster order. Otherwise (ASO, FMO, a redundant
+    - Records hold only while the picture's MBs are decoded once each in raster order. Otherwise (FMO or ASO decoded out of raster order, a redundant
       re-decode, a slice error, concealment) the pass remakes every record from storage.
     - `GetLumaEdgeThresholds` / `GetChromaEdgeThresholds` became `GetEdgeThresholds`, which works from qps.
 - Apache-2.0 §4(b) modification notice: every file changed above carries the header line
