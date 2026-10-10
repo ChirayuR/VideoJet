@@ -19,3 +19,5 @@ set_source_files_properties(${dec_srcs} PROPERTIES COMPILE_OPTIONS -Wno-error=ma
 if(CONFIG_VJ_ERROR_PRINT)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE _ERROR_PRINT)
 endif()
+# SPIKE e2: every function of the component starts on a 64 B boundary (layout perturbation).
+target_compile_options(${COMPONENT_LIB} PRIVATE -falign-functions=64)
