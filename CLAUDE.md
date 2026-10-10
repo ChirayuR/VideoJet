@@ -129,6 +129,17 @@ h264bsd: Android's Hantro baseline decoder, Apache-2.0, plain C (github.com/onea
   - Its `libopenh264.a` is encoder-only, with S3 PIE asm MC (`McHorVer{01,02,03,10,11,20,22,30}_esp32s3`, `PixelAvg*`).
     So PIE quarter-pel MC is proven on the S3. It is closed code under a custom licence: evidence, not code to copy.
   - the consumer app (an AA minimap on the S3, the user's optimisation target since 2026-10-10) decodes with it today.
+- Alt-decoder study (2026-10-10, host x86 proxy, `-O2` single thread; scratchpad `alt-decoders/`):
+  - **TinyH264 upstream** (udevbe 524a702): identical to our h264bsd within ±1 %. It only inlines the bit reader (1–2 %).
+  - **OpenH264 v2.6.0 decoder, C++ path:**
+    - bit-exact on 11/11 streams and 13–29 % faster on the host;
+    - but **8.55 MB of heap at 800×480**, which is more than the PSRAM. That is a 3 MiB fixed bitstream buffer, 768 B of coefficients per MB, padded refs and ~2.1 KB/MB of context;
+    - code is 3.7× ours, and frame threads are experimental (`-t 2` crashed). **Don't switch cores.**
+  - **Borrow:**
+    - OpenH264's direct-to-picture MC: when cbp = 0 it copies straight into the current picture, and adds residual in place only for 4×4 blocks with nzc ≠ 0 (`WelsMbInterPrediction`, `IdctFourResAddPred_`). A port covering P_Skip only gave host aux_card −46 %;
+    - the alpha/beta = 0 deblock edge skip, which is QP-dependent;
+    - the inlined bit reader.
+  - **Corpus caveat:** our search streams are low-QP x264 CBR. Deblock alpha = 0 (a no-op) on 99 / 92 / 37 % of MBs (aux_card / aux_map / full_map), so QP-dependent gains are inflated. Real AA captures are still needed.
 - P4 has HW H.264 **encoder** only, no HW decoder. P4 HW JPEG decodes 800×480 at 253 fps. PPA SRM does
   YUV420→RGB565 plus rotate/scale.
 - Only AA-on-MCU prior art: payalneg/esp32p4-android-auto (GPL-3.0, don't copy code). P4 800×480 full frame:
