@@ -65,9 +65,9 @@ aux_card / aux_map / full_map (800x480) from 17.11 / 9.67 / 5.58 fps (M2: code i
 - **D-cache 64 KB** (`CONFIG_ESP32S3_DATA_CACHE_64KB=y`): another +8 / +6 / +7 % on top of the 64 B line, for 32 KB of
   internal RAM (31,996 B less heap, measured).
 - **Decoder code in IRAM** (`CONFIG_VJ_IRAM=y`, the default): 50,831 B of internal RAM. It gained +1 / +11 / +21 % over flash
-  code with the default 16 KB I-cache, and it makes fps independent of where the linker puts the code. The alternative, for
+  code with the default 16 KB I-cache, and with it, moving the code changed fps by at most 0.11 % on the bench. The alternative, for
   16 KB of internal RAM instead of 51 KB: `CONFIG_VJ_IRAM=n` with `CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y`, which stayed within
-  1 % of IRAM on the bench (22.17 / 12.60 / 7.63).
+  1 % of IRAM on the bench's code layout (flash code has no layout pin, so treat it as an estimate) (22.17 / 12.60 / 7.63).
 - With 64 B lines, a PSRAM buffer that DMA reads or writes needs 64 B alignment in address and size
   (`CONFIG_ESP32S3_DATA_CACHE_LINE_SIZE`; for example `heap_caps_aligned_alloc(64, n, MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA)`
   with `n` a multiple of 64). The library does no DMA, and its own buffers, `f.y`, `f.u` and `f.v` included, are not

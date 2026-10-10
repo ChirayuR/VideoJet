@@ -73,8 +73,9 @@ Toolchain traps (found in M1):
   with `if(CMAKE_BUILD_EARLY_EXPANSION)` (plain glob) / `else()` (see `components/videojet/CMakeLists.txt`).
 - esptool/idf.py progress floods output. Pipe through `tr '\r' '\n' | grep -v '%)' | tail`.
 - **`idf.py -B dir flash` rebuilds from the current tree** (the M3 spike measured the wrong tree that way): flash
-  `@flash_args` from the build dir with esptool, never `idf.py ... flash`. Also, the in-tree `bench/sdkconfig` (gitignored)
-  predates the 64 KB / 64 B D-cache and overrides `sdkconfig.defaults`: always build with `-DSDKCONFIG=<dir>/sdkconfig`.
+  `@flash_args` from the build dir with esptool, never `idf.py ... flash`. Also, a plain `idf.py -C bench build` writes
+  `bench/sdkconfig` (gitignored), which from then on silently overrides `sdkconfig.defaults`: always build in a fresh dir with
+  `-DSDKCONFIG=<dir>/sdkconfig`, and delete any `bench/sdkconfig*` that appears.
 - Board loop: `tools/flash_streams.sh` (only when streams change), then build fresh and flash exactly that build:
   ```
   rm -rf bench/build && idf.py -C bench -B "$PWD/bench/build" -DSDKCONFIG="$PWD/bench/build/sdkconfig" build
@@ -165,7 +166,7 @@ h264bsd: Android's Hantro baseline decoder, Apache-2.0, plain C (github.com/onea
     - slow class (idx 5, 5 boots): 22.2074 / 12.7163 / 7.6810 fps = 45.03 / 78.64 / 130.19 ms/frame;
     - fast class (idx 10, 2 boots, no idx 4 drawn): 22.3206 / 12.7590 / 7.6987 fps = 44.80 / 78.38 / 129.89 ms/frame;
     - +29.8 / +31.5 / +37.8 % over M2 in the slow class (`docs/bench-log.md`, M3 step 0).
-  - Noise now: layout at most 0.11 %, same binary at most 0.0019 % (measured on the 7 boots; the bar assumed 0.004 %), class gap
+  - Noise now: layout at most 0.11 %, same binary at most 0.0019 % on the 7 baseline boots (0.004 % is the spike's bound), class gap
     +0.51 / +0.34 / +0.23 %. M3's bar: every search stream ≥ −0.3 % and one ≥ +0.3 %, within one class.
   - Cost axes: heap `int_used` 13,544 B + IRAM 50,831 B = 64,375 B of library internal RAM (budget ≤ 100 KB, stack still
     unmeasured); `psram_used` 1,507,340 B unchanged; bench `int_min` 271,699 B (IRAM 50,944 B and the bigger D-cache 31,996 B).
@@ -222,4 +223,4 @@ h264bsd: Android's Hantro baseline decoder, Apache-2.0, plain C (github.com/onea
   - Consequence: any rebuild that moves code has landed anywhere in that band so far. M2 acceptance was ±5 %
     (`compare.py --tol 5`).
   - Resolved by **M3 step 0** (first Status entry): libvideojet runs from IRAM (`CONFIG_VJ_IRAM`), and layout noise is now at most 0.11 %
-    (same binary at most 0.004 %). M1's ≥1 % bar stays void; M3's bar is ±0.3 % (plan, Global Constraints).
+    (same binary at most 0.004 % in the spike, 0.0019 % on the baseline boots). M1's ≥1 % bar stays void; M3's bar is ±0.3 % (plan, Global Constraints).
