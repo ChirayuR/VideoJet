@@ -70,20 +70,394 @@
  *  G, H, M and N are integer sample positions
  *  a-s are fractional samples that need to be interpolated.
  */
-#ifndef H264DEC_OMXDL
-static const u32 lumaFracPos[4][4] = {
-  /* G  d  h  n    a  e  i  p    b  f  j   q     c   g   k   r */
-    {0, 1, 2, 3}, {4, 5, 6, 7}, {8, 9, 10, 11}, {12, 13, 14, 15}};
-#endif /* H264DEC_OMXDL */
-
-/* clipping table, defined in h264bsd_intra_prediction.c */
-extern const u8 h264bsdClip[];
-
 /*------------------------------------------------------------------------------
     4. Local function prototypes
 ------------------------------------------------------------------------------*/
 
 #ifndef H264DEC_OMXDL
+
+/*------------------------------------------------------------------------------
+
+    Luma motion compensation, rewritten for VideoJet (see h264bsd/README.md,
+    Local changes); chroma keeps the original h264bsdInterpolateChroma*.
+    Bit-exact with the original h264bsdInterpolate* kernels: host/test_mc.c
+    checks every position, partition and edge case against the standard's
+    equations.
+
+    Each partition reads one reference window: the block plus the 6-tap margins
+    its fractional directions need (2 samples before, 3 after). The window is
+    read in place when it lies inside the picture, else h264bsdFillBlock pads it
+    into a local buffer (LumaEdge). Kernels read the window (s, row stride ss)
+    and write the prediction array d (16 per row). Output sample (x, y) takes
+    its 6 taps from window columns x..x+5 or rows y..y+5, so the full sample G
+    of a fractional direction is window column x+2 or row y+2.
+
+    The kernels keep a 6-sample window in registers and load one sample per
+    output; each output overwrites the register of its oldest tap. The big
+    buffers live in the helpers that need them (LumaEdge, LumaCentre), so the
+    other frames stay small enough for short spill offsets.
+
+------------------------------------------------------------------------------*/
+
+#define VJ_NOINLINE __attribute__((noinline))
+#define VJ_INLINE static inline __attribute__((always_inline))
+
+VJ_INLINE u32 Clip255(i32 v)
+{
+    return (u32)(v < 0 ? 0 : v > 255 ? 255 : v);
+}
+
+/* the 6-tap filter (1, -5, 20, 20, -5, 1); c and d weigh 20. Unsigned
+ * wrap-around, read back as i32: the exact sum, without signed overflow */
+#define TAP6(a, b, c, d, e, f) \
+    ((i32)((a) + (f) + 5 * (4 * ((c) + (d)) - ((b) + (e)))))
+/* half sample from a sum of samples, centre sample from a sum of sums */
+#define HALF(t) Clip255(((t) + 16) >> 5)
+#define CENTRE(t) Clip255(((t) + 512) >> 10)
+#define AVG(a, b) (((a) + (u32)(b) + 1) >> 1)
+/* output of variant q: 0 r, 1 r averaged with g, 2 with h */
+#define OUTQ(r, g, h) (u8)(q == 1 ? AVG(r, g) : q == 2 ? AVG(r, h) : (r))
+
+/* full-sample copy of a w x h block */
+static VJ_NOINLINE void LumaCopy(const u8 *s, u32 ss, u8 *d, u32 w, u32 h)
+{
+    u32 x;
+
+    for (; h; h--, s += ss, d += 16)
+        for (x = 0; x < w; x += 4)
+        {
+            d[x] = s[x];
+            d[x + 1] = s[x + 1];
+            d[x + 2] = s[x + 2];
+            d[x + 3] = s[x + 3];
+        }
+}
+
+/* rows of the horizontal half sample b. q 1: averaged with G (a), 2: with H
+ * (c) */
+VJ_INLINE void LumaHorT(const u8 *s, u32 ss, u8 *d, u32 w, u32 h, const u32 q)
+{
+    for (; h; h--, s += ss, d += 16)
+    {
+        const u8 *p = s + 5;
+        u8 *o = d;
+        u32 t0 = s[0], t1 = s[1], t2 = s[2], t3 = s[3], t4 = s[4], t5, x, r;
+
+        for (x = w >> 2; x; x--, p += 4, o += 4)
+        {
+            t5 = p[0];
+            r = HALF(TAP6(t0, t1, t2, t3, t4, t5));
+            o[0] = OUTQ(r, t2, t3);
+            t0 = p[1];
+            r = HALF(TAP6(t1, t2, t3, t4, t5, t0));
+            o[1] = OUTQ(r, t3, t4);
+            t1 = p[2];
+            r = HALF(TAP6(t2, t3, t4, t5, t0, t1));
+            o[2] = OUTQ(r, t4, t5);
+            t2 = p[3];
+            r = HALF(TAP6(t3, t4, t5, t0, t1, t2));
+            o[3] = OUTQ(r, t5, t0);
+            /* the next window, x+2..x+6, is t4 t5 t0 t1 t2 */
+            t3 = t0; t0 = t4; t4 = t2; t2 = t3; t3 = t1; t1 = t5;
+        }
+    }
+}
+
+static VJ_NOINLINE void LumaHor0(const u8 *s, u32 ss, u8 *d, u32 w, u32 h)
+{
+    LumaHorT(s, ss, d, w, h, 0);
+}
+
+static VJ_NOINLINE void LumaHor1(const u8 *s, u32 ss, u8 *d, u32 w, u32 h)
+{
+    LumaHorT(s, ss, d, w, h, 1);
+}
+
+static VJ_NOINLINE void LumaHor2(const u8 *s, u32 ss, u8 *d, u32 w, u32 h)
+{
+    LumaHorT(s, ss, d, w, h, 2);
+}
+
+/* columns of the vertical half sample h. q 1: averaged with G (d), 2: with M
+ * (n), 3: with what d holds (the diagonal positions) */
+#define VOUT(o, r, g, h) ((o) = q == 3 ? (u8)AVG(r, o) : OUTQ(r, g, h))
+
+VJ_INLINE void LumaVerT(const u8 *s, u32 ss, u8 *d, u32 w, u32 h, const u32 q)
+{
+    u32 x;
+
+    for (x = 0; x < w; x++)
+    {
+        u8 *o = d + x;
+        u32 k = x, t0, t1, t2, t3, t4, t5, y, r;
+
+        t0 = s[k]; k += ss;
+        t1 = s[k]; k += ss;
+        t2 = s[k]; k += ss;
+        t3 = s[k]; k += ss;
+        t4 = s[k]; k += ss;
+        for (y = h >> 2; y; y--, o += 64)
+        {
+            t5 = s[k]; k += ss;
+            r = HALF(TAP6(t0, t1, t2, t3, t4, t5));
+            VOUT(o[0], r, t2, t3);
+            t0 = s[k]; k += ss;
+            r = HALF(TAP6(t1, t2, t3, t4, t5, t0));
+            VOUT(o[16], r, t3, t4);
+            t1 = s[k]; k += ss;
+            r = HALF(TAP6(t2, t3, t4, t5, t0, t1));
+            VOUT(o[32], r, t4, t5);
+            t2 = s[k]; k += ss;
+            r = HALF(TAP6(t3, t4, t5, t0, t1, t2));
+            VOUT(o[48], r, t5, t0);
+            t3 = t0; t0 = t4; t4 = t2; t2 = t3; t3 = t1; t1 = t5;
+        }
+    }
+}
+
+static VJ_NOINLINE void LumaVer0(const u8 *s, u32 ss, u8 *d, u32 w, u32 h)
+{
+    LumaVerT(s, ss, d, w, h, 0);
+}
+
+static VJ_NOINLINE void LumaVer1(const u8 *s, u32 ss, u8 *d, u32 w, u32 h)
+{
+    LumaVerT(s, ss, d, w, h, 1);
+}
+
+static VJ_NOINLINE void LumaVer2(const u8 *s, u32 ss, u8 *d, u32 w, u32 h)
+{
+    LumaVerT(s, ss, d, w, h, 2);
+}
+
+static VJ_NOINLINE void LumaVer3(const u8 *s, u32 ss, u8 *d, u32 w, u32 h)
+{
+    LumaVerT(s, ss, d, w, h, 3);
+}
+
+/* rows of horizontal 6-tap sums (b1 of the standard), w per row of t */
+static VJ_NOINLINE void LumaHorSum(const u8 *s, u32 ss, i16 *t, u32 w,
+    u32 rows)
+{
+    for (; rows; rows--, s += ss)
+    {
+        const u8 *p = s + 5;
+        u32 t0 = s[0], t1 = s[1], t2 = s[2], t3 = s[3], t4 = s[4], t5, x;
+
+        for (x = w >> 2; x; x--, p += 4, t += 4)
+        {
+            t5 = p[0];
+            t[0] = (i16)TAP6(t0, t1, t2, t3, t4, t5);
+            t0 = p[1];
+            t[1] = (i16)TAP6(t1, t2, t3, t4, t5, t0);
+            t1 = p[2];
+            t[2] = (i16)TAP6(t2, t3, t4, t5, t0, t1);
+            t2 = p[3];
+            t[3] = (i16)TAP6(t3, t4, t5, t0, t1, t2);
+            t3 = t0; t0 = t4; t4 = t2; t2 = t3; t3 = t1; t1 = t5;
+        }
+    }
+}
+
+/* columns of vertical 6-tap sums (h1), h rows of cols in t */
+static VJ_NOINLINE void LumaVerSum(const u8 *s, u32 ss, i16 *t, u32 cols,
+    u32 h)
+{
+    u32 x;
+
+    for (x = 0; x < cols; x++)
+    {
+        u32 k = x, n = x, t0, t1, t2, t3, t4, t5, y;
+
+        t0 = s[k]; k += ss;
+        t1 = s[k]; k += ss;
+        t2 = s[k]; k += ss;
+        t3 = s[k]; k += ss;
+        t4 = s[k]; k += ss;
+        for (y = h >> 2; y; y--)
+        {
+            t5 = s[k]; k += ss;
+            t[n] = (i16)TAP6(t0, t1, t2, t3, t4, t5); n += cols;
+            t0 = s[k]; k += ss;
+            t[n] = (i16)TAP6(t1, t2, t3, t4, t5, t0); n += cols;
+            t1 = s[k]; k += ss;
+            t[n] = (i16)TAP6(t2, t3, t4, t5, t0, t1); n += cols;
+            t2 = s[k]; k += ss;
+            t[n] = (i16)TAP6(t3, t4, t5, t0, t1, t2); n += cols;
+            t3 = t0; t0 = t4; t4 = t2; t2 = t3; t3 = t1; t1 = t5;
+        }
+    }
+}
+
+/* centre sample j from 6-tap sums; q 1: averaged with the half sample of the
+ * sum two taps on (b or h: f, i), 2: three taps on (s or m: q, k) */
+#define COUT(r, g, h) (u8)(q == 1 ? AVG(r, HALF((i32)(g))) : \
+    q == 2 ? AVG(r, HALF((i32)(h))) : (r))
+
+/* columns of j from LumaHorSum's rows (w each): j, f, q */
+VJ_INLINE void LumaMidVerT(const i16 *t, u8 *d, u32 w, u32 h, const u32 q)
+{
+    u32 x;
+
+    for (x = 0; x < w; x++)
+    {
+        u8 *o = d + x;
+        u32 k = x, t0, t1, t2, t3, t4, t5, y, r;
+
+        t0 = (u32)t[k]; k += w;
+        t1 = (u32)t[k]; k += w;
+        t2 = (u32)t[k]; k += w;
+        t3 = (u32)t[k]; k += w;
+        t4 = (u32)t[k]; k += w;
+        for (y = h >> 2; y; y--, o += 64)
+        {
+            t5 = (u32)t[k]; k += w;
+            r = CENTRE(TAP6(t0, t1, t2, t3, t4, t5));
+            o[0] = COUT(r, t2, t3);
+            t0 = (u32)t[k]; k += w;
+            r = CENTRE(TAP6(t1, t2, t3, t4, t5, t0));
+            o[16] = COUT(r, t3, t4);
+            t1 = (u32)t[k]; k += w;
+            r = CENTRE(TAP6(t2, t3, t4, t5, t0, t1));
+            o[32] = COUT(r, t4, t5);
+            t2 = (u32)t[k]; k += w;
+            r = CENTRE(TAP6(t3, t4, t5, t0, t1, t2));
+            o[48] = COUT(r, t5, t0);
+            t3 = t0; t0 = t4; t4 = t2; t2 = t3; t3 = t1; t1 = t5;
+        }
+    }
+}
+
+static VJ_NOINLINE void LumaMidVer0(const i16 *t, u8 *d, u32 w, u32 h)
+{
+    LumaMidVerT(t, d, w, h, 0);
+}
+
+static VJ_NOINLINE void LumaMidVer1(const i16 *t, u8 *d, u32 w, u32 h)
+{
+    LumaMidVerT(t, d, w, h, 1);
+}
+
+static VJ_NOINLINE void LumaMidVer2(const i16 *t, u8 *d, u32 w, u32 h)
+{
+    LumaMidVerT(t, d, w, h, 2);
+}
+
+/* rows of j from LumaVerSum's rows (w + 5 each): i, k */
+VJ_INLINE void LumaMidHorT(const i16 *t, u8 *d, u32 w, u32 h, const u32 q)
+{
+    for (; h; h--, t += w + 5, d += 16)
+    {
+        const i16 *p = t + 5;
+        u8 *o = d;
+        u32 t0 = (u32)t[0], t1 = (u32)t[1], t2 = (u32)t[2], t3 = (u32)t[3];
+        u32 t4 = (u32)t[4], t5, x, r;
+
+        for (x = w >> 2; x; x--, p += 4, o += 4)
+        {
+            t5 = (u32)p[0];
+            r = CENTRE(TAP6(t0, t1, t2, t3, t4, t5));
+            o[0] = COUT(r, t2, t3);
+            t0 = (u32)p[1];
+            r = CENTRE(TAP6(t1, t2, t3, t4, t5, t0));
+            o[1] = COUT(r, t3, t4);
+            t1 = (u32)p[2];
+            r = CENTRE(TAP6(t2, t3, t4, t5, t0, t1));
+            o[2] = COUT(r, t4, t5);
+            t2 = (u32)p[3];
+            r = CENTRE(TAP6(t3, t4, t5, t0, t1, t2));
+            o[3] = COUT(r, t5, t0);
+            t3 = t0; t0 = t4; t4 = t2; t2 = t3; t3 = t1; t1 = t5;
+        }
+    }
+}
+
+static VJ_NOINLINE void LumaMidHor1(const i16 *t, u8 *d, u32 w, u32 h)
+{
+    LumaMidHorT(t, d, w, h, 1);
+}
+
+static VJ_NOINLINE void LumaMidHor2(const i16 *t, u8 *d, u32 w, u32 h)
+{
+    LumaMidHorT(t, d, w, h, 2);
+}
+
+/* the centre positions: 6-tap sums one way into a table, then the other way */
+static VJ_NOINLINE void LumaCentre(const u8 *s, u32 ss, u8 *d, u32 w, u32 h,
+    u32 xFrac, u32 yFrac)
+{
+    i16 t[21 * 16];
+
+    if (xFrac == 2) /* f j q */
+    {
+        LumaHorSum(s, ss, t, w, h + 5);
+        if (yFrac == 2)
+            LumaMidVer0(t, d, w, h);
+        else if (yFrac == 1)
+            LumaMidVer1(t, d, w, h);
+        else
+            LumaMidVer2(t, d, w, h);
+    }
+    else /* i k */
+    {
+        LumaVerSum(s, ss, t, w + 5, h);
+        if (xFrac == 1)
+            LumaMidHor1(t, d, w, h);
+        else
+            LumaMidHor2(t, d, w, h);
+    }
+}
+
+/* luma prediction of a w x h block from its window s (stride ss) */
+static void LumaPredict(const u8 *s, u32 ss, u8 *d, u32 w, u32 h, u32 xFrac,
+    u32 yFrac)
+{
+    switch (4 * xFrac + yFrac)
+    {
+        case 0: /* G */
+            LumaCopy(s, ss, d, w, h);
+            break;
+        case 1: /* d */
+            LumaVer1(s, ss, d, w, h);
+            break;
+        case 2: /* h */
+            LumaVer0(s, ss, d, w, h);
+            break;
+        case 3: /* n */
+            LumaVer2(s, ss, d, w, h);
+            break;
+        case 4: /* a */
+            LumaHor1(s, ss, d, w, h);
+            break;
+        case 8: /* b */
+            LumaHor0(s, ss, d, w, h);
+            break;
+        case 12: /* c */
+            LumaHor2(s, ss, d, w, h);
+            break;
+        case 5: /* e */
+        case 7: /* p */
+        case 13: /* g */
+        case 15: /* r: b or s, then averaged with h or m */
+            LumaHor0(s + (2 + (yFrac >> 1)) * ss, ss, d, w, h);
+            LumaVer3(s + 2 + (xFrac >> 1), ss, d, w, h);
+            break;
+        default: /* f i j k q */
+            LumaCentre(s, ss, d, w, h, xFrac, yFrac);
+            break;
+    }
+}
+
+/* a window that crosses the picture edge: padded, then predicted */
+static VJ_NOINLINE void LumaEdge(u8 *ref, u32 width, u32 height, i32 x0,
+    i32 y0, u8 *d, u32 w, u32 h, u32 xFrac, u32 yFrac)
+{
+    u8 win[21 * 21];
+    u32 ww = w + (xFrac ? 5 : 0), hh = h + (yFrac ? 5 : 0);
+
+    h264bsdFillBlock(ref, win, x0, y0, width, height, ww, hh, ww);
+    LumaPredict(win, ww, d, w, h, xFrac, yFrac);
+}
 
 /*------------------------------------------------------------------------------
 
@@ -479,1321 +853,6 @@ static void PredictChroma(
 
 /*------------------------------------------------------------------------------
 
-    Function: h264bsdInterpolateVerHalf
-
-        Functional description:
-          Function to perform vertical interpolation of pixel position 'h'
-          for a block. Overfilling is done only if needed. Reference
-          image (ref) is read at correct position and the predicted part
-          is written to macroblock array (mb)
-
-------------------------------------------------------------------------------*/
-#ifndef H264DEC_ARM11
-void h264bsdInterpolateVerHalf(
-  u8 *ref,
-  u8 *mb,
-  i32 x0,
-  i32 y0,
-  u32 width,
-  u32 height,
-  u32 partWidth,
-  u32 partHeight)
-{
-    u32 p1[21*21/4+1];
-    u32 i, j;
-    i32 tmp1, tmp2, tmp3, tmp4, tmp5, tmp6, tmp7;
-    u8 *ptrC, *ptrV;
-    const u8 *clp = h264bsdClip + 512;
-
-    /* Code */
-
-    ASSERT(ref);
-    ASSERT(mb);
-
-    if ((x0 < 0) || ((u32)x0+partWidth > width) ||
-        (y0 < 0) || ((u32)y0+partHeight+5 > height))
-    {
-        h264bsdFillBlock(ref, (u8*)p1, x0, y0, width, height,
-                partWidth, partHeight+5, partWidth);
-
-        x0 = 0;
-        y0 = 0;
-        ref = (u8*)p1;
-        width = partWidth;
-    }
-
-    ref += (u32)y0 * width + (u32)x0;
-
-    ptrC = ref + width;
-    ptrV = ptrC + 5*width;
-
-    /* 4 pixels per iteration, interpolate using 5 vertical samples */
-    for (i = (partHeight >> 2); i; i--)
-    {
-        /* h1 = (16 + A + 16(G+M) + 4(G+M) - 4(C+R) - (C+R) + T) >> 5 */
-        for (j = partWidth; j; j--)
-        {
-            tmp4 = ptrV[-(i32)width*2];
-            tmp5 = ptrV[-(i32)width];
-            tmp1 = ptrV[width];
-            tmp2 = ptrV[width*2];
-            tmp6 = *ptrV++;
-
-            tmp7 = tmp4 + tmp1;
-            tmp2 -= (tmp7 << 2);
-            tmp2 -= tmp7;
-            tmp2 += 16;
-            tmp7 = tmp5 + tmp6;
-            tmp3 = ptrC[width*2];
-            tmp2 += (tmp7 << 4);
-            tmp2 += (tmp7 << 2);
-            tmp2 += tmp3;
-            tmp2 = clp[tmp2>>5];
-            tmp1 += 16;
-            mb[48] = (u8)tmp2;
-
-            tmp7 = tmp3 + tmp6;
-            tmp1 -= (tmp7 << 2);
-            tmp1 -= tmp7;
-            tmp7 = tmp4 + tmp5;
-            tmp2 = ptrC[width];
-            tmp1 += (tmp7 << 4);
-            tmp1 += (tmp7 << 2);
-            tmp1 += tmp2;
-            tmp1 = clp[tmp1>>5];
-            tmp6 += 16;
-            mb[32] = (u8)tmp1;
-
-            tmp7 = tmp2 + tmp5;
-            tmp6 -= (tmp7 << 2);
-            tmp6 -= tmp7;
-            tmp7 = tmp4 + tmp3;
-            tmp1 = *ptrC;
-            tmp6 += (tmp7 << 4);
-            tmp6 += (tmp7 << 2);
-            tmp6 += tmp1;
-            tmp6 = clp[tmp6>>5];
-            tmp5 += 16;
-            mb[16] = (u8)tmp6;
-
-            tmp1 += tmp4;
-            tmp5 -= (tmp1 << 2);
-            tmp5 -= tmp1;
-            tmp3 += tmp2;
-            tmp6 = ptrC[-(i32)width];
-            tmp5 += (tmp3 << 4);
-            tmp5 += (tmp3 << 2);
-            tmp5 += tmp6;
-            tmp5 = clp[tmp5>>5];
-            *mb++ = (u8)tmp5;
-            ptrC++;
-        }
-        ptrC += 4*width - partWidth;
-        ptrV += 4*width - partWidth;
-        mb += 4*16 - partWidth;
-    }
-
-}
-
-/*------------------------------------------------------------------------------
-
-    Function: h264bsdInterpolateVerQuarter
-
-        Functional description:
-          Function to perform vertical interpolation of pixel position 'd'
-          or 'n' for a block. Overfilling is done only if needed. Reference
-          image (ref) is read at correct position and the predicted part
-          is written to macroblock array (mb)
-
-------------------------------------------------------------------------------*/
-
-void h264bsdInterpolateVerQuarter(
-  u8 *ref,
-  u8 *mb,
-  i32 x0,
-  i32 y0,
-  u32 width,
-  u32 height,
-  u32 partWidth,
-  u32 partHeight,
-  u32 verOffset)    /* 0 for pixel d, 1 for pixel n */
-{
-    u32 p1[21*21/4+1];
-    u32 i, j;
-    i32 tmp1, tmp2, tmp3, tmp4, tmp5, tmp6, tmp7;
-    u8 *ptrC, *ptrV, *ptrInt;
-    const u8 *clp = h264bsdClip + 512;
-
-    /* Code */
-
-    ASSERT(ref);
-    ASSERT(mb);
-
-    if ((x0 < 0) || ((u32)x0+partWidth > width) ||
-        (y0 < 0) || ((u32)y0+partHeight+5 > height))
-    {
-        h264bsdFillBlock(ref, (u8*)p1, x0, y0, width, height,
-                partWidth, partHeight+5, partWidth);
-
-        x0 = 0;
-        y0 = 0;
-        ref = (u8*)p1;
-        width = partWidth;
-    }
-
-    ref += (u32)y0 * width + (u32)x0;
-
-    ptrC = ref + width;
-    ptrV = ptrC + 5*width;
-
-    /* Pointer to integer sample position, either M or R */
-    ptrInt = ptrC + (2+verOffset)*width;
-
-    /* 4 pixels per iteration
-     * interpolate using 5 vertical samples and average between
-     * interpolated value and integer sample value */
-    for (i = (partHeight >> 2); i; i--)
-    {
-        /* h1 = (16 + A + 16(G+M) + 4(G+M) - 4(C+R) - (C+R) + T) >> 5 */
-        for (j = partWidth; j; j--)
-        {
-            tmp4 = ptrV[-(i32)width*2];
-            tmp5 = ptrV[-(i32)width];
-            tmp1 = ptrV[width];
-            tmp2 = ptrV[width*2];
-            tmp6 = *ptrV++;
-
-            tmp7 = tmp4 + tmp1;
-            tmp2 -= (tmp7 << 2);
-            tmp2 -= tmp7;
-            tmp2 += 16;
-            tmp7 = tmp5 + tmp6;
-            tmp3 = ptrC[width*2];
-            tmp2 += (tmp7 << 4);
-            tmp2 += (tmp7 << 2);
-            tmp2 += tmp3;
-            tmp2 = clp[tmp2>>5];
-            tmp7 = ptrInt[width*2];
-            tmp1 += 16;
-            tmp2++;
-            mb[48] = (u8)((tmp2 + tmp7) >> 1);
-
-            tmp7 = tmp3 + tmp6;
-            tmp1 -= (tmp7 << 2);
-            tmp1 -= tmp7;
-            tmp7 = tmp4 + tmp5;
-            tmp2 = ptrC[width];
-            tmp1 += (tmp7 << 4);
-            tmp1 += (tmp7 << 2);
-            tmp1 += tmp2;
-            tmp1 = clp[tmp1>>5];
-            tmp7 = ptrInt[width];
-            tmp6 += 16;
-            tmp1++;
-            mb[32] = (u8)((tmp1 + tmp7) >> 1);
-
-            tmp7 = tmp2 + tmp5;
-            tmp6 -= (tmp7 << 2);
-            tmp6 -= tmp7;
-            tmp7 = tmp4 + tmp3;
-            tmp1 = *ptrC;
-            tmp6 += (tmp7 << 4);
-            tmp6 += (tmp7 << 2);
-            tmp6 += tmp1;
-            tmp6 = clp[tmp6>>5];
-            tmp7 = *ptrInt;
-            tmp5 += 16;
-            tmp6++;
-            mb[16] = (u8)((tmp6 + tmp7) >> 1);
-
-            tmp1 += tmp4;
-            tmp5 -= (tmp1 << 2);
-            tmp5 -= tmp1;
-            tmp3 += tmp2;
-            tmp6 = ptrC[-(i32)width];
-            tmp5 += (tmp3 << 4);
-            tmp5 += (tmp3 << 2);
-            tmp5 += tmp6;
-            tmp5 = clp[tmp5>>5];
-            tmp7 = ptrInt[-(i32)width];
-            tmp5++;
-            *mb++ = (u8)((tmp5 + tmp7) >> 1);
-            ptrC++;
-            ptrInt++;
-        }
-        ptrC += 4*width - partWidth;
-        ptrV += 4*width - partWidth;
-        ptrInt += 4*width - partWidth;
-        mb += 4*16 - partWidth;
-    }
-
-}
-
-/*------------------------------------------------------------------------------
-
-    Function: h264bsdInterpolateHorHalf
-
-        Functional description:
-          Function to perform horizontal interpolation of pixel position 'b'
-          for a block. Overfilling is done only if needed. Reference
-          image (ref) is read at correct position and the predicted part
-          is written to macroblock array (mb)
-
-------------------------------------------------------------------------------*/
-
-void h264bsdInterpolateHorHalf(
-  u8 *ref,
-  u8 *mb,
-  i32 x0,
-  i32 y0,
-  u32 width,
-  u32 height,
-  u32 partWidth,
-  u32 partHeight)
-{
-    u32 p1[21*21/4+1];
-    u8 *ptrJ;
-    u32 x, y;
-    i32 tmp1, tmp2, tmp3, tmp4, tmp5, tmp6, tmp7;
-    const u8 *clp = h264bsdClip + 512;
-
-    /* Code */
-
-    ASSERT(ref);
-    ASSERT(mb);
-    ASSERT((partWidth&0x3) == 0);
-    ASSERT((partHeight&0x3) == 0);
-
-    if ((x0 < 0) || ((u32)x0+partWidth+5 > width) ||
-        (y0 < 0) || ((u32)y0+partHeight > height))
-    {
-        h264bsdFillBlock(ref, (u8*)p1, x0, y0, width, height,
-                partWidth+5, partHeight, partWidth+5);
-
-        x0 = 0;
-        y0 = 0;
-        ref = (u8*)p1;
-        width = partWidth + 5;
-    }
-
-    ref += (u32)y0 * width + (u32)x0;
-
-    ptrJ = ref + 5;
-
-    for (y = partHeight; y; y--)
-    {
-        tmp6 = *(ptrJ - 5);
-        tmp5 = *(ptrJ - 4);
-        tmp4 = *(ptrJ - 3);
-        tmp3 = *(ptrJ - 2);
-        tmp2 = *(ptrJ - 1);
-
-        /* calculate 4 pels per iteration */
-        for (x = (partWidth >> 2); x; x--)
-        {
-            /* First pixel */
-            tmp6 += 16;
-            tmp7 = tmp3 + tmp4;
-            tmp6 += (tmp7 << 4);
-            tmp6 += (tmp7 << 2);
-            tmp7 = tmp2 + tmp5;
-            tmp1 = *ptrJ++;
-            tmp6 -= (tmp7 << 2);
-            tmp6 -= tmp7;
-            tmp6 += tmp1;
-            tmp6 = clp[tmp6>>5];
-            /* Second pixel */
-            tmp5 += 16;
-            tmp7 = tmp2 + tmp3;
-            *mb++ = (u8)tmp6;
-            tmp5 += (tmp7 << 4);
-            tmp5 += (tmp7 << 2);
-            tmp7 = tmp1 + tmp4;
-            tmp6 = *ptrJ++;
-            tmp5 -= (tmp7 << 2);
-            tmp5 -= tmp7;
-            tmp5 += tmp6;
-            tmp5 = clp[tmp5>>5];
-            /* Third pixel */
-            tmp4 += 16;
-            tmp7 = tmp1 + tmp2;
-            *mb++ = (u8)tmp5;
-            tmp4 += (tmp7 << 4);
-            tmp4 += (tmp7 << 2);
-            tmp7 = tmp6 + tmp3;
-            tmp5 = *ptrJ++;
-            tmp4 -= (tmp7 << 2);
-            tmp4 -= tmp7;
-            tmp4 += tmp5;
-            tmp4 = clp[tmp4>>5];
-            /* Fourth pixel */
-            tmp3 += 16;
-            tmp7 = tmp6 + tmp1;
-            *mb++ = (u8)tmp4;
-            tmp3 += (tmp7 << 4);
-            tmp3 += (tmp7 << 2);
-            tmp7 = tmp5 + tmp2;
-            tmp4 = *ptrJ++;
-            tmp3 -= (tmp7 << 2);
-            tmp3 -= tmp7;
-            tmp3 += tmp4;
-            tmp3 = clp[tmp3>>5];
-            tmp7 = tmp4;
-            tmp4 = tmp6;
-            tmp6 = tmp2;
-            tmp2 = tmp7;
-            *mb++ = (u8)tmp3;
-            tmp3 = tmp5;
-            tmp5 = tmp1;
-        }
-        ptrJ += width - partWidth;
-        mb += 16 - partWidth;
-    }
-
-}
-
-/*------------------------------------------------------------------------------
-
-    Function: h264bsdInterpolateHorQuarter
-
-        Functional description:
-          Function to perform horizontal interpolation of pixel position 'a'
-          or 'c' for a block. Overfilling is done only if needed. Reference
-          image (ref) is read at correct position and the predicted part
-          is written to macroblock array (mb)
-
-------------------------------------------------------------------------------*/
-
-void h264bsdInterpolateHorQuarter(
-  u8 *ref,
-  u8 *mb,
-  i32 x0,
-  i32 y0,
-  u32 width,
-  u32 height,
-  u32 partWidth,
-  u32 partHeight,
-  u32 horOffset) /* 0 for pixel a, 1 for pixel c */
-{
-    u32 p1[21*21/4+1];
-    u8 *ptrJ;
-    u32 x, y;
-    i32 tmp1, tmp2, tmp3, tmp4, tmp5, tmp6, tmp7;
-    const u8 *clp = h264bsdClip + 512;
-
-    /* Code */
-
-    ASSERT(ref);
-    ASSERT(mb);
-
-    if ((x0 < 0) || ((u32)x0+partWidth+5 > width) ||
-        (y0 < 0) || ((u32)y0+partHeight > height))
-    {
-        h264bsdFillBlock(ref, (u8*)p1, x0, y0, width, height,
-                partWidth+5, partHeight, partWidth+5);
-
-        x0 = 0;
-        y0 = 0;
-        ref = (u8*)p1;
-        width = partWidth + 5;
-    }
-
-    ref += (u32)y0 * width + (u32)x0;
-
-    ptrJ = ref + 5;
-
-    for (y = partHeight; y; y--)
-    {
-        tmp6 = *(ptrJ - 5);
-        tmp5 = *(ptrJ - 4);
-        tmp4 = *(ptrJ - 3);
-        tmp3 = *(ptrJ - 2);
-        tmp2 = *(ptrJ - 1);
-
-        /* calculate 4 pels per iteration */
-        for (x = (partWidth >> 2); x; x--)
-        {
-            /* First pixel */
-            tmp6 += 16;
-            tmp7 = tmp3 + tmp4;
-            tmp6 += (tmp7 << 4);
-            tmp6 += (tmp7 << 2);
-            tmp7 = tmp2 + tmp5;
-            tmp1 = *ptrJ++;
-            tmp6 -= (tmp7 << 2);
-            tmp6 -= tmp7;
-            tmp6 += tmp1;
-            tmp6 = clp[tmp6>>5];
-            tmp5 += 16;
-            if (!horOffset)
-                tmp6 += tmp4;
-            else
-                tmp6 += tmp3;
-            *mb++ = (u8)((tmp6 + 1) >> 1);
-            /* Second pixel */
-            tmp7 = tmp2 + tmp3;
-            tmp5 += (tmp7 << 4);
-            tmp5 += (tmp7 << 2);
-            tmp7 = tmp1 + tmp4;
-            tmp6 = *ptrJ++;
-            tmp5 -= (tmp7 << 2);
-            tmp5 -= tmp7;
-            tmp5 += tmp6;
-            tmp5 = clp[tmp5>>5];
-            tmp4 += 16;
-            if (!horOffset)
-                tmp5 += tmp3;
-            else
-                tmp5 += tmp2;
-            *mb++ = (u8)((tmp5 + 1) >> 1);
-            /* Third pixel */
-            tmp7 = tmp1 + tmp2;
-            tmp4 += (tmp7 << 4);
-            tmp4 += (tmp7 << 2);
-            tmp7 = tmp6 + tmp3;
-            tmp5 = *ptrJ++;
-            tmp4 -= (tmp7 << 2);
-            tmp4 -= tmp7;
-            tmp4 += tmp5;
-            tmp4 = clp[tmp4>>5];
-            tmp3 += 16;
-            if (!horOffset)
-                tmp4 += tmp2;
-            else
-                tmp4 += tmp1;
-            *mb++ = (u8)((tmp4 + 1) >> 1);
-            /* Fourth pixel */
-            tmp7 = tmp6 + tmp1;
-            tmp3 += (tmp7 << 4);
-            tmp3 += (tmp7 << 2);
-            tmp7 = tmp5 + tmp2;
-            tmp4 = *ptrJ++;
-            tmp3 -= (tmp7 << 2);
-            tmp3 -= tmp7;
-            tmp3 += tmp4;
-            tmp3 = clp[tmp3>>5];
-            if (!horOffset)
-                tmp3 += tmp1;
-            else
-                tmp3 += tmp6;
-            *mb++ = (u8)((tmp3 + 1) >> 1);
-            tmp3 = tmp5;
-            tmp5 = tmp1;
-            tmp7 = tmp4;
-            tmp4 = tmp6;
-            tmp6 = tmp2;
-            tmp2 = tmp7;
-        }
-        ptrJ += width - partWidth;
-        mb += 16 - partWidth;
-    }
-
-}
-
-/*------------------------------------------------------------------------------
-
-    Function: h264bsdInterpolateHorVerQuarter
-
-        Functional description:
-          Function to perform horizontal and vertical interpolation of pixel
-          position 'e', 'g', 'p' or 'r' for a block. Overfilling is done only
-          if needed. Reference image (ref) is read at correct position and
-          the predicted part is written to macroblock array (mb)
-
-------------------------------------------------------------------------------*/
-
-void h264bsdInterpolateHorVerQuarter(
-  u8 *ref,
-  u8 *mb,
-  i32 x0,
-  i32 y0,
-  u32 width,
-  u32 height,
-  u32 partWidth,
-  u32 partHeight,
-  u32 horVerOffset) /* 0 for pixel e, 1 for pixel g,
-                       2 for pixel p, 3 for pixel r */
-{
-    u32 p1[21*21/4+1];
-    u8 *ptrC, *ptrJ, *ptrV;
-    u32 x, y;
-    i32 tmp1, tmp2, tmp3, tmp4, tmp5, tmp6, tmp7;
-    const u8 *clp = h264bsdClip + 512;
-
-    /* Code */
-
-    ASSERT(ref);
-    ASSERT(mb);
-
-    if ((x0 < 0) || ((u32)x0+partWidth+5 > width) ||
-        (y0 < 0) || ((u32)y0+partHeight+5 > height))
-    {
-        h264bsdFillBlock(ref, (u8*)p1, x0, y0, width, height,
-                partWidth+5, partHeight+5, partWidth+5);
-
-        x0 = 0;
-        y0 = 0;
-        ref = (u8*)p1;
-        width = partWidth+5;
-    }
-
-    /* Ref points to G + (-2, -2) */
-    ref += (u32)y0 * width + (u32)x0;
-
-    /* ptrJ points to either J or Q, depending on vertical offset */
-    ptrJ = ref + (((horVerOffset & 0x2) >> 1) + 2) * width + 5;
-
-    /* ptrC points to either C or D, depending on horizontal offset */
-    ptrC = ref + width + 2 + (horVerOffset & 0x1);
-
-    for (y = partHeight; y; y--)
-    {
-        tmp6 = *(ptrJ - 5);
-        tmp5 = *(ptrJ - 4);
-        tmp4 = *(ptrJ - 3);
-        tmp3 = *(ptrJ - 2);
-        tmp2 = *(ptrJ - 1);
-
-        /* Horizontal interpolation, calculate 4 pels per iteration */
-        for (x = (partWidth >> 2); x; x--)
-        {
-            /* First pixel */
-            tmp6 += 16;
-            tmp7 = tmp3 + tmp4;
-            tmp6 += (tmp7 << 4);
-            tmp6 += (tmp7 << 2);
-            tmp7 = tmp2 + tmp5;
-            tmp1 = *ptrJ++;
-            tmp6 -= (tmp7 << 2);
-            tmp6 -= tmp7;
-            tmp6 += tmp1;
-            tmp6 = clp[tmp6>>5];
-            /* Second pixel */
-            tmp5 += 16;
-            tmp7 = tmp2 + tmp3;
-            *mb++ = (u8)tmp6;
-            tmp5 += (tmp7 << 4);
-            tmp5 += (tmp7 << 2);
-            tmp7 = tmp1 + tmp4;
-            tmp6 = *ptrJ++;
-            tmp5 -= (tmp7 << 2);
-            tmp5 -= tmp7;
-            tmp5 += tmp6;
-            tmp5 = clp[tmp5>>5];
-            /* Third pixel */
-            tmp4 += 16;
-            tmp7 = tmp1 + tmp2;
-            *mb++ = (u8)tmp5;
-            tmp4 += (tmp7 << 4);
-            tmp4 += (tmp7 << 2);
-            tmp7 = tmp6 + tmp3;
-            tmp5 = *ptrJ++;
-            tmp4 -= (tmp7 << 2);
-            tmp4 -= tmp7;
-            tmp4 += tmp5;
-            tmp4 = clp[tmp4>>5];
-            /* Fourth pixel */
-            tmp3 += 16;
-            tmp7 = tmp6 + tmp1;
-            *mb++ = (u8)tmp4;
-            tmp3 += (tmp7 << 4);
-            tmp3 += (tmp7 << 2);
-            tmp7 = tmp5 + tmp2;
-            tmp4 = *ptrJ++;
-            tmp3 -= (tmp7 << 2);
-            tmp3 -= tmp7;
-            tmp3 += tmp4;
-            tmp3 = clp[tmp3>>5];
-            tmp7 = tmp4;
-            tmp4 = tmp6;
-            tmp6 = tmp2;
-            tmp2 = tmp7;
-            *mb++ = (u8)tmp3;
-            tmp3 = tmp5;
-            tmp5 = tmp1;
-        }
-        ptrJ += width - partWidth;
-        mb += 16 - partWidth;
-    }
-
-    mb -= 16*partHeight;
-    ptrV = ptrC + 5*width;
-
-    for (y = (partHeight >> 2); y; y--)
-    {
-        /* Vertical interpolation and averaging, 4 pels per iteration */
-        for (x = partWidth; x; x--)
-        {
-            tmp4 = ptrV[-(i32)width*2];
-            tmp5 = ptrV[-(i32)width];
-            tmp1 = ptrV[width];
-            tmp2 = ptrV[width*2];
-            tmp6 = *ptrV++;
-
-            tmp7 = tmp4 + tmp1;
-            tmp2 -= (tmp7 << 2);
-            tmp2 -= tmp7;
-            tmp2 += 16;
-            tmp7 = tmp5 + tmp6;
-            tmp3 = ptrC[width*2];
-            tmp2 += (tmp7 << 4);
-            tmp2 += (tmp7 << 2);
-            tmp2 += tmp3;
-            tmp7 = clp[tmp2>>5];
-            tmp2 = mb[48];
-            tmp1 += 16;
-            tmp7++;
-            mb[48] = (u8)((tmp2 + tmp7) >> 1);
-
-            tmp7 = tmp3 + tmp6;
-            tmp1 -= (tmp7 << 2);
-            tmp1 -= tmp7;
-            tmp7 = tmp4 + tmp5;
-            tmp2 = ptrC[width];
-            tmp1 += (tmp7 << 4);
-            tmp1 += (tmp7 << 2);
-            tmp1 += tmp2;
-            tmp7 = clp[tmp1>>5];
-            tmp1 = mb[32];
-            tmp6 += 16;
-            tmp7++;
-            mb[32] = (u8)((tmp1 + tmp7) >> 1);
-
-            tmp1 = *ptrC;
-            tmp7 = tmp2 + tmp5;
-            tmp6 -= (tmp7 << 2);
-            tmp6 -= tmp7;
-            tmp7 = tmp4 + tmp3;
-            tmp6 += (tmp7 << 4);
-            tmp6 += (tmp7 << 2);
-            tmp6 += tmp1;
-            tmp7 = clp[tmp6>>5];
-            tmp6 = mb[16];
-            tmp5 += 16;
-            tmp7++;
-            mb[16] = (u8)((tmp6 + tmp7) >> 1);
-
-            tmp6 = ptrC[-(i32)width];
-            tmp1 += tmp4;
-            tmp5 -= (tmp1 << 2);
-            tmp5 -= tmp1;
-            tmp3 += tmp2;
-            tmp5 += (tmp3 << 4);
-            tmp5 += (tmp3 << 2);
-            tmp5 += tmp6;
-            tmp7 = clp[tmp5>>5];
-            tmp5 = *mb;
-            tmp7++;
-            *mb++ = (u8)((tmp5 + tmp7) >> 1);
-            ptrC++;
-
-        }
-        ptrC += 4*width - partWidth;
-        ptrV += 4*width - partWidth;
-        mb += 4*16 - partWidth;
-    }
-
-}
-#endif
-
-/*------------------------------------------------------------------------------
-
-    Function: h264bsdInterpolateMidHalf
-
-        Functional description:
-          Function to perform horizontal and vertical interpolation of pixel
-          position 'j' for a block. Overfilling is done only if needed.
-          Reference image (ref) is read at correct position and the predicted
-          part is written to macroblock array (mb)
-
-------------------------------------------------------------------------------*/
-
-void h264bsdInterpolateMidHalf(
-  u8 *ref,
-  u8 *mb,
-  i32 x0,
-  i32 y0,
-  u32 width,
-  u32 height,
-  u32 partWidth,
-  u32 partHeight)
-{
-    u32 p1[21*21/4+1];
-    u32 x, y;
-    i32 tmp1, tmp2, tmp3, tmp4, tmp5, tmp6, tmp7;
-    i32 *ptrC, *ptrV, *b1;
-    u8  *ptrJ;
-    i32 table[21*16];
-    const u8 *clp = h264bsdClip + 512;
-
-    /* Code */
-
-    ASSERT(ref);
-    ASSERT(mb);
-
-    if ((x0 < 0) || ((u32)x0+partWidth+5 > width) ||
-        (y0 < 0) || ((u32)y0+partHeight+5 > height))
-    {
-        h264bsdFillBlock(ref, (u8*)p1, x0, y0, width, height,
-                partWidth+5, partHeight+5, partWidth+5);
-
-        x0 = 0;
-        y0 = 0;
-        ref = (u8*)p1;
-        width = partWidth+5;
-    }
-
-    ref += (u32)y0 * width + (u32)x0;
-
-    b1 = table;
-    ptrJ = ref + 5;
-
-    /* First step: calculate intermediate values for
-     * horizontal interpolation */
-    for (y = partHeight + 5; y; y--)
-    {
-        tmp6 = *(ptrJ - 5);
-        tmp5 = *(ptrJ - 4);
-        tmp4 = *(ptrJ - 3);
-        tmp3 = *(ptrJ - 2);
-        tmp2 = *(ptrJ - 1);
-
-        /* 4 pels per iteration */
-        for (x = (partWidth >> 2); x; x--)
-        {
-            /* First pixel */
-            tmp7 = tmp3 + tmp4;
-            tmp6 += (tmp7 << 4);
-            tmp6 += (tmp7 << 2);
-            tmp7 = tmp2 + tmp5;
-            tmp1 = *ptrJ++;
-            tmp6 -= (tmp7 << 2);
-            tmp6 -= tmp7;
-            tmp6 += tmp1;
-            *b1++ = tmp6;
-            /* Second pixel */
-            tmp7 = tmp2 + tmp3;
-            tmp5 += (tmp7 << 4);
-            tmp5 += (tmp7 << 2);
-            tmp7 = tmp1 + tmp4;
-            tmp6 = *ptrJ++;
-            tmp5 -= (tmp7 << 2);
-            tmp5 -= tmp7;
-            tmp5 += tmp6;
-            *b1++ = tmp5;
-            /* Third pixel */
-            tmp7 = tmp1 + tmp2;
-            tmp4 += (tmp7 << 4);
-            tmp4 += (tmp7 << 2);
-            tmp7 = tmp6 + tmp3;
-            tmp5 = *ptrJ++;
-            tmp4 -= (tmp7 << 2);
-            tmp4 -= tmp7;
-            tmp4 += tmp5;
-            *b1++ = tmp4;
-            /* Fourth pixel */
-            tmp7 = tmp6 + tmp1;
-            tmp3 += (tmp7 << 4);
-            tmp3 += (tmp7 << 2);
-            tmp7 = tmp5 + tmp2;
-            tmp4 = *ptrJ++;
-            tmp3 -= (tmp7 << 2);
-            tmp3 -= tmp7;
-            tmp3 += tmp4;
-            *b1++ = tmp3;
-            tmp7 = tmp4;
-            tmp4 = tmp6;
-            tmp6 = tmp2;
-            tmp2 = tmp7;
-            tmp3 = tmp5;
-            tmp5 = tmp1;
-        }
-        ptrJ += width - partWidth;
-    }
-
-    /* Second step: calculate vertical interpolation */
-    ptrC = table + partWidth;
-    ptrV = ptrC + 5*partWidth;
-    for (y = (partHeight >> 2); y; y--)
-    {
-        /* 4 pels per iteration */
-        for (x = partWidth; x; x--)
-        {
-            tmp4 = ptrV[-(i32)partWidth*2];
-            tmp5 = ptrV[-(i32)partWidth];
-            tmp1 = ptrV[partWidth];
-            tmp2 = ptrV[partWidth*2];
-            tmp6 = *ptrV++;
-
-            tmp7 = tmp4 + tmp1;
-            tmp2 -= (tmp7 << 2);
-            tmp2 -= tmp7;
-            tmp2 += 512;
-            tmp7 = tmp5 + tmp6;
-            tmp3 = ptrC[partWidth*2];
-            tmp2 += (tmp7 << 4);
-            tmp2 += (tmp7 << 2);
-            tmp2 += tmp3;
-            tmp7 = clp[tmp2>>10];
-            tmp1 += 512;
-            mb[48] = (u8)tmp7;
-
-            tmp7 = tmp3 + tmp6;
-            tmp1 -= (tmp7 << 2);
-            tmp1 -= tmp7;
-            tmp7 = tmp4 + tmp5;
-            tmp2 = ptrC[partWidth];
-            tmp1 += (tmp7 << 4);
-            tmp1 += (tmp7 << 2);
-            tmp1 += tmp2;
-            tmp7 = clp[tmp1>>10];
-            tmp6 += 512;
-            mb[32] = (u8)tmp7;
-
-            tmp1 = *ptrC;
-            tmp7 = tmp2 + tmp5;
-            tmp6 -= (tmp7 << 2);
-            tmp6 -= tmp7;
-            tmp7 = tmp4 + tmp3;
-            tmp6 += (tmp7 << 4);
-            tmp6 += (tmp7 << 2);
-            tmp6 += tmp1;
-            tmp7 = clp[tmp6>>10];
-            tmp5 += 512;
-            mb[16] = (u8)tmp7;
-
-            tmp6 = ptrC[-(i32)partWidth];
-            tmp1 += tmp4;
-            tmp5 -= (tmp1 << 2);
-            tmp5 -= tmp1;
-            tmp3 += tmp2;
-            tmp5 += (tmp3 << 4);
-            tmp5 += (tmp3 << 2);
-            tmp5 += tmp6;
-            tmp7 = clp[tmp5>>10];
-            *mb++ = (u8)tmp7;
-            ptrC++;
-        }
-        mb += 4*16 - partWidth;
-        ptrC += 3*partWidth;
-        ptrV += 3*partWidth;
-    }
-
-}
-
-
-/*------------------------------------------------------------------------------
-
-    Function: h264bsdInterpolateMidVerQuarter
-
-        Functional description:
-          Function to perform horizontal and vertical interpolation of pixel
-          position 'f' or 'q' for a block. Overfilling is done only if needed.
-          Reference image (ref) is read at correct position and the predicted
-          part is written to macroblock array (mb)
-
-------------------------------------------------------------------------------*/
-
-void h264bsdInterpolateMidVerQuarter(
-  u8 *ref,
-  u8 *mb,
-  i32 x0,
-  i32 y0,
-  u32 width,
-  u32 height,
-  u32 partWidth,
-  u32 partHeight,
-  u32 verOffset)    /* 0 for pixel f, 1 for pixel q */
-{
-    u32 p1[21*21/4+1];
-    u32 x, y;
-    i32 tmp1, tmp2, tmp3, tmp4, tmp5, tmp6, tmp7;
-    i32 *ptrC, *ptrV, *ptrInt, *b1;
-    u8  *ptrJ;
-    i32 table[21*16];
-    const u8 *clp = h264bsdClip + 512;
-
-    /* Code */
-
-    ASSERT(ref);
-    ASSERT(mb);
-
-    if ((x0 < 0) || ((u32)x0+partWidth+5 > width) ||
-        (y0 < 0) || ((u32)y0+partHeight+5 > height))
-    {
-        h264bsdFillBlock(ref, (u8*)p1, x0, y0, width, height,
-                partWidth+5, partHeight+5, partWidth+5);
-
-        x0 = 0;
-        y0 = 0;
-        ref = (u8*)p1;
-        width = partWidth+5;
-    }
-
-    ref += (u32)y0 * width + (u32)x0;
-
-    b1 = table;
-    ptrJ = ref + 5;
-
-    /* First step: calculate intermediate values for
-     * horizontal interpolation */
-    for (y = partHeight + 5; y; y--)
-    {
-        tmp6 = *(ptrJ - 5);
-        tmp5 = *(ptrJ - 4);
-        tmp4 = *(ptrJ - 3);
-        tmp3 = *(ptrJ - 2);
-        tmp2 = *(ptrJ - 1);
-        for (x = (partWidth >> 2); x; x--)
-        {
-            /* First pixel */
-            tmp7 = tmp3 + tmp4;
-            tmp6 += (tmp7 << 4);
-            tmp6 += (tmp7 << 2);
-            tmp7 = tmp2 + tmp5;
-            tmp1 = *ptrJ++;
-            tmp6 -= (tmp7 << 2);
-            tmp6 -= tmp7;
-            tmp6 += tmp1;
-            *b1++ = tmp6;
-            /* Second pixel */
-            tmp7 = tmp2 + tmp3;
-            tmp5 += (tmp7 << 4);
-            tmp5 += (tmp7 << 2);
-            tmp7 = tmp1 + tmp4;
-            tmp6 = *ptrJ++;
-            tmp5 -= (tmp7 << 2);
-            tmp5 -= tmp7;
-            tmp5 += tmp6;
-            *b1++ = tmp5;
-            /* Third pixel */
-            tmp7 = tmp1 + tmp2;
-            tmp4 += (tmp7 << 4);
-            tmp4 += (tmp7 << 2);
-            tmp7 = tmp6 + tmp3;
-            tmp5 = *ptrJ++;
-            tmp4 -= (tmp7 << 2);
-            tmp4 -= tmp7;
-            tmp4 += tmp5;
-            *b1++ = tmp4;
-            /* Fourth pixel */
-            tmp7 = tmp6 + tmp1;
-            tmp3 += (tmp7 << 4);
-            tmp3 += (tmp7 << 2);
-            tmp7 = tmp5 + tmp2;
-            tmp4 = *ptrJ++;
-            tmp3 -= (tmp7 << 2);
-            tmp3 -= tmp7;
-            tmp3 += tmp4;
-            *b1++ = tmp3;
-            tmp7 = tmp4;
-            tmp4 = tmp6;
-            tmp6 = tmp2;
-            tmp2 = tmp7;
-            tmp3 = tmp5;
-            tmp5 = tmp1;
-        }
-        ptrJ += width - partWidth;
-    }
-
-    /* Second step: calculate vertical interpolation and average */
-    ptrC = table + partWidth;
-    ptrV = ptrC + 5*partWidth;
-    /* Pointer to integer sample position, either M or R */
-    ptrInt = ptrC + (2+verOffset)*partWidth;
-    for (y = (partHeight >> 2); y; y--)
-    {
-        for (x = partWidth; x; x--)
-        {
-            tmp4 = ptrV[-(i32)partWidth*2];
-            tmp5 = ptrV[-(i32)partWidth];
-            tmp1 = ptrV[partWidth];
-            tmp2 = ptrV[partWidth*2];
-            tmp6 = *ptrV++;
-
-            tmp7 = tmp4 + tmp1;
-            tmp2 -= (tmp7 << 2);
-            tmp2 -= tmp7;
-            tmp2 += 512;
-            tmp7 = tmp5 + tmp6;
-            tmp3 = ptrC[partWidth*2];
-            tmp2 += (tmp7 << 4);
-            tmp2 += (tmp7 << 2);
-            tmp7 = ptrInt[partWidth*2];
-            tmp2 += tmp3;
-            tmp2 = clp[tmp2>>10];
-            tmp7 += 16;
-            tmp7 = clp[tmp7>>5];
-            tmp1 += 512;
-            tmp2++;
-            mb[48] = (u8)((tmp7 + tmp2) >> 1);
-
-            tmp7 = tmp3 + tmp6;
-            tmp1 -= (tmp7 << 2);
-            tmp1 -= tmp7;
-            tmp7 = tmp4 + tmp5;
-            tmp2 = ptrC[partWidth];
-            tmp1 += (tmp7 << 4);
-            tmp1 += (tmp7 << 2);
-            tmp7 = ptrInt[partWidth];
-            tmp1 += tmp2;
-            tmp1 = clp[tmp1>>10];
-            tmp7 += 16;
-            tmp7 = clp[tmp7>>5];
-            tmp6 += 512;
-            tmp1++;
-            mb[32] = (u8)((tmp7 + tmp1) >> 1);
-
-            tmp1 = *ptrC;
-            tmp7 = tmp2 + tmp5;
-            tmp6 -= (tmp7 << 2);
-            tmp6 -= tmp7;
-            tmp7 = tmp4 + tmp3;
-            tmp6 += (tmp7 << 4);
-            tmp6 += (tmp7 << 2);
-            tmp7 = *ptrInt;
-            tmp6 += tmp1;
-            tmp6 = clp[tmp6>>10];
-            tmp7 += 16;
-            tmp7 = clp[tmp7>>5];
-            tmp5 += 512;
-            tmp6++;
-            mb[16] = (u8)((tmp7 + tmp6) >> 1);
-
-            tmp6 = ptrC[-(i32)partWidth];
-            tmp1 += tmp4;
-            tmp5 -= (tmp1 << 2);
-            tmp5 -= tmp1;
-            tmp3 += tmp2;
-            tmp5 += (tmp3 << 4);
-            tmp5 += (tmp3 << 2);
-            tmp7 = ptrInt[-(i32)partWidth];
-            tmp5 += tmp6;
-            tmp5 = clp[tmp5>>10];
-            tmp7 += 16;
-            tmp7 = clp[tmp7>>5];
-            tmp5++;
-            *mb++ = (u8)((tmp7 + tmp5) >> 1);
-            ptrC++;
-            ptrInt++;
-        }
-        mb += 4*16 - partWidth;
-        ptrC += 3*partWidth;
-        ptrV += 3*partWidth;
-        ptrInt += 3*partWidth;
-    }
-
-}
-
-
-/*------------------------------------------------------------------------------
-
-    Function: h264bsdInterpolateMidHorQuarter
-
-        Functional description:
-          Function to perform horizontal and vertical interpolation of pixel
-          position 'i' or 'k' for a block. Overfilling is done only if needed.
-          Reference image (ref) is read at correct position and the predicted
-          part is written to macroblock array (mb)
-
-------------------------------------------------------------------------------*/
-
-void h264bsdInterpolateMidHorQuarter(
-  u8 *ref,
-  u8 *mb,
-  i32 x0,
-  i32 y0,
-  u32 width,
-  u32 height,
-  u32 partWidth,
-  u32 partHeight,
-  u32 horOffset)    /* 0 for pixel i, 1 for pixel k */
-{
-    u32 p1[21*21/4+1];
-    u32 x, y;
-    i32 tmp1, tmp2, tmp3, tmp4, tmp5, tmp6, tmp7;
-    i32 *ptrJ, *ptrInt, *h1;
-    u8  *ptrC, *ptrV;
-    i32 table[21*16];
-    i32 tableWidth = (i32)partWidth+5;
-    const u8 *clp = h264bsdClip + 512;
-
-    /* Code */
-
-    ASSERT(ref);
-    ASSERT(mb);
-
-    if ((x0 < 0) || ((u32)x0+partWidth+5 > width) ||
-        (y0 < 0) || ((u32)y0+partHeight+5 > height))
-    {
-        h264bsdFillBlock(ref, (u8*)p1, x0, y0, width, height,
-                partWidth+5, partHeight+5, partWidth+5);
-
-        x0 = 0;
-        y0 = 0;
-        ref = (u8*)p1;
-        width = partWidth+5;
-    }
-
-    ref += (u32)y0 * width + (u32)x0;
-
-    h1 = table + tableWidth;
-    ptrC = ref + width;
-    ptrV = ptrC + 5*width;
-
-    /* First step: calculate intermediate values for
-     * vertical interpolation */
-    for (y = (partHeight >> 2); y; y--)
-    {
-        for (x = (u32)tableWidth; x; x--)
-        {
-            tmp4 = ptrV[-(i32)width*2];
-            tmp5 = ptrV[-(i32)width];
-            tmp1 = ptrV[width];
-            tmp2 = ptrV[width*2];
-            tmp6 = *ptrV++;
-
-            tmp7 = tmp4 + tmp1;
-            tmp2 -= (tmp7 << 2);
-            tmp2 -= tmp7;
-            tmp7 = tmp5 + tmp6;
-            tmp3 = ptrC[width*2];
-            tmp2 += (tmp7 << 4);
-            tmp2 += (tmp7 << 2);
-            tmp2 += tmp3;
-            h1[tableWidth*2] = tmp2;
-
-            tmp7 = tmp3 + tmp6;
-            tmp1 -= (tmp7 << 2);
-            tmp1 -= tmp7;
-            tmp7 = tmp4 + tmp5;
-            tmp2 = ptrC[width];
-            tmp1 += (tmp7 << 4);
-            tmp1 += (tmp7 << 2);
-            tmp1 += tmp2;
-            h1[tableWidth] = tmp1;
-
-            tmp1 = *ptrC;
-            tmp7 = tmp2 + tmp5;
-            tmp6 -= (tmp7 << 2);
-            tmp6 -= tmp7;
-            tmp7 = tmp4 + tmp3;
-            tmp6 += (tmp7 << 4);
-            tmp6 += (tmp7 << 2);
-            tmp6 += tmp1;
-            *h1 = tmp6;
-
-            tmp6 = ptrC[-(i32)width];
-            tmp1 += tmp4;
-            tmp5 -= (tmp1 << 2);
-            tmp5 -= tmp1;
-            tmp3 += tmp2;
-            tmp5 += (tmp3 << 4);
-            tmp5 += (tmp3 << 2);
-            tmp5 += tmp6;
-            h1[-tableWidth] = tmp5;
-            h1++;
-            ptrC++;
-        }
-        ptrC += 4*width - partWidth - 5;
-        ptrV += 4*width - partWidth - 5;
-        h1 += 3*tableWidth;
-    }
-
-    /* Second step: calculate horizontal interpolation and average */
-    ptrJ = table + 5;
-    /* Pointer to integer sample position, either G or H */
-    ptrInt = table + 2 + horOffset;
-    for (y = partHeight; y; y--)
-    {
-        tmp6 = *(ptrJ - 5);
-        tmp5 = *(ptrJ - 4);
-        tmp4 = *(ptrJ - 3);
-        tmp3 = *(ptrJ - 2);
-        tmp2 = *(ptrJ - 1);
-        for (x = (partWidth>>2); x; x--)
-        {
-            /* First pixel */
-            tmp6 += 512;
-            tmp7 = tmp3 + tmp4;
-            tmp6 += (tmp7 << 4);
-            tmp6 += (tmp7 << 2);
-            tmp7 = tmp2 + tmp5;
-            tmp1 = *ptrJ++;
-            tmp6 -= (tmp7 << 2);
-            tmp6 -= tmp7;
-            tmp7 = *ptrInt++;
-            tmp6 += tmp1;
-            tmp6 = clp[tmp6 >> 10];
-            tmp7 += 16;
-            tmp7 = clp[tmp7 >> 5];
-            tmp5 += 512;
-            tmp6++;
-            *mb++ = (u8)((tmp6 + tmp7) >> 1);
-            /* Second pixel */
-            tmp7 = tmp2 + tmp3;
-            tmp5 += (tmp7 << 4);
-            tmp5 += (tmp7 << 2);
-            tmp7 = tmp1 + tmp4;
-            tmp6 = *ptrJ++;
-            tmp5 -= (tmp7 << 2);
-            tmp5 -= tmp7;
-            tmp7 = *ptrInt++;
-            tmp5 += tmp6;
-            tmp5 = clp[tmp5 >> 10];
-            tmp7 += 16;
-            tmp7 = clp[tmp7 >> 5];
-            tmp4 += 512;
-            tmp5++;
-            *mb++ = (u8)((tmp5 + tmp7) >> 1);
-            /* Third pixel */
-            tmp7 = tmp1 + tmp2;
-            tmp4 += (tmp7 << 4);
-            tmp4 += (tmp7 << 2);
-            tmp7 = tmp6 + tmp3;
-            tmp5 = *ptrJ++;
-            tmp4 -= (tmp7 << 2);
-            tmp4 -= tmp7;
-            tmp7 = *ptrInt++;
-            tmp4 += tmp5;
-            tmp4 = clp[tmp4 >> 10];
-            tmp7 += 16;
-            tmp7 = clp[tmp7 >> 5];
-            tmp3 += 512;
-            tmp4++;
-            *mb++ = (u8)((tmp4 + tmp7) >> 1);
-            /* Fourth pixel */
-            tmp7 = tmp6 + tmp1;
-            tmp3 += (tmp7 << 4);
-            tmp3 += (tmp7 << 2);
-            tmp7 = tmp5 + tmp2;
-            tmp4 = *ptrJ++;
-            tmp3 -= (tmp7 << 2);
-            tmp3 -= tmp7;
-            tmp7 = *ptrInt++;
-            tmp3 += tmp4;
-            tmp3 = clp[tmp3 >> 10];
-            tmp7 += 16;
-            tmp7 = clp[tmp7 >> 5];
-            tmp3++;
-            *mb++ = (u8)((tmp3 + tmp7) >> 1);
-            tmp3 = tmp5;
-            tmp5 = tmp1;
-            tmp7 = tmp4;
-            tmp4 = tmp6;
-            tmp6 = tmp2;
-            tmp2 = tmp7;
-        }
-        ptrJ += 5;
-        ptrInt += 5;
-        mb += 16 - partWidth;
-    }
-
-}
-
-
-/*------------------------------------------------------------------------------
-
     Function: h264bsdPredictSamples
 
         Functional description:
@@ -1832,9 +891,9 @@ void h264bsdPredictSamples(
 
 /* Variables */
 
-    u32 xFrac, yFrac, width, height;
-    i32 xInt, yInt;
-    u8 *lumaPartData;
+    u32 xFrac, yFrac, width, height, w, h;
+    i32 x0, y0;
+    u8 *ref, *d;
     VJP_BEGIN(VJP_MC);
 
 /* Code */
@@ -1849,87 +908,27 @@ void h264bsdPredictSamples(
     ASSERT(refPic->height);
 
     /* luma */
-    lumaPartData = data + 16*partY + partX;
-
+    { VJP_BEGIN(VJP_LUMA);
     xFrac = mv->hor & 0x3;
     yFrac = mv->ver & 0x3;
-
     width = 16 * refPic->width;
     height = 16 * refPic->height;
-
-    xInt = (i32)xA + (i32)partX + (mv->hor >> 2);
-    yInt = (i32)yA + (i32)partY + (mv->ver >> 2);
-
-    ASSERT(lumaFracPos[xFrac][yFrac] < 16);
-
-    { VJP_BEGIN(VJP_LUMA);
-    switch (lumaFracPos[xFrac][yFrac])
-    {
-        case 0: /* G */
-            h264bsdFillBlock(refPic->data, lumaPartData,
-                    xInt,yInt,width,height,partWidth,partHeight,16);
-            break;
-        case 1: /* d */
-            h264bsdInterpolateVerQuarter(refPic->data, lumaPartData,
-                    xInt, yInt-2, width, height, partWidth, partHeight, 0);
-            break;
-        case 2: /* h */
-            h264bsdInterpolateVerHalf(refPic->data, lumaPartData,
-                    xInt, yInt-2, width, height, partWidth, partHeight);
-            break;
-        case 3: /* n */
-            h264bsdInterpolateVerQuarter(refPic->data, lumaPartData,
-                    xInt, yInt-2, width, height, partWidth, partHeight, 1);
-            break;
-        case 4: /* a */
-            h264bsdInterpolateHorQuarter(refPic->data, lumaPartData,
-                    xInt-2, yInt, width, height, partWidth, partHeight, 0);
-            break;
-        case 5: /* e */
-            h264bsdInterpolateHorVerQuarter(refPic->data, lumaPartData,
-                    xInt-2, yInt-2, width, height, partWidth, partHeight, 0);
-            break;
-        case 6: /* i */
-            h264bsdInterpolateMidHorQuarter(refPic->data, lumaPartData,
-                    xInt-2, yInt-2, width, height, partWidth, partHeight, 0);
-            break;
-        case 7: /* p */
-            h264bsdInterpolateHorVerQuarter(refPic->data, lumaPartData,
-                    xInt-2, yInt-2, width, height, partWidth, partHeight, 2);
-            break;
-        case 8: /* b */
-            h264bsdInterpolateHorHalf(refPic->data, lumaPartData,
-                    xInt-2, yInt, width, height, partWidth, partHeight);
-            break;
-        case 9: /* f */
-            h264bsdInterpolateMidVerQuarter(refPic->data, lumaPartData,
-                    xInt-2, yInt-2, width, height, partWidth, partHeight, 0);
-            break;
-        case 10: /* j */
-            h264bsdInterpolateMidHalf(refPic->data, lumaPartData,
-                    xInt-2, yInt-2, width, height, partWidth, partHeight);
-            break;
-        case 11: /* q */
-            h264bsdInterpolateMidVerQuarter(refPic->data, lumaPartData,
-                    xInt-2, yInt-2, width, height, partWidth, partHeight, 1);
-            break;
-        case 12: /* c */
-            h264bsdInterpolateHorQuarter(refPic->data, lumaPartData,
-                    xInt-2, yInt, width, height, partWidth, partHeight, 1);
-            break;
-        case 13: /* g */
-            h264bsdInterpolateHorVerQuarter(refPic->data, lumaPartData,
-                    xInt-2, yInt-2, width, height, partWidth, partHeight, 1);
-            break;
-        case 14: /* k */
-            h264bsdInterpolateMidHorQuarter(refPic->data, lumaPartData,
-                    xInt-2, yInt-2, width, height, partWidth, partHeight, 1);
-            break;
-        default: /* case 15, r */
-            h264bsdInterpolateHorVerQuarter(refPic->data, lumaPartData,
-                    xInt-2, yInt-2, width, height, partWidth, partHeight, 3);
-            break;
-    }
+    /* the window: 2 samples more before and 3 after per fractional axis */
+    x0 = (i32)xA + (i32)partX + (mv->hor >> 2) - (xFrac ? 2 : 0);
+    y0 = (i32)yA + (i32)partY + (mv->ver >> 2) - (yFrac ? 2 : 0);
+    w = partWidth + (xFrac ? 5 : 0);
+    h = partHeight + (yFrac ? 5 : 0);
+    ref = refPic->data;
+    d = data + 16 * partY + partX;
+    if (x0 >= 0 && y0 >= 0 && (u32)x0 + w <= width && (u32)y0 + h <= height)
+        LumaPredict(ref + (u32)y0 * width + (u32)x0, width, d, partWidth,
+            partHeight, xFrac, yFrac);
+    else if (!xFrac && !yFrac)
+        h264bsdFillBlock(ref, d, x0, y0, width, height, partWidth,
+            partHeight, 16);
+    else
+        LumaEdge(ref, width, height, x0, y0, d, partWidth, partHeight, xFrac,
+            yFrac);
     VJP_END_AT(VJP_LUMA, VJP_LUMA + 4 * xFrac + yFrac); }
 
     /* chroma */

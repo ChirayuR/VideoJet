@@ -61,7 +61,16 @@ Every change made for VideoJet is listed here, newest last.
       (NSAU on Xtensa).
   - Profile split of `inter` (`h264bsd_inter_prediction.c`, `h264bsd_reconstruct.c`, `vj_prof.h`; `VJ_PROFILE` builds only,
     no change to the default build): `{ VJP_BEGIN(..); <original code>; VJP_END(..); }` blocks around MV prediction, the
-    direct skip copy and the write-out, and in `h264bsdPredictSamples` around the whole function, the luma `switch`
+    direct skip copy and the write-out, and in `h264bsdPredictSamples` around the whole function, the luma part
     (counted per quarter-sample position) and `PredictChroma`.
+  - Luma motion compensation (`h264bsd_reconstruct.c/h`), bit-exact: `host/test_mc.c` compares `h264bsdPredictSamples`
+    with the standard's interpolation equations over every quarter/eighth-sample position, partition, offset and
+    picture-edge case (the original kernels pass it too).
+    - `h264bsdPredictSamples` takes one reference window per partition, read in place or padded by `h264bsdFillBlock`
+      (`LumaEdge`), and dispatches to C kernels that keep a 6-sample window in registers and clamp arithmetically. The
+      centre positions sum one way into an i16 table (`LumaCentre`), then filter the other way.
+    - The eight luma `h264bsdInterpolate*` functions and `lumaFracPos` are gone. Chroma (`h264bsdInterpolateChroma*`,
+      `PredictChroma`) is unchanged.
+    - Upstream's left shifts of negative values (UBSan shift-base) in this file went with the old kernels.
 - Apache-2.0 §4(b) modification notice: every file changed above carries the header line
   `Modified for VideoJet: see h264bsd/README.md, Local changes.` Comment-only.

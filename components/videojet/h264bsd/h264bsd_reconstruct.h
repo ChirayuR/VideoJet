@@ -1,6 +1,7 @@
 /*
  * Copyright (C) 2009 The Android Open Source Project
  * Modified for use by h264bsd standalone library
+ * Modified for VideoJet: see h264bsd/README.md, Local changes.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -113,92 +114,6 @@ void h264bsdInterpolateChromaHorVer(
   u32 yFrac,
   u32 chromaPartWidth,
   u32 chromaPartHeight);
-
-void h264bsdInterpolateVerHalf(
-  u8 *ref,
-  u8 *mb,
-  i32 x0,
-  i32 y0,
-  u32 width,
-  u32 height,
-  u32 partWidth,
-  u32 partHeight);
-
-void h264bsdInterpolateVerQuarter(
-  u8 *ref,
-  u8 *mb,
-  i32 x0,
-  i32 y0,
-  u32 width,
-  u32 height,
-  u32 partWidth,
-  u32 partHeight,
-  u32 verOffset);
-
-void h264bsdInterpolateHorHalf(
-  u8 *ref,
-  u8 *mb,
-  i32 x0,
-  i32 y0,
-  u32 width,
-  u32 height,
-  u32 partWidth,
-  u32 partHeight);
-
-void h264bsdInterpolateHorQuarter(
-  u8 *ref,
-  u8 *mb,
-  i32 x0,
-  i32 y0,
-  u32 width,
-  u32 height,
-  u32 partWidth,
-  u32 partHeight,
-  u32 horOffset);
-
-void h264bsdInterpolateHorVerQuarter(
-  u8 *ref,
-  u8 *mb,
-  i32 x0,
-  i32 y0,
-  u32 width,
-  u32 height,
-  u32 partWidth,
-  u32 partHeight,
-  u32 horVerOffset);
-
-void h264bsdInterpolateMidHalf(
-  u8 *ref,
-  u8 *mb,
-  i32 x0,
-  i32 y0,
-  u32 width,
-  u32 height,
-  u32 partWidth,
-  u32 partHeight);
-
-void h264bsdInterpolateMidVerQuarter(
-  u8 *ref,
-  u8 *mb,
-  i32 x0,
-  i32 y0,
-  u32 width,
-  u32 height,
-  u32 partWidth,
-  u32 partHeight,
-  u32 verOffset);
-
-void h264bsdInterpolateMidHorQuarter(
-  u8 *ref,
-  u8 *mb,
-  i32 x0,
-  i32 y0,
-  u32 width,
-  u32 height,
-  u32 partWidth,
-  u32 partHeight,
-  u32 horOffset);
-
 
 void h264bsdFillRow7(
   u8 *ref,
