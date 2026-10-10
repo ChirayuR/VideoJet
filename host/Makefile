@@ -1,24 +1,31 @@
 CC ?= cc
 CFLAGS ?= -std=gnu99 -O2 -g -D_ERROR_PRINT
 B := ../build-host
-SRC := $(wildcard ../components/h264bsd/src/*.c)
-HDR := $(wildcard ../components/h264bsd/src/*.h)
-INC := -I../components/h264bsd/src -I../components/vj_hash/include
+VJ := ../components/videojet
+DEC := ../components/h264bsd/src
+LIB_SRC := $(wildcard $(VJ)/src/*.c) $(wildcard $(DEC)/*.c)
+LIB_HDR := $(wildcard $(VJ)/include/*.h) $(wildcard $(VJ)/src/*.h) $(wildcard $(DEC)/*.h)
+LIB_INC := -I$(VJ)/include -I$(VJ)/src -I$(DEC)
+INC := -I$(VJ)/include -I../components/vj_hash/include
 HASH := ../components/vj_hash/include/vj_hash.h
 
-all: $(B)/vjdec $(B)/vjhash_raw
+all: $(B)/vjdec $(B)/vjhash_raw $(B)/test_api
 
 $(B):
 	mkdir -p $@
 
-$(B)/vjdec: vjdec.c $(SRC) $(HDR) $(HASH) | $(B)
-	$(CC) $(CFLAGS) $(INC) -o $@ vjdec.c $(SRC)
+$(B)/vjdec: vjdec.c $(LIB_SRC) $(LIB_HDR) $(HASH) | $(B)
+	$(CC) $(CFLAGS) $(INC) $(LIB_INC) -o $@ vjdec.c $(LIB_SRC)
+
+$(B)/test_api: test_api.c $(LIB_SRC) $(LIB_HDR) | $(B)
+	$(CC) $(CFLAGS) $(INC) $(LIB_INC) -o $@ test_api.c $(LIB_SRC)
 
 $(B)/vjhash_raw: vjhash_raw.c $(HASH) | $(B)
 	$(CC) $(CFLAGS) $(INC) -o $@ vjhash_raw.c
 
-# The correctness floor: every stream with a .golden decodes bit-exact, and at least one exists.
+# The correctness floor: API unit tests, then every stream with a .golden decodes bit-exact.
 check: all
+	@$(B)/test_api ../streams
 	@./check.sh $(B)/vjdec ../streams
 
 .PHONY: all check

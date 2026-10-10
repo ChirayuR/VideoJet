@@ -1,16 +1,14 @@
-/* vjdec in.h264 [out.yuv] : decode with h264bsd, print one vj_hash per output frame.
- * Mirrors the board bench loop (bench/main/bench_main.c) so host and board agree frame for frame:
- * change one, change the other. */
+/* vjdec in.h264 [out.yuv] : decode through the VideoJet API, one access unit per call, and print one vj_hash per
+ * frame. The same calls as the board bench (bench/main/bench_main.c), so host and board agree frame for frame. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
-#include "h264bsd_decoder.h"
-#include "h264bsd_util.h"
+#include "videojet.h"
 #include "vj_hash.h"
 
-static void write_crop(FILE *f, const u8 *p, u32 stride, u32 x0, u32 y0, u32 w, u32 h)
+static void write_crop(FILE *f, const uint8_t *p, size_t stride, size_t x0, size_t y0, size_t w, size_t h)
 {
-    for (u32 r = 0; r < h; r++)
+    for (size_t r = 0; r < h; r++)
         fwrite(p + (y0 + r) * stride + x0, 1, w, f);
 }
 
@@ -28,8 +26,8 @@ int main(int argc, char **argv)
     fseek(f, 0, SEEK_END);
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
-    u8 *buf = malloc(size);
-    if (!buf || fread(buf, 1, size, f) != (size_t)size) {
+    uint8_t *buf = malloc(size > 0 ? (size_t)size : 1);
+    if (!buf || fread(buf, 1, (size_t)size, f) != (size_t)size) {
         fprintf(stderr, "read failed\n");
         fclose(f);
         free(buf);
@@ -37,67 +35,48 @@ int main(int argc, char **argv)
     }
     fclose(f);
     FILE *yuv = argc > 2 ? fopen(argv[2], "wb") : NULL;
+    if (argc > 2 && !yuv)
+        perror(argv[2]);
 
-    int rc = 0; /* every exit below goes through `out`: nothing leaks, ASan's leak check stays usable */
-    u8 *p = buf;
-    u32 left = (u32)size, frames = 0, stalls = 0;
-    storage_t *dec = h264bsdAlloc();
-    if (!dec || h264bsdInit(dec, HANTRO_TRUE) != HANTRO_OK) {
+    int rc = 0; /* every exit goes through `out`, so nothing leaks and ASan's leak check stays usable */
+    unsigned frames = 0;
+    vj_decoder_t *dec = vj_decoder_create();
+    if (!dec) {
         fprintf(stderr, "init failed\n");
         rc = 1;
         goto out;
     }
     clock_t t0 = clock();
-    while (left > 0) {
-        u32 used = 0;
-        u32 r = h264bsdDecode(dec, p, left, 0, &used);
-        p += used;
-        left -= used;
-        if (r == H264BSD_ERROR || r == H264BSD_PARAM_SET_ERROR || r == H264BSD_MEMALLOC_ERROR) {
-            fprintf(stderr, "decode error %u at frame %u\n", r, frames);
+    for (size_t off = 0; off < (size_t)size;) {
+        size_t n = vj_au_length(buf + off, (size_t)size - off);
+        if (!n) {
+            fprintf(stderr, "no start code at byte %zu\n", off);
             rc = 1;
             goto out;
         }
-        if (used == 0 && r != H264BSD_PIC_RDY && ++stalls > 2) {
-            fprintf(stderr, "decoder made no progress at frame %u\n", frames);
+        vj_frame_t fr;
+        vj_status_t st = vj_decode_au(dec, buf + off, n, &fr);
+        off += n;
+        if (st < 0) {
+            fprintf(stderr, "decode error %d at frame %u\n", (int)st, frames);
             rc = 1;
             goto out;
         }
-        if (used)
-            stalls = 0;
-        if (r != H264BSD_PIC_RDY)
+        if (st == VJ_NO_FRAME)
             continue;
-        u32 id, idr, nerr, crop, x0, w, y0, h;
-        u8 *pic = h264bsdNextOutputPicture(dec, &id, &idr, &nerr);
-        if (!pic) {
-            fprintf(stderr, "PIC_RDY without a picture at frame %u\n", frames);
-            rc = 1;
-            goto out;
-        }
-        u32 W = h264bsdPicWidth(dec) * 16, H = h264bsdPicHeight(dec) * 16;
-        h264bsdCroppingParams(dec, &crop, &x0, &w, &y0, &h);
-        if (!crop) {
-            x0 = 0;
-            y0 = 0;
-            w = W;
-            h = H;
-        }
-        const u8 *U = pic + W * H, *V = U + (W / 2) * (H / 2);
-        printf("%08x\n", (unsigned)vj_hash_i420(pic, W, U, V, W / 2, x0, y0, w, h));
+        printf("%08x\n", (unsigned)vj_hash_i420(fr.y, fr.y_stride, fr.u, fr.v, fr.uv_stride, fr.crop_x, fr.crop_y,
+                                               fr.crop_w, fr.crop_h));
         if (yuv) {
-            write_crop(yuv, pic, W, x0, y0, w, h);
-            write_crop(yuv, U, W / 2, x0 / 2, y0 / 2, w / 2, h / 2);
-            write_crop(yuv, V, W / 2, x0 / 2, y0 / 2, w / 2, h / 2);
+            write_crop(yuv, fr.y, fr.y_stride, fr.crop_x, fr.crop_y, fr.crop_w, fr.crop_h);
+            write_crop(yuv, fr.u, fr.uv_stride, fr.crop_x / 2, fr.crop_y / 2, fr.crop_w / 2, fr.crop_h / 2);
+            write_crop(yuv, fr.v, fr.uv_stride, fr.crop_x / 2, fr.crop_y / 2, fr.crop_w / 2, fr.crop_h / 2);
         }
         frames++;
     }
-    double s = (double)(clock() - t0) / CLOCKS_PER_SEC;
-    fprintf(stderr, "%u frames, %.1f fps on host\n", frames, s > 0 ? frames / s : 0.0);
+    double secs = (double)(clock() - t0) / CLOCKS_PER_SEC;
+    fprintf(stderr, "%u frames, %.1f fps on host\n", frames, secs > 0 ? frames / secs : 0.0);
 out:
-    if (dec) { /* h264bsdInit zeroes the storage first, so this is safe after a failed init too */
-        h264bsdShutdown(dec);
-        h264bsdFree(dec);
-    }
+    vj_decoder_destroy(dec);
     free(buf);
     if (yuv)
         fclose(yuv);

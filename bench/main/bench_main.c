@@ -1,7 +1,7 @@
-/* VideoJet board bench: decode every stream in the `streams` partition, time each frame,
- * check each frame's hash against its golden, print one "VJ ..." line per stream.
- * Hashing and the per-frame yield happen outside the timed region.
- * A VJ_PROFILE build (see vj_prof.h) also prints one "VJP ..." per-stage line after each "VJ ... stream=" line. */
+/* VideoJet board bench: decode every stream in the `streams` partition through the public API, one access unit per
+ * vj_decode_au() call, time each frame, check each frame's hash against its golden, print one "VJ ..." line per
+ * stream. Hashing and the per-frame yield happen outside the timed region.
+ * A profile build (-DVJ_PROFILE=1) also prints one "VJP ..." per-stage line after each "VJ ... stream=" line. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,16 +11,10 @@
 #include "esp_heap_caps.h"
 #include "esp_partition.h"
 #include "esp_timer.h"
-#include "h264bsd_decoder.h"
-#include "h264bsd_util.h"
+#include "videojet.h"
 #include "vj_hash.h"
-#include "vj_prof.h"
 
 #define VJ_RUNS 2
-
-#ifdef VJ_PROFILE
-uint64_t vj_prof[VJP_N];
-#endif
 
 typedef struct {
     char name[24];
@@ -41,71 +35,64 @@ static void run_stream(const esp_partition_t *part, const vj_entry_t *e, int run
     uint8_t *data = heap_caps_malloc(e->data_len, MALLOC_CAP_SPIRAM);
     uint32_t *golden = heap_caps_malloc(e->frames * 4, MALLOC_CAP_SPIRAM);
     int64_t *t = heap_caps_malloc(e->frames * sizeof(int64_t), MALLOC_CAP_SPIRAM);
-    storage_t *dec = NULL;
+    vj_decoder_t *dec = NULL;
+    uint32_t *au_off = NULL; /* per access unit: offset, length */
     if (!data || !golden || !t) {
         printf("VJ run=%d set=%s stream=%s error=nomem\n", run, set, e->name);
         goto out;
     }
     ESP_ERROR_CHECK(esp_partition_read(part, e->data_off, data, e->data_len));
     ESP_ERROR_CHECK(esp_partition_read(part, e->golden_off, golden, e->frames * 4));
-    dec = h264bsdAlloc();
-    if (!dec || h264bsdInit(dec, HANTRO_TRUE) != HANTRO_OK) {
+    /* Split the stream into access units once, outside the timed loop. */
+    size_t nau = 0;
+    for (size_t off = 0, n; off < e->data_len; off += n, nau++)
+        if (!(n = vj_au_length(data + off, e->data_len - off)))
+            break;
+    au_off = heap_caps_malloc((nau ? nau : 1) * 2 * sizeof(uint32_t), MALLOC_CAP_SPIRAM);
+    if (!au_off) {
+        printf("VJ run=%d set=%s stream=%s error=nomem\n", run, set, e->name);
+        goto out;
+    }
+    size_t used = 0; /* bytes covered by the access units found */
+    for (size_t i = 0; i < nau; i++) {
+        size_t n = vj_au_length(data + used, e->data_len - used);
+        au_off[2 * i] = (uint32_t)used;
+        au_off[2 * i + 1] = (uint32_t)n;
+        used += n;
+    }
+    dec = vj_decoder_create();
+    if (!dec) {
         printf("VJ run=%d set=%s stream=%s error=init\n", run, set, e->name);
         goto out;
     }
 
-    uint8_t *p = data;
-    uint32_t left = e->data_len, n = 0, fails = 0, stalls = 0;
+    uint32_t n = 0, fails = 0;
     int first_fail = -1;
-    const char *err = NULL;
-#ifdef VJ_PROFILE
-    memset(vj_prof, 0, sizeof vj_prof);
-#endif
-    int64_t t0 = esp_timer_get_time();
-    while (left > 0 && n < e->frames) {
-        /* Anything whose address goes to the h264bsd API is u32 (unsigned int): uint32_t is
-         * unsigned long on Xtensa, an incompatible pointer type that GCC 14 rejects. */
-        u32 used = 0;
-        uint32_t r = h264bsdDecode(dec, p, left, 0, &used);
-        p += used;
-        left -= used;
-        if (r == H264BSD_ERROR || r == H264BSD_PARAM_SET_ERROR || r == H264BSD_MEMALLOC_ERROR) {
-            err = "decode";
+    const char *err = used < e->data_len ? "noau" : NULL; /* bytes left that hold no start code */
+    vj_profile_t prof;
+    vj_profile_take(&prof); /* zeroes the counters, when profiling is compiled in */
+    int64_t acc = 0; /* time of AUs since the last frame: a parameter-set-only AU counts toward the next frame */
+    for (size_t i = 0; i < nau && n < e->frames; i++) {
+        vj_frame_t f;
+        int64_t t0 = esp_timer_get_time();
+        vj_status_t st = vj_decode_au(dec, data + au_off[2 * i], au_off[2 * i + 1], &f);
+        acc += esp_timer_get_time() - t0;
+        if (st < 0) {
+            err = st == VJ_ERR_NOMEM ? "nomem" : "decode";
             break;
         }
-        if (used == 0 && r != H264BSD_PIC_RDY && ++stalls > 2) {
-            err = "stall";
-            break;
-        }
-        if (used)
-            stalls = 0;
-        if (r != H264BSD_PIC_RDY)
+        if (st == VJ_NO_FRAME)
             continue;
-        t[n] = esp_timer_get_time() - t0; /* this frame's decode time, deblocking included */
-
-        u32 id, idr, nerr, crop, x0, w, y0, h;
-        uint8_t *pic = h264bsdNextOutputPicture(dec, &id, &idr, &nerr);
-        if (!pic) {
-            err = "nopic";
-            break;
-        }
-        uint32_t W = h264bsdPicWidth(dec) * 16, H = h264bsdPicHeight(dec) * 16;
-        h264bsdCroppingParams(dec, &crop, &x0, &w, &y0, &h);
-        if (!crop) {
-            x0 = 0;
-            y0 = 0;
-            w = W;
-            h = H;
-        }
-        const uint8_t *U = pic + W * H, *V = U + (W / 2) * (H / 2);
-        if (vj_hash_i420(pic, W, U, V, W / 2, x0, y0, w, h) != golden[n]) {
+        t[n] = acc; /* this frame's decode time, deblocking included */
+        acc = 0;
+        if (vj_hash_i420(f.y, f.y_stride, f.u, f.v, f.uv_stride, f.crop_x, f.crop_y, f.crop_w, f.crop_h)
+            != golden[n]) {
             fails++;
             if (first_fail < 0)
                 first_fail = (int)n;
         }
         n++;
-        vTaskDelay(1); /* let IDLE0 feed the task watchdog */
-        t0 = esp_timer_get_time();
+        vTaskDelay(1); /* let IDLE0 feed the task watchdog: outside the timed region, as in M1 */
     }
 
     /* Stats: t0 is taken before the first decode, so idr_us includes SPS/PPS parsing and DPB
@@ -125,21 +112,17 @@ static void run_stream(const esp_partition_t *part, const vj_entry_t *e, int run
            (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
            (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM),
            err ? " error=" : "", err ? err : "");
-#ifdef VJ_PROFILE
-    if (n) {
+    if (vj_profile_take(&prof) && n) {
         const uint64_t mhz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
-        uint64_t parse = vj_prof[VJP_PARSE] / mhz / n, recon = vj_prof[VJP_RECON] / mhz / n;
-        uint64_t inter = vj_prof[VJP_INTER] / mhz / n, dblk = vj_prof[VJP_DEBLOCK] / mhz / n;
+        uint64_t parse = prof.parse / mhz / n, recon = prof.recon / mhz / n;
+        uint64_t inter = prof.inter / mhz / n, dblk = prof.deblock / mhz / n;
         uint64_t frame = (uint64_t)((sum + idr_us) / n);
         printf("VJP run=%d stream=%s parse_us=%llu recon_us=%llu inter_us=%llu deblock_us=%llu other_us=%lld\n",
                run, e->name, parse, recon, inter, dblk, (long long)frame - (long long)(parse + recon + dblk));
     }
-#endif
 out:
-    if (dec) {
-        h264bsdShutdown(dec);
-        h264bsdFree(dec);
-    }
+    vj_decoder_destroy(dec);
+    free(au_off);
     free(data);
     free(golden);
     free(t);
