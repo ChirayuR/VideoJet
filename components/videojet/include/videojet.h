@@ -20,7 +20,9 @@ typedef struct vj_decoder vj_decoder_t;
 typedef enum {
     VJ_FRAME = 1,        /* the AU completed a picture: *out describes it */
     VJ_NO_FRAME = 0,     /* the AU held no slice (parameter sets, SEI) */
-    VJ_ERR_STREAM = -1,  /* bitstream error, unsupported stream, or the AU ended inside a picture */
+    VJ_ERR_STREAM = -1,  /* bitstream error, unsupported stream, or the AU ended inside a picture. After any error,
+                          * frames may be visibly wrong (a lost reference can leave error_mbs at 0) until the next
+                          * IDR (f.idr): request a keyframe and wait for it. */
     VJ_ERR_NOMEM = -2,   /* a buffer could not be allocated (frames need PSRAM) */
     VJ_ERR_ARG = -3,     /* NULL decoder, AU or out; empty AU, or one over 4 GiB */
 } vj_status_t;

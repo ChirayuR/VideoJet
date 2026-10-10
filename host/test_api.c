@@ -232,7 +232,8 @@ static void test_contract(const char *dir)
 static int resume_run(const uint8_t *s, const size_t *off, const size_t *n, int same_address)
 {
     size_t cut = slice_at(s + off[2], n[2], 2), at = n[1] + cut;
-    uint8_t *big = malloc(at + n[3]), *a0 = malloc(n[0]), *a4 = malloc(n[4]);
+    size_t tail = n[3] > n[4] ? n[3] : n[4]; /* AU3 is copied to big + at, and AU4 too when same_address */
+    uint8_t *big = malloc(at + tail), *a0 = malloc(n[0]), *a4 = malloc(n[4]);
     memcpy(a0, s + off[0], n[0]);
     memcpy(big, s + off[1], n[1]);
     memcpy(big + n[1], s + off[2], cut);

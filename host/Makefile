@@ -2,7 +2,7 @@ CC ?= cc
 CFLAGS ?= -std=gnu99 -O2 -g -D_ERROR_PRINT
 B := ../build-host
 VJ := ../components/videojet
-DEC := ../components/h264bsd/src
+DEC := ../components/videojet/h264bsd
 LIB_SRC := $(wildcard $(VJ)/src/*.c) $(wildcard $(DEC)/*.c)
 LIB_HDR := $(wildcard $(VJ)/include/*.h) $(wildcard $(VJ)/src/*.h) $(wildcard $(DEC)/*.h)
 LIB_INC := -I$(VJ)/include -I$(VJ)/src -I$(DEC)

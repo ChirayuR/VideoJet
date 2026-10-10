@@ -66,13 +66,16 @@ Toolchain traps (found in M1):
   Host builds never catch this.
 - IDF's `-Werror=all` beats `-Wno-error`. Relax one tag at a time with `-Wno-error=<tag>`.
 - A component's `file(GLOB ... CONFIGURE_DEPENDS ...)` is a CMake error in IDF's requirements scan (script mode). Guard it
-  with `if(CMAKE_BUILD_EARLY_EXPANSION)` (plain glob) / `else()` (see `components/h264bsd/CMakeLists.txt`).
+  with `if(CMAKE_BUILD_EARLY_EXPANSION)` (plain glob) / `else()` (see `components/videojet/CMakeLists.txt`).
 - esptool/idf.py progress floods output. Pipe through `tr '\r' '\n' | grep -v '%)' | tail`.
 - Board loop: `tools/flash_streams.sh` (only when streams change), then `idf.py -C bench -p /dev/ttyACM0 flash`,
   then `$IDF_PY tools/bench.py --label X --set search`, with `IDF_PY=/path/to/idf-python-env/bin/python`
   (it has pyserial). `bench.py` FAILs unless the boot log's ELF SHA256 matches `bench/build/videojet_bench.elf`
-  (`--elf PATH` for another build dir): flash what you built. A `VJ_PROFILE` image needs
-  `--profile --elf bench/build-prof/videojet_bench.elf`.
+  (`--elf PATH` for another build dir): flash what you built. A `CONFIG_VJ_PROFILE` image needs
+  `--profile --elf bench/build-prof/videojet_bench.elf`. Build it with the overlay, so the timed `bench/sdkconfig` never
+  sees the switch (`rm -rf bench/build-prof` first; flash it with the same `-B`, then reflash the timed build):
+  `idf.py -C bench -B "$PWD/bench/build-prof" -DSDKCONFIG="$PWD/bench/build-prof/sdkconfig"
+  -DSDKCONFIG_DEFAULTS="$PWD/bench/sdkconfig.defaults;$PWD/bench/sdkconfig.profile" build`.
 
 ## Jet lessons that transfer
 - Consumer project: a ring of internal-SRAM DMA bands with the converter writing straight into them.

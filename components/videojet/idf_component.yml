@@ -1,0 +1,6 @@
+version: "0.1.0"
+description: "Fast H.264 constrained-baseline decoding for the ESP32-S3 (h264bsd core, one access unit per call)"
+targets:
+  - esp32s3
+dependencies:
+  idf: ">=5.4"

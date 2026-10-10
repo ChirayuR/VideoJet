@@ -103,7 +103,7 @@ u32 h264bsdInit(storage_t *pStorage, u32 noOutputReordering)
      * specific NEON optimized "memset" for clearing the structure */
     size = (sizeof(macroblockLayer_t) + 63) & ~0x3F;
 
-    pStorage->mbLayer = (macroblockLayer_t*)malloc(size);
+    pStorage->mbLayer = (macroblockLayer_t*)vj_alloc(size);
     if (!pStorage->mbLayer)
         return HANTRO_NOK;
 
@@ -278,9 +278,17 @@ u32 h264bsdDecode(storage_t *pStorage, u8 *byteStrm, u32 len, u32 picId,
                     EPRINT("SEQ_PARAM_SET");
                     FREE(seqParamSet.offsetForRefFrame);
                     FREE(seqParamSet.vuiParameters);
-                    return(H264BSD_ERROR);
+                    return(tmp == MEMORY_ALLOCATION_ERROR ?
+                           H264BSD_MEMALLOC_ERROR : H264BSD_ERROR);
                 }
                 tmp = h264bsdStoreSeqParamSet(pStorage, &seqParamSet);
+                if (tmp != HANTRO_OK)
+                {
+                    /* no slot took ownership of the parsed set: free it here */
+                    FREE(seqParamSet.offsetForRefFrame);
+                    FREE(seqParamSet.vuiParameters);
+                    return(H264BSD_MEMALLOC_ERROR);
+                }
                 break;
 
             case NAL_PIC_PARAM_SET:
@@ -293,9 +301,19 @@ u32 h264bsdDecode(storage_t *pStorage, u8 *byteStrm, u32 len, u32 picId,
                     FREE(picParamSet.topLeft);
                     FREE(picParamSet.bottomRight);
                     FREE(picParamSet.sliceGroupId);
-                    return(H264BSD_ERROR);
+                    return(tmp == MEMORY_ALLOCATION_ERROR ?
+                           H264BSD_MEMALLOC_ERROR : H264BSD_ERROR);
                 }
                 tmp = h264bsdStorePicParamSet(pStorage, &picParamSet);
+                if (tmp != HANTRO_OK)
+                {
+                    /* no slot took ownership of the parsed set: free it here */
+                    FREE(picParamSet.runLength);
+                    FREE(picParamSet.topLeft);
+                    FREE(picParamSet.bottomRight);
+                    FREE(picParamSet.sliceGroupId);
+                    return(H264BSD_MEMALLOC_ERROR);
+                }
                 break;
 
             case NAL_CODED_SLICE_IDR:
@@ -1112,7 +1130,7 @@ u32 h264bsdProfile(storage_t *pStorage)
 
 storage_t* h264bsdAlloc()
 {
-    return (storage_t*)malloc(sizeof(storage_t));
+    return (storage_t*)vj_alloc(sizeof(storage_t));
 }
 
 /*------------------------------------------------------------------------------

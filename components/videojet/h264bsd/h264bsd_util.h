@@ -38,6 +38,7 @@
 #include "h264bsd_cfg.h"
 #include "h264bsd_stream.h"
 #include "h264bsd_image.h"
+#include "vj_alloc.h"
 
 #ifdef _ASSERT_USED
 #include <assert.h>
@@ -141,7 +142,7 @@
 /* macro to allocate memory */
 #define ALLOCATE(ptr, count, type) \
 { \
-    (ptr) = malloc((count) * sizeof(type)); \
+    (ptr) = vj_alloc((count) * sizeof(type)); \
 }
 
 /* macro to free allocated memory */

@@ -57,9 +57,11 @@ ELF SHA256 `c31a1eec3…`).
 
 ## Baseline profile
 Where a frame's decode time goes, per search stream: the `VJP` lines of `results/bench.jsonl`, record `baseline-prof`
-(one boot, PASS, 6 rows, `psram_tuning` 10, the fast class). It is a separate firmware, not the timed one:
-`idf.py -C bench -B "$PWD/bench/build-prof" -DVJ_PROFILE=1 build` (counters in `components/h264bsd/src/vj_prof.h`,
-compiled out by default), flashed with the same `-B`, run with
+(one boot, PASS, 6 rows, `psram_tuning` 10, the fast class). It is a separate firmware, not the timed one. Since M2 it is
+built with `idf.py -C bench -B "$PWD/bench/build-prof" -DSDKCONFIG="$PWD/bench/build-prof/sdkconfig"
+-DSDKCONFIG_DEFAULTS="$PWD/bench/sdkconfig.defaults;$PWD/bench/sdkconfig.profile" build` (counters in
+`components/videojet/h264bsd/vj_prof.h`, enabled by `CONFIG_VJ_PROFILE`, off by default; the M1 record `baseline-prof` was
+built with `-DVJ_PROFILE=1`, the switch that overlay replaced), flashed with the same `-B`, run with
 `tools/bench.py --label baseline-prof --set search --profile --elf bench/build-prof/videojet_bench.elf` (bench.py now
 refuses a `VJP` line without `--profile`, and checks the boot log's ELF SHA256 against `--elf`), then the default build
 flashed back. Each stage is a CCOUNT delta around one call, summed over the stream's 300 frames

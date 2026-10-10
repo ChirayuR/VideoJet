@@ -1,5 +1,8 @@
 /* The public API over the vendored h264bsd decoder (no output reordering: DPB = refs + 1, decode order out). */
 #include <string.h>
+#ifdef ESP_PLATFORM
+#include "sdkconfig.h"
+#endif
 #include "videojet.h"
 #include "h264bsd_decoder.h"
 #include "h264bsd_storage.h"
@@ -107,7 +110,7 @@ vj_status_t vj_decode_au(vj_decoder_t *dec, uint8_t *au, size_t len, vj_frame_t 
     return s->picStarted ? VJ_ERR_STREAM : VJ_NO_FRAME; /* slices that did not finish a picture */
 }
 
-#if defined(VJ_PROFILE) && defined(ESP_PLATFORM)
+#if defined(ESP_PLATFORM) && defined(CONFIG_VJ_PROFILE)
 uint64_t vj_prof[VJP_N]; /* the library owns its counters: consumers define nothing */
 
 bool vj_profile_take(vj_profile_t *out)

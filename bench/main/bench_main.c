@@ -1,7 +1,7 @@
 /* VideoJet board bench: decode every stream in the `streams` partition through the public API, one access unit per
  * vj_decode_au() call, time each frame, check each frame's hash against its golden, print one "VJ ..." line per
  * stream. Hashing and the per-frame yield happen outside the timed region.
- * A profile build (-DVJ_PROFILE=1) also prints one "VJP ..." per-stage line after each "VJ ... stream=" line. */
+ * A CONFIG_VJ_PROFILE build (see bench/sdkconfig.profile) also prints a "VJP ..." line after each "VJ ..." line. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

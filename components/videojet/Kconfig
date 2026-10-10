@@ -1,0 +1,16 @@
+menu "VideoJet"
+
+config VJ_PROFILE
+    bool "Per-stage cycle counters (profiling builds only)"
+    default n
+    help
+        Brackets the decoder's parse / reconstruct / inter / deblock stages with CCOUNT reads, readable through
+        vj_profile_take(). Adds about 0.5 % to frame time and moves code layout: never use it for timed scores.
+
+config VJ_ERROR_PRINT
+    bool "Print h264bsd bitstream errors to stderr"
+    default n
+    help
+        Compiles in the vendored decoder's ~60 error prints. They print from the decoding task.
+
+endmenu
