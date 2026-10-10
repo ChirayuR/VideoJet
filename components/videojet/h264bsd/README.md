@@ -73,7 +73,8 @@ Every change made for VideoJet is listed here, newest last.
       `PredictChroma`) is unchanged.
     - Upstream's left shifts of negative values (UBSan shift-base) in this file went with the old kernels.
   - CAVLC symbol tables (`h264bsd_cavlc.c`). IDF builds with `-fno-jump-tables`, so the old `switch`es were compare
-    trees. Each decoder returns the old information word for every input (checked exhaustively).
+    trees. Each decoder returns the old information word for every input: `host/test_cavlc.c` holds the original
+    routines and compares the two over every input.
     - run_before: one table indexed by `MIN(zerosLeft, 7)` and the next 3 bits. A 0 there is a code of 4 to 11 bits
       (zerosLeft > 6): `run_before` = leading zeros + 4.
     - total_zeros: a (table, shift) entry per totalCoeff replaces the `switch`; chroma DC has a table.

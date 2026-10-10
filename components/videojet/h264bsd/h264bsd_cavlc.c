@@ -78,7 +78,9 @@
  * codeword for that index. The tables of the codes over 6 bits for
  * 0 <= nC < 4 (Long) have a row for each number of leading zeros of the 16
  * bits from 4 (all such codes have 4 or more) to 16, indexed by the 3 bits
- * after the first 1. */
+ * after the first 1. From 13 zeros on, those 3 bits run into the stop bit
+ * below the 16 (CoeffTokenLong): row 13 is read only at odd columns (so pairs
+ * repeat), rows 14 to 16 are constant, and rows after the longest code are 0. */
 
 /* VLC lengths up to 6 bits, 0 <= nC < 2 */
 static const u16 coeffToken0_0[32] = {
