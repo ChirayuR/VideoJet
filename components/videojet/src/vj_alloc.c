@@ -15,3 +15,12 @@ void *vj_alloc(size_t n)
     return malloc(n);
 #endif
 }
+
+void *vj_alloc_internal(size_t n)
+{
+#ifdef ESP_PLATFORM
+    return heap_caps_malloc_prefer(n, 2, MALLOC_CAP_INTERNAL | MALLOC_CAP_DEFAULT, MALLOC_CAP_DEFAULT);
+#else
+    return malloc(n);
+#endif
+}

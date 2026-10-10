@@ -141,6 +141,9 @@ u32 h264bsdConceal(storage_t *pStorage, image_t *currImage, u32 sliceType)
     ASSERT(pStorage);
     ASSERT(currImage);
 
+    /* concealment rewrites storage the deblock records were made from */
+    pStorage->vjRecNext = VJ_REC_OFF;
+
     DEBUG(("Concealing %s slice\n", IS_I_SLICE(sliceType) ?
             "intra" : "inter"));
 

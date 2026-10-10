@@ -25,6 +25,7 @@
      3. Module defines
      4. Local function prototypes
      5. Functions
+          h264bsdDeblockRecord
           h264bsdFilterPicture
           FilterVerLumaEdge
           FilterHorLumaEdge
@@ -38,8 +39,7 @@
           IsSliceBoundaryOnLeft
           IsSliceBoundaryOnTop
           GetMbFilteringFlags
-          GetLumaEdgeThresholds
-          GetChromaEdgeThresholds
+          GetEdgeThresholds
           FilterLuma
           FilterChroma
 
@@ -192,16 +192,12 @@ static void FilterHorChromaEdge( u8 *data, u32 bS, edgeThreshold_t *thresholds,
 static void FilterHorChroma( u8 *data, u32 bS, edgeThreshold_t *thresholds,
   i32 imageWidth);
 
-static void GetLumaEdgeThresholds(
+static void GetEdgeThresholds(
   edgeThreshold_t *thresholds,
-  mbStorage_t *mb,
-  u32 filteringFlags);
-
-static void GetChromaEdgeThresholds(
-  edgeThreshold_t *thresholds,
-  mbStorage_t *mb,
-  u32 filteringFlags,
-  i32 chromaQpIndexOffset);
+  const deblockRec_t *rec,
+  u32 qpTop,
+  u32 qpLeft,
+  u32 chroma);
 
 #else /* H264DEC_OMXDL */
 
@@ -551,6 +547,58 @@ u32 EdgeBoundaryStrengthLeft(mbStorage_t *mb1, mbStorage_t *mb2)
     return leftBs;
 }
 #endif /* H264DEC_OMXDL */
+#ifndef H264DEC_OMXDL
+/*------------------------------------------------------------------------------
+
+    Function: h264bsdDeblockRecord
+
+        Functional description:
+          Store in rec what h264bsdFilterPicture needs of one macroblock:
+          the boundary strengths that its filtering flags and its own and
+          its left and top neighbours' storage give, packed, and the inputs
+          of its edge thresholds. Called when the macroblock is decoded,
+          while that storage is in cache, and by the pass itself when the
+          picture's records may be stale.
+
+------------------------------------------------------------------------------*/
+void h264bsdDeblockRecord(mbStorage_t *mb, deblockRec_t *rec,
+  u32 picSliceBase)
+{
+
+/* Variables */
+
+    u32 i, flags;
+    u32 top = 0, left = 0;
+    bS_t bS[16];
+
+/* Code */
+
+    ASSERT(mb);
+    ASSERT(rec);
+
+    flags = GetMbFilteringFlags(mb, picSliceBase);
+
+    /* GetBoundaryStrengths function returns non-zero value if any of
+     * the bS values for the macroblock being processed was non-zero */
+    if (flags && GetBoundaryStrengths(mb, bS, flags))
+    {
+        for (i = 16; i--;)
+        {
+            /* bS 4 (MB edges only) is code 3 */
+            top = (top << 2) | (bS[i].top - (bS[i].top >> 2));
+            left = (left << 2) | (bS[i].left - (bS[i].left >> 2));
+        }
+    }
+
+    rec->bs[0] = top;
+    rec->bs[1] = left;
+    rec->qp = (u8)mb->qpY;
+    rec->offA = (i8)mb->filterOffsetA;
+    rec->offB = (i8)mb->filterOffsetB;
+    rec->chromaQpOff = (i8)mb->chromaQpIndexOffset;
+
+}
+
 /*------------------------------------------------------------------------------
 
     Function: h264bsdFilterPicture
@@ -559,14 +607,20 @@ u32 EdgeBoundaryStrengthLeft(mbStorage_t *mb1, mbStorage_t *mb2)
           Perform deblocking filtering for a picture. Filter does not copy
           the original picture anywhere but filtering is performed directly
           on the original image. Parameters controlling the filtering process
-          are computed based on information in macroblock structures of the
-          filtered macroblock, macroblock above and macroblock on the left of
-          the filtered one.
+          come from the deblock records (h264bsdDeblockRecord), computed
+          from macroblock structures of the filtered macroblock, macroblock
+          above and macroblock on the left of the filtered one.
 
         Inputs:
           image         pointer to image to be filtered
           mb            pointer to macroblock data structure of the top-left
                         macroblock of the picture
+          picSliceBase  slice id base of the picture (IsSliceBoundaryOnLeft)
+          changed       per-MB change flags (skip elision), set for every MB
+                        filtering may modify
+          rec           deblock records of the picture's macroblocks
+          recValid      HANTRO_TRUE if the records were made at decode time
+                        and still hold, otherwise they are made here
 
         Outputs:
           image         filtered image stored here
@@ -575,20 +629,19 @@ u32 EdgeBoundaryStrengthLeft(mbStorage_t *mb1, mbStorage_t *mb2)
           none
 
 ------------------------------------------------------------------------------*/
-#ifndef H264DEC_OMXDL
 void h264bsdFilterPicture(
   image_t *image,
   mbStorage_t *mb, u32 picSliceBase,
-  u8 *changed)
+  u8 *changed, deblockRec_t *rec, u32 recValid)
 {
 
 /* Variables */
 
-    u32 flags;
+    u32 i, top, left, qpTop, qpLeft;
     u32 picSizeInMbs, mbRow, mbCol;
     u32 picWidthInMbs;
     u8 *data;
-    mbStorage_t *pMb;
+    deblockRec_t *r;
     bS_t bS[16];
     edgeThreshold_t thresholds[3];
 
@@ -596,53 +649,71 @@ void h264bsdFilterPicture(
 
     ASSERT(image);
     ASSERT(mb);
+    ASSERT(rec);
     ASSERT(image->data);
     ASSERT(image->width);
     ASSERT(image->height);
 
     picWidthInMbs = image->width;
-    data = image->data;
     picSizeInMbs = picWidthInMbs * image->height;
 
-    pMb = mb;
-
-    for (mbRow = 0, mbCol = 0; mbRow < image->height; pMb++)
+    for (mbRow = 0, mbCol = 0, r = rec; mbRow < image->height; r++)
     {
-        flags = GetMbFilteringFlags(pMb, picSliceBase);
+        /* records made at decode time hold only if the picture's MBs were
+         * decoded once each in raster order (h264bsdDecodeSliceData).
+         * Otherwise make each from the storage now, as the pass always
+         * did: the raster walk has remade its left and top neighbours' */
+        if (!recValid)
+            h264bsdDeblockRecord(mb + (r - rec), r, picSliceBase);
 
-        if (flags)
+        top = r->bs[0];
+        left = r->bs[1];
+
+        /* nothing to filter: neither storage nor pixels are touched */
+        if (top | left)
         {
-            /* GetBoundaryStrengths function returns non-zero value if any of
-             * the bS values for the macroblock being processed was non-zero */
-            if (GetBoundaryStrengths(pMb, bS, flags))
+            /* skip elision: mark every MB this filtering may modify,
+             * itself and, across an MB edge with bS > 0, its left or
+             * top neighbour. Chroma edges use these luma bS */
+            u8 *c = changed + (r - rec);
+
+            for (i = 0; i < 16; i++, top >>= 2, left >>= 2)
             {
-                /* skip elision: mark every MB this filtering may modify,
-                 * itself and, across an MB edge with bS > 0, its left or
-                 * top neighbour. Chroma edges use these luma bS */
-                u8 *c = changed + (pMb - mb);
-
-                c[0] = 1;
-                if (bS[0].left | bS[4].left | bS[8].left | bS[12].left)
-                    c[-1] = 1;
-                if (bS[0].top | bS[1].top | bS[2].top | bS[3].top)
-                    c[-(i32)picWidthInMbs] = 1;
-
-                /* luma */
-                GetLumaEdgeThresholds(thresholds, pMb, flags);
-                data = image->data + mbRow * picWidthInMbs * 256 + mbCol * 16;
-
-                FilterLuma((u8*)data, bS, thresholds, picWidthInMbs*16);
-
-                /* chroma */
-                GetChromaEdgeThresholds(thresholds, pMb, flags,
-                    pMb->chromaQpIndexOffset);
-                data = image->data + picSizeInMbs * 256 +
-                    mbRow * picWidthInMbs * 64 + mbCol * 8;
-
-                FilterChroma((u8*)data, data + 64*picSizeInMbs, bS,
-                        thresholds, picWidthInMbs*8);
-
+                bS[i].top = top & 3;
+                bS[i].left = left & 3;
             }
+            for (i = 0; i < 4; i++)
+            {
+                if (bS[i].top == 3)
+                    bS[i].top = 4;
+                if (bS[4*i].left == 3)
+                    bS[4*i].left = 4;
+            }
+
+            c[0] = 1;
+            if (bS[0].left | bS[4].left | bS[8].left | bS[12].left)
+                c[-1] = 1;
+            if (bS[0].top | bS[1].top | bS[2].top | bS[3].top)
+                c[-(i32)picWidthInMbs] = 1;
+
+            /* at the picture border the neighbour's qp is never used, as
+             * that edge is not filtered */
+            qpTop = mbRow ? r[-(i32)picWidthInMbs].qp : r->qp;
+            qpLeft = mbCol ? r[-1].qp : r->qp;
+
+            /* luma */
+            GetEdgeThresholds(thresholds, r, qpTop, qpLeft, 0);
+            data = image->data + mbRow * picWidthInMbs * 256 + mbCol * 16;
+
+            FilterLuma((u8*)data, bS, thresholds, picWidthInMbs*16);
+
+            /* chroma */
+            GetEdgeThresholds(thresholds, r, qpTop, qpLeft, 1);
+            data = image->data + picSizeInMbs * 256 +
+                mbRow * picWidthInMbs * 64 + mbCol * 8;
+
+            FilterChroma((u8*)data, data + 64*picSizeInMbs, bS,
+                    thresholds, picWidthInMbs*8);
         }
 
         mbCol++;
@@ -1396,162 +1467,54 @@ u32 GetBoundaryStrengths(mbStorage_t *mb, bS_t *bS, u32 flags)
 
 /*------------------------------------------------------------------------------
 
-    Function: GetLumaEdgeThresholds
+    Function: GetEdgeThresholds
 
         Functional description:
-            Compute alpha, beta and tc0 thresholds for inner, left and top
-            luma edges of a macroblock.
+            Compute alpha, beta and tc0 thresholds for the top, left and
+            inner edges of the macroblock of rec, from its qp and the qps of
+            its top and left neighbours, mapped to chroma qps if chroma. An
+            MB edge uses the average qp of its two macroblocks, which is the
+            macroblock's own when they are equal: the same values as the
+            original GetLumaEdgeThresholds and GetChromaEdgeThresholds.
 
 ------------------------------------------------------------------------------*/
-void GetLumaEdgeThresholds(
+void GetEdgeThresholds(
   edgeThreshold_t *thresholds,
-  mbStorage_t *mb,
-  u32 filteringFlags)
+  const deblockRec_t *rec,
+  u32 qpTop,
+  u32 qpLeft,
+  u32 chroma)
 {
 
 /* Variables */
 
-    u32 indexA, indexB;
-    u32 qpAv, qp, qpTmp;
+    u32 i, indexA, indexB;
+    u32 qp = rec->qp;
+    u32 qpAv[3];
 
 /* Code */
 
     ASSERT(thresholds);
-    ASSERT(mb);
+    ASSERT(rec);
 
-    qp = mb->qpY;
-
-    indexA = (u32)CLIP3(0, 51, (i32)qp + mb->filterOffsetA);
-    indexB = (u32)CLIP3(0, 51, (i32)qp + mb->filterOffsetB);
-
-    thresholds[INNER].alpha = alphas[indexA];
-    thresholds[INNER].beta = betas[indexB];
-    thresholds[INNER].tc0 = tc0[indexA];
-
-    if (filteringFlags & FILTER_TOP_EDGE)
+    if (chroma)
     {
-        qpTmp = mb->mbB->qpY;
-        if (qpTmp != qp)
-        {
-            qpAv = (qp + qpTmp + 1) >> 1;
-
-            indexA = (u32)CLIP3(0, 51, (i32)qpAv + mb->filterOffsetA);
-            indexB = (u32)CLIP3(0, 51, (i32)qpAv + mb->filterOffsetB);
-
-            thresholds[TOP].alpha = alphas[indexA];
-            thresholds[TOP].beta = betas[indexB];
-            thresholds[TOP].tc0 = tc0[indexA];
-        }
-        else
-        {
-            thresholds[TOP].alpha = thresholds[INNER].alpha;
-            thresholds[TOP].beta = thresholds[INNER].beta;
-            thresholds[TOP].tc0 = thresholds[INNER].tc0;
-        }
+        qp = h264bsdQpC[CLIP3(0, 51, (i32)qp + rec->chromaQpOff)];
+        qpTop = h264bsdQpC[CLIP3(0, 51, (i32)qpTop + rec->chromaQpOff)];
+        qpLeft = h264bsdQpC[CLIP3(0, 51, (i32)qpLeft + rec->chromaQpOff)];
     }
-    if (filteringFlags & FILTER_LEFT_EDGE)
+    qpAv[TOP] = (qp + qpTop + 1) >> 1;
+    qpAv[LEFT] = (qp + qpLeft + 1) >> 1;
+    qpAv[INNER] = qp;
+
+    for (i = 0; i < 3; i++)
     {
-        qpTmp = mb->mbA->qpY;
-        if (qpTmp != qp)
-        {
-            qpAv = (qp + qpTmp + 1) >> 1;
+        indexA = (u32)CLIP3(0, 51, (i32)qpAv[i] + rec->offA);
+        indexB = (u32)CLIP3(0, 51, (i32)qpAv[i] + rec->offB);
 
-            indexA = (u32)CLIP3(0, 51, (i32)qpAv + mb->filterOffsetA);
-            indexB = (u32)CLIP3(0, 51, (i32)qpAv + mb->filterOffsetB);
-
-            thresholds[LEFT].alpha = alphas[indexA];
-            thresholds[LEFT].beta = betas[indexB];
-            thresholds[LEFT].tc0 = tc0[indexA];
-        }
-        else
-        {
-            thresholds[LEFT].alpha = thresholds[INNER].alpha;
-            thresholds[LEFT].beta = thresholds[INNER].beta;
-            thresholds[LEFT].tc0 = thresholds[INNER].tc0;
-        }
-    }
-
-}
-
-/*------------------------------------------------------------------------------
-
-    Function: GetChromaEdgeThresholds
-
-        Functional description:
-            Compute alpha, beta and tc0 thresholds for inner, left and top
-            chroma edges of a macroblock.
-
-------------------------------------------------------------------------------*/
-void GetChromaEdgeThresholds(
-  edgeThreshold_t *thresholds,
-  mbStorage_t *mb,
-  u32 filteringFlags,
-  i32 chromaQpIndexOffset)
-{
-
-/* Variables */
-
-    u32 indexA, indexB;
-    u32 qpAv, qp, qpTmp;
-
-/* Code */
-
-    ASSERT(thresholds);
-    ASSERT(mb);
-
-    qp = mb->qpY;
-    qp = h264bsdQpC[CLIP3(0, 51, (i32)qp + chromaQpIndexOffset)];
-
-    indexA = (u32)CLIP3(0, 51, (i32)qp + mb->filterOffsetA);
-    indexB = (u32)CLIP3(0, 51, (i32)qp + mb->filterOffsetB);
-
-    thresholds[INNER].alpha = alphas[indexA];
-    thresholds[INNER].beta = betas[indexB];
-    thresholds[INNER].tc0 = tc0[indexA];
-
-    if (filteringFlags & FILTER_TOP_EDGE)
-    {
-        qpTmp = mb->mbB->qpY;
-        if (qpTmp != mb->qpY)
-        {
-            qpTmp = h264bsdQpC[CLIP3(0, 51, (i32)qpTmp + chromaQpIndexOffset)];
-            qpAv = (qp + qpTmp + 1) >> 1;
-
-            indexA = (u32)CLIP3(0, 51, (i32)qpAv + mb->filterOffsetA);
-            indexB = (u32)CLIP3(0, 51, (i32)qpAv + mb->filterOffsetB);
-
-            thresholds[TOP].alpha = alphas[indexA];
-            thresholds[TOP].beta = betas[indexB];
-            thresholds[TOP].tc0 = tc0[indexA];
-        }
-        else
-        {
-            thresholds[TOP].alpha = thresholds[INNER].alpha;
-            thresholds[TOP].beta = thresholds[INNER].beta;
-            thresholds[TOP].tc0 = thresholds[INNER].tc0;
-        }
-    }
-    if (filteringFlags & FILTER_LEFT_EDGE)
-    {
-        qpTmp = mb->mbA->qpY;
-        if (qpTmp != mb->qpY)
-        {
-            qpTmp = h264bsdQpC[CLIP3(0, 51, (i32)qpTmp + chromaQpIndexOffset)];
-            qpAv = (qp + qpTmp + 1) >> 1;
-
-            indexA = (u32)CLIP3(0, 51, (i32)qpAv + mb->filterOffsetA);
-            indexB = (u32)CLIP3(0, 51, (i32)qpAv + mb->filterOffsetB);
-
-            thresholds[LEFT].alpha = alphas[indexA];
-            thresholds[LEFT].beta = betas[indexB];
-            thresholds[LEFT].tc0 = tc0[indexA];
-        }
-        else
-        {
-            thresholds[LEFT].alpha = thresholds[INNER].alpha;
-            thresholds[LEFT].beta = thresholds[INNER].beta;
-            thresholds[LEFT].tc0 = thresholds[INNER].tc0;
-        }
+        thresholds[i].alpha = alphas[indexA];
+        thresholds[i].beta = betas[indexB];
+        thresholds[i].tc0 = tc0[indexA];
     }
 
 }

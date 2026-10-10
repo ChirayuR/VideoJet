@@ -343,11 +343,16 @@ u32 h264bsdActivateParamSets(storage_t *pStorage, u32 ppsId, u32 isIdr)
         pStorage->pendingActivation = HANTRO_FALSE;
 
         FREE(pStorage->mb);
+        FREE(pStorage->vjRec);
         FREE(pStorage->sliceGroupMap);
 
         ALLOCATE(pStorage->mb, pStorage->picSizeInMbs, mbStorage_t);
+        /* read for every MB by each deblock pass: internal RAM */
+        pStorage->vjRec = vj_alloc_internal(
+            pStorage->picSizeInMbs * sizeof(deblockRec_t));
         ALLOCATE(pStorage->sliceGroupMap, pStorage->picSizeInMbs, u32);
-        if (pStorage->mb == NULL || pStorage->sliceGroupMap == NULL)
+        if (pStorage->mb == NULL || pStorage->vjRec == NULL ||
+            pStorage->sliceGroupMap == NULL)
             return(MEMORY_ALLOCATION_ERROR);
 
         memset(pStorage->mb, 0,

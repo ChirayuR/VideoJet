@@ -44,10 +44,14 @@
 #include "h264bsd_seq_param_set.h"
 #include "h264bsd_dpb.h"
 #include "h264bsd_pic_order_cnt.h"
+#include "h264bsd_deblocking.h"
 
 /*------------------------------------------------------------------------------
     2. Module defines
 ------------------------------------------------------------------------------*/
+
+/* vjRecNext once the picture's deblock records may be stale */
+#define VJ_REC_OFF 0xFFFFFFFFU
 
 /*------------------------------------------------------------------------------
     3. Data types
@@ -113,6 +117,15 @@ typedef struct storage
 
     /* macroblock specific storages, size determined by image dimensions */
     mbStorage_t *mb;
+
+    /* deblock record of each macroblock (h264bsdDeblockRecord), made as it
+     * is decoded, and the next macroblock address in raster order. The
+     * records hold for the deblock pass only if the picture's macroblocks
+     * were decoded once each in raster order, with no slice error and no
+     * concealment: vjRecNext == picSizeInMbs. VJ_REC_OFF once anything else
+     * happened in the picture */
+    deblockRec_t *vjRec;
+    u32 vjRecNext;
 
     /* flag to store noOutputReordering flag set by the application */
     u32 noReordering;

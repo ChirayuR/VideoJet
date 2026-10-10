@@ -2,7 +2,8 @@
 IsEndOfPicture with two adjacent untouched MBs (double counting via failed redundant slices).
 host/vectors: python3 gen.py attack > attack.h264; python3 gen.py attack2 > attack2.h264 (6x2 MBs, I_PCM IDR).
 python3 gen.py elide > elide.h264: a redundant slice re-decodes, as a skip, an MB that its primary slice changed.
-python3 gen.py slerr > slerr.h264: slices that fail mid-way, then re-decodes, around elidable skips."""
+python3 gen.py slerr > slerr.h264: slices that fail mid-way, then re-decodes, around elidable skips.
+python3 gen.py records > records.h264 (decode one NAL per call): slices rewrite MBs whose deblock records were made."""
 import sys
 
 class BW:
@@ -120,6 +121,16 @@ elif mode == 'slerr':
     s += p_pcm_slice(0, 5, 200, 0, idc=1, bad_after=True) + p_slice(0, 5, N, idc=1)
     s += p_slice(0, 6, 1, idc=1, bad_after=True) + p_pcm_slice(0, 6, 50, N - 1, idc=1)
     s += p_slice(0, 7, N, idc=1) + p_slice(0, 8, N, idc=1)
+    sys.stdout.buffer.write(s)
+    sys.exit()
+elif mode == 'records':
+    # Frame 3: primary [0,6) with MB 0 an I_PCM 2 levels above its right neighbour (an edge deblocking would smooth),
+    # primary [6,N) lost, a redundant slice skips all N with deblocking off: its storage, not the records the primary
+    # left for MBs 0-5, decides, and nothing is filtered. Frame 4: the same primary [0,6), a redundant slice turns
+    # MB 1's deblocking off and fails on it, primary [6,N) completes the picture in raster order. Frame 5 copies.
+    s += p_pcm_slice(0, 3, 102, 5) + p_slice(0, 3, N, rpc=1, idc=1)
+    s += p_pcm_slice(0, 4, 102, 5) + p_slice(1, 4, 0, rpc=1, idc=1, bad_after=True) + p_slice(6, 4, N - 6)
+    s += p_slice(0, 5, N)
     sys.stdout.buffer.write(s)
     sys.exit()
 s += p_slice(0, 4, N)                                     # frame 4

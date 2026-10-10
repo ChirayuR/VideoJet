@@ -203,6 +203,20 @@ u32 h264bsdDecodeSliceData(strmData_t *pStrmData, storage_t *pStorage,
             return(tmp);
         }
 
+        /* deblock record, made while this MB's and its left and top
+         * neighbours' storage is in cache. While the picture's MBs come
+         * once each in raster order those neighbours are final and nothing
+         * rewrites them or this MB before the deblock pass; the first MB
+         * out of that order turns the picture's records off */
+        if (currMbAddr == pStorage->vjRecNext)
+        {
+            h264bsdDeblockRecord(pStorage->mb + currMbAddr,
+                pStorage->vjRec + currMbAddr, pStorage->picSliceBase);
+            pStorage->vjRecNext++;
+        }
+        else
+            pStorage->vjRecNext = VJ_REC_OFF;
+
         /* increment macroblock count only for macroblocks that were decoded
          * for the first time (redundant slices) */
         if (pStorage->mb[currMbAddr].decoded == 1)

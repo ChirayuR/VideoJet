@@ -333,6 +333,7 @@ u32 h264bsdDecode(storage_t *pStorage, u8 *byteStrm, u32 len, u32 picId,
                 if (h264bsdIsStartOfPicture(pStorage))
                 {
                     pStorage->numConcealedMbs = 0;
+                    pStorage->vjRecNext = 0;
                     pStorage->currentPicId    = picId;
 
                     tmp = h264bsdCheckPpsId(&strm, &ppsId);
@@ -474,6 +475,8 @@ u32 h264bsdDecode(storage_t *pStorage, u8 *byteStrm, u32 len, u32 picId,
                     /* MBs this slice wrote may be decoded again: the buffer
                      * no longer holds its old picture, so elide no more */
                     pStorage->dpb->currentOut->vjFrameIdx = VJ_IDX_NONE;
+                    /* and its deblock records may be stale */
+                    pStorage->vjRecNext = VJ_REC_OFF;
                     return(H264BSD_ERROR);
                 }
 
@@ -497,7 +500,8 @@ u32 h264bsdDecode(storage_t *pStorage, u8 *byteStrm, u32 len, u32 picId,
     {
         { VJP_BEGIN(VJP_DEBLOCK);
         h264bsdFilterPicture(pStorage->currImage, pStorage->mb,
-            pStorage->picSliceBase, pStorage->dpb->vjChanged);
+            pStorage->picSliceBase, pStorage->dpb->vjChanged, pStorage->vjRec,
+            pStorage->vjRecNext == pStorage->picSizeInMbs);
         VJP_END(VJP_DEBLOCK); }
         h264bsdRecordChanges(pStorage->dpb, pStorage->numConcealedMbs);
 
@@ -593,6 +597,7 @@ void h264bsdShutdown(storage_t *pStorage)
 
     FREE(pStorage->mbLayer);
     FREE(pStorage->mb);
+    FREE(pStorage->vjRec);
     FREE(pStorage->sliceGroupMap);
 
     if(pStorage->conversionBuffer != NULL) FREE(pStorage->conversionBuffer);

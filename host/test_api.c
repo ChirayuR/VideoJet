@@ -10,6 +10,15 @@
 
 #define LEN(a) (sizeof(a))
 
+/* Bytes from d's start code to the next one: one NAL unit. */
+static size_t nal_length(const uint8_t *d, size_t len)
+{
+    for (size_t i = 3; i + 3 <= len; i++)
+        if (d[i] == 0 && d[i + 1] == 0 && d[i + 2] == 1)
+            return d[i - 1] == 0 ? i - 1 : i;
+    return len;
+}
+
 static uint8_t *slurp(const char *path, size_t *len)
 {
     FILE *f = fopen(path, "rb");
@@ -386,17 +395,21 @@ static void test_conceal_history(const char *dir)
  * picture (attack) or keep a concealed MB's corrupted-slice id (attack2), and idc 2 deblocking compares those ids. In
  * elide, a redundant slice re-decodes as a skip an MB that its primary slice changed: skip elision must still count it
  * changed, or the next picture keeps that MB's old pixels. In slerr, a slice fails after writing an MB and the same
- * picture continues: elision must stop for the rest of the picture and the picture must count as all changed.
- * Expected: the per-picture-clear decoder (m3-speed 2063e44), one entry per vj_decode_au call ("-" = VJ_ERR_STREAM);
+ * picture continues: elision must stop for the rest of the picture and the picture must count as all changed. In
+ * records, decoded one NAL per call so that a picture goes on after a failed call, slices rewrite MBs whose deblock
+ * records were made: a redundant slice re-decodes them, and a failing one turns an MB's deblocking off; deblocking must
+ * use what storage holds. Expected: the per-picture-clear decoder (m3-speed 2063e44; records: 088983c), one entry per
+ * vj_decode_au call ("-" = VJ_ERR_STREAM, "?" = other);
  * every frame hashes the same with DPB memory filled 0x00, 0xA5, 0x5A or a byte pattern, so none reads uninitialised
- * memory. */
+ * memory (records: 0x00, 0xA5 and plain malloc). */
 static void test_vectors(const char *vec)
 {
-    static const char *const want[][2] = {
+    static const char *const want[][3] = { /* file, expected, one NAL per call */
         {"attack.h264", "ed86bcae ed86bcae - - - - c946cd05 c946cd05 "},
         {"attack2.h264", "ed86bcae ed86bcae - - 2c2cceb1 "},
         {"elide.h264", "ed86bcae ed86bcae - ed86bcae ed86bcae - 45efe711 45efe711 "},
         {"slerr.h264", "ed86bcae ed86bcae - ed86bcae ed86bcae - ed86bcae - 8a96d75d 8a96d75d 8a96d75d "},
+        {"records.h264", "? ? ed86bcae ed86bcae - - - a8fa5c37 - - 917d1454 917d1454 ", "nal"},
     };
     for (int k = 0; k < (int)(sizeof want / sizeof *want); k++) {
         char path[512], got[256] = "";
@@ -405,7 +418,7 @@ static void test_vectors(const char *vec)
         uint8_t *s = slurp(path, &len);
         vj_decoder_t *d = vj_decoder_create();
         for (size_t o = 0, au; o < len; o += au) {
-            au = vj_au_length(s + o, len - o);
+            au = want[k][2] ? nal_length(s + o, len - o) : vj_au_length(s + o, len - o);
             assert(au && strlen(got) < sizeof got - 10);
             vj_frame_t f;
             vj_status_t r = vj_decode_au(d, s + o, au, &f);

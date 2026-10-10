@@ -40,5 +40,13 @@ Every change made for VideoJet is listed here, newest last.
       changes, and the map is exported as `vj_frame_t.changed_mb`.
   - Lazy `macroblockLayer_t` clear (`h264bsd_macroblock_layer.c`): only the fields a reader can see unwritten are
     zeroed. Uncoded blocks depend on `h264bsdProcessBlock`'s `coeffMap == 0` path.
+  - Deblock records (`h264bsd_deblocking.c/h`, `h264bsd_slice_data.c`, `h264bsd_storage.c/h`, `h264bsd_decoder.c`,
+    `h264bsd_conceal.c`).
+    - Each MB's bS (2 bits per edge segment) and threshold inputs go into a 12 B record when it is decoded
+      (`h264bsdDeblockRecord`), in internal RAM (`vj_alloc_internal`). The pass reads only records and skips MBs with
+      no edge.
+    - Records hold only while the picture's MBs are decoded once each in raster order. Otherwise (ASO, FMO, a redundant
+      re-decode, a slice error, concealment) the pass remakes every record from storage.
+    - `GetLumaEdgeThresholds` / `GetChromaEdgeThresholds` became `GetEdgeThresholds`, which works from qps.
 - Apache-2.0 §4(b) modification notice: every file changed above carries the header line
   `Modified for VideoJet: see h264bsd/README.md, Local changes.` Comment-only.

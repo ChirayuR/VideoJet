@@ -7,3 +7,6 @@
 #include <stddef.h>
 #define VJ_INTERNAL_MAX 16384
 void *vj_alloc(size_t n);
+/* Internal first whatever the size, PSRAM if that fails: per-MB state the decoder reads for every MB of every picture
+ * (the deblock records). It counts against the library's internal-RAM budget. */
+void *vj_alloc_internal(size_t n);
