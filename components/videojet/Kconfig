@@ -25,4 +25,39 @@ config VJ_IRAM
         +0.7 / +1.4 / +2.0 % on top. Off: code and tables stay in flash; with a 32 KB I-cache that was within
         1 % of code-in-IRAM at step 0, so expect about 1 / 2 / 3 % below this default (estimate).
 
+config VJ_DCACHE_AUTOLOAD
+    bool "D-cache autoload over the decoder's PSRAM working set"
+    depends on IDF_TARGET_ESP32S3 && SPIRAM
+    default n
+    help
+        Turns on the data cache's hardware autoload (a prefetch: after a miss it also fetches the next cache
+        lines) over the span of the decoder's own PSRAM blocks (the frames and the per-macroblock state), at
+        the start of every vj_decode_au(). It only decides which lines are already cached, so the output is
+        unchanged. In the autoload experiment (800x480 bench, slow PSRAM class, region = the whole PSRAM
+        mapping, armed before the stream) size 1 gained +9.5 / +5.1 / +4.4 % (aux_card / aux_map / full_map),
+        size 3 +0.3 / +5.5 / +6.4 %, size 0 -3.4 / -0.3 / +0.3 %.
+
+        It is a global cache setting and uses the ROM cache calls (Cache_Config_DCache_Autoload,
+        Cache_Config_DCache_Region_Autoload, Cache_Enable_DCache_Autoload) that IDF marks as not for
+        applications. The library takes over autoload region 0 and its trigger, order and size (nothing else in
+        IDF 5.4 uses D-cache autoload). It leaves autoload on when a call returns and after
+        vj_decoder_destroy(): the boot default is off and you opted in by enabling this; call
+        Cache_Disable_DCache_Autoload() to stop it. The span can include your own PSRAM that lies between the
+        decoder's blocks: autoload only reads, but a buffer that DMA writes there needs
+        esp_cache_msync(M2C) before the CPU reads it, as IDF already requires. Two more traps are handled:
+        a region that ends at 0x3E000000 (the end of the data window) panics in Cache_Enable_DCache_Autoload()
+        (the end is clamped below it), and any IDF flash operation (esp_partition_read, NVS, OTA) clears the
+        enable bit (every vj_decode_au() sets it again). The call that first activates an SPS allocates the
+        decoder's blocks, so that picture decodes before the region exists; the next call arms it.
+
+config VJ_DCACHE_AUTOLOAD_SIZE
+    int "Lines fetched after a miss, minus one (0 to 3)"
+    depends on VJ_DCACHE_AUTOLOAD
+    range 0 3
+    default 1
+    help
+        A miss requests this + 1 cache lines after the missed one (64 B each with the recommended 64 B
+        D-cache line). In the experiment above 1 favoured the aux streams (+9.5 / +5.1 / +4.4 %) and 3 the
+        full-frame stream (+0.3 / +5.5 / +6.4 %); 0 lost 3.4 % on aux_card.
+
 endmenu

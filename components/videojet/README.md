@@ -78,6 +78,34 @@ aux_card / aux_map / full_map (800x480) from 17.11 / 9.67 / 5.58 fps (M2: code i
 - The small-RAM alternative, 16 KB of internal RAM instead of 50,901 B: `CONFIG_VJ_IRAM=n` with
   `CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y`. At step 0 it stayed within 1 % of code-in-IRAM (22.17 / 12.60 / 7.63; flash code
   has no layout pin), but it keeps the tables in flash too, so expect it about 1 / 2 / 3 % below the default (estimate).
+- **D-cache autoload** (`CONFIG_VJ_DCACHE_AUTOLOAD=y`, default n; the bench sets it): after a cache miss the hardware also fetches
+  the next cache lines, here over the span of the decoder's own PSRAM blocks (the frames and the per-macroblock state: about
+  1.5 MB at 800x480). It is a prefetch hint, so the output is bit-exact. The autoload experiment (M3 tip `b6f006c`, slow PSRAM
+  class, 800x480, armed before the stream; its region was the whole 8 MB PSRAM mapping, not the decoder's span) gained, over
+  autoload off:
+
+  | `CONFIG_VJ_DCACHE_AUTOLOAD_SIZE` (lines fetched after a miss, minus one) | aux_card | aux_map | full_map |
+  |---|---|---|---|
+  | 0 | -3.39 % | -0.25 % | +0.31 % |
+  | 1 (default) | +9.50 % | +5.08 % | +4.41 % |
+  | 3 | +0.34 % | +5.47 % | +6.40 % |
+
+  Size 1 favours the aux streams (a small active area), size 3 the full-frame stream; size 0 loses. What to know:
+  - **It is a global cache setting made with ROM cache calls** (`Cache_Config_DCache_Autoload`, `Cache_Config_DCache_Region_Autoload`,
+    `Cache_Enable_DCache_Autoload`), which IDF marks "not for applications". The library owns autoload region 0 and its trigger,
+    order and size (nothing else in IDF 5.4 uses D-cache autoload). It leaves autoload on after `vj_decode_au()` returns and
+    after `vj_decoder_destroy()`: the boot default is off and you opted in by enabling the option. Call
+    `Cache_Disable_DCache_Autoload()` to stop it.
+  - **The span can include your own PSRAM** that lies between the decoder's blocks. Autoload only reads, but a buffer that DMA writes
+    inside the span needs `esp_cache_msync(..., M2C)` before the CPU reads it, as IDF already requires.
+  - **The first picture of a decoder is not covered.** The call that first activates an SPS allocates the blocks, so that
+    picture decodes before the region exists (with whatever region is still programmed, none on a fresh boot); the next call
+    arms it. The same holds after a resolution change.
+  - **Two traps, both handled.** A region that ends at `0x3E000000`, the end of the data window, makes
+    `Cache_Enable_DCache_Autoload()` panic ("Dcache preload parameter configuration error") and the chip boot-loops: the library
+    clamps the end one line below it. And any IDF flash operation (`esp_partition_read`, NVS, OTA) clears the autoload enable bit
+    (it restores the boot state) while keeping the size and region: every `vj_decode_au()` sets it again.
+  - Cost: 350 B of IRAM and 4 B of DRAM (libvideojet 44,193 B IRAM, 7,062 B DRAM with it on).
 - With 64 B lines, a PSRAM buffer that DMA reads or writes needs 64 B alignment in address and size
   (`CONFIG_ESP32S3_DATA_CACHE_LINE_SIZE`; for example `heap_caps_aligned_alloc(64, n, MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA)`
   with `n` a multiple of 64). The library does no DMA, and its own buffers, `f.y`, `f.u` and `f.v` included, are not
@@ -105,6 +133,9 @@ aux_card / aux_map / full_map (800x480) from 17.11 / 9.67 / 5.58 fps (M2: code i
 ## 6. Kconfig (menu "VideoJet")
 - `CONFIG_VJ_IRAM` (default y): run the decoder from internal RAM, 50,901 B (hot code + tables, section 4).
 - `CONFIG_VJ_ERROR_PRINT` (default n): print the decoder's bitstream errors to stderr (about 60 messages, from the decoding task).
+- `CONFIG_VJ_DCACHE_AUTOLOAD` (default n; needs `CONFIG_SPIRAM`): D-cache autoload over the decoder's PSRAM blocks, armed by every
+  `vj_decode_au()` (section 4: numbers, the global-setting caveat and the traps).
+- `CONFIG_VJ_DCACHE_AUTOLOAD_SIZE` (0 to 3, default 1): lines fetched after a miss, minus one.
 - `CONFIG_VJ_PROFILE` (default n): per-stage cycle counters, read with `vj_profile_take()`. Their cost is not separable from code-layout
   noise (`docs/bench-log.md`) and they move code layout: profiling builds only, never timed scores (the bench enables it
   through `bench/sdkconfig.profile`).
