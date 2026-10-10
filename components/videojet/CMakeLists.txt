@@ -6,7 +6,11 @@ if(CMAKE_BUILD_EARLY_EXPANSION)
 else()
     file(GLOB dec_srcs CONFIGURE_DEPENDS "h264bsd/*.c")
 endif()
-idf_component_register(SRCS "src/videojet.c" "src/vj_au.c" "src/vj_alloc.c" ${dec_srcs}
+set(vj_srcs "src/videojet.c" "src/vj_au.c" "src/vj_alloc.c")
+if(CONFIG_VJ_PIE)
+    list(APPEND vj_srcs "src/vj_mc_pie.S")
+endif()
+idf_component_register(SRCS ${vj_srcs} ${dec_srcs}
                        INCLUDE_DIRS "include"
                        PRIV_INCLUDE_DIRS "src" "h264bsd"
                        PRIV_REQUIRES heap

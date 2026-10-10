@@ -99,6 +99,13 @@
 
 ------------------------------------------------------------------------------*/
 
+#if defined(ESP_PLATFORM) && defined(CONFIG_VJ_PIE)
+#include "vj_mc_pie.h"
+#define VJ_PIE 1
+#else
+#define VJ_PIE 0
+#endif
+
 #define VJ_NOINLINE __attribute__((noinline))
 #define VJ_INLINE static inline __attribute__((always_inline))
 
@@ -458,6 +465,73 @@ static VJ_NOINLINE void LumaEdge(u8 *ref, u32 width, u32 height, i32 x0,
     h264bsdFillBlock(ref, win, x0, y0, width, height, ww, hh, ww);
     LumaPredict(win, ww, d, w, h, xFrac, yFrac);
 }
+
+/* windows inside the picture: the PIE kernels for 8 and 16 wide partitions
+ * (CONFIG_VJ_PIE), else C */
+static void LumaInside(const u8 *s, u32 ss, u8 *d, u32 w, u32 h, u32 xFrac,
+    u32 yFrac)
+{
+#if VJ_PIE
+    if (w >= 8)
+    {
+        switch (4 * xFrac + yFrac)
+        {
+            case 0: vj_pie_luma_copy(s, ss, d, w, h); return;
+            case 1: vj_pie_luma_ver1(s, ss, d, w, h); return;
+            case 2: vj_pie_luma_ver0(s, ss, d, w, h); return;
+            case 3: vj_pie_luma_ver2(s, ss, d, w, h); return;
+            case 4: vj_pie_luma_hor1(s, ss, d, w, h); return;
+            case 8: vj_pie_luma_hor0(s, ss, d, w, h); return;
+            case 12: vj_pie_luma_hor2(s, ss, d, w, h); return;
+            case 5:
+            case 7:
+            case 13:
+            case 15: /* b or s, then averaged with h or m */
+                vj_pie_luma_hor0(s + (2 + (yFrac >> 1)) * ss, ss, d, w, h);
+                vj_pie_luma_ver3(s + 2 + (xFrac >> 1), ss, d, w, h);
+                return;
+            case 9:
+            case 11: /* f q: j, then averaged with b or s */
+                vj_pie_luma_mid(s, ss, d, w, h);
+                vj_pie_luma_hor3(s + (2 + (yFrac >> 1)) * ss, ss, d, w, h);
+                return;
+            case 6:
+            case 14: /* i k: j, then averaged with h or m */
+                vj_pie_luma_mid(s, ss, d, w, h);
+                vj_pie_luma_ver3(s + 2 + (xFrac >> 1), ss, d, w, h);
+                return;
+            default: /* j */
+                vj_pie_luma_mid(s, ss, d, w, h);
+                return;
+        }
+    }
+#endif
+    LumaPredict(s, ss, d, w, h, xFrac, yFrac);
+}
+
+#if VJ_PIE
+/* chroma of an 8 or 16 wide partition whose window lies inside the picture,
+ * both planes, in PIE (a full-sample copy is the bilinear filter with A = 64).
+ * Returns 0, doing nothing, when the window crosses the picture edge */
+static u32 ChromaPie(u8 *d, u32 xAL, u32 yAL, u32 partWidth, u32 partHeight,
+    mv_t *mv, image_t *refPic)
+{
+    u32 width = 8 * refPic->width, height = 8 * refPic->height;
+    u32 xFrac = mv->hor & 0x7, yFrac = mv->ver & 0x7;
+    u32 w = partWidth >> 1, h = partHeight >> 1;
+    i32 x0 = (i32)(xAL >> 1) + (mv->hor >> 3);
+    i32 y0 = (i32)(yAL >> 1) + (mv->ver >> 3);
+
+    if (x0 < 0 || y0 < 0 || (u32)x0 + w + (xFrac ? 1 : 0) > width ||
+        (u32)y0 + h + (yFrac ? 1 : 0) > height)
+        return 0;
+    vj_pie_chroma(refPic->data + 256 * refPic->width * refPic->height +
+        (u32)y0 * width + (u32)x0, width, d, w, h,
+        (8 - xFrac) * (8 - yFrac) | xFrac * (8 - yFrac) << 8 |
+        (8 - xFrac) * yFrac << 16 | xFrac * yFrac << 24, width * height);
+    return 1;
+}
+#endif
 
 /*------------------------------------------------------------------------------
 
@@ -921,7 +995,7 @@ void h264bsdPredictSamples(
     ref = refPic->data;
     d = data + 16 * partY + partX;
     if (x0 >= 0 && y0 >= 0 && (u32)x0 + w <= width && (u32)y0 + h <= height)
-        LumaPredict(ref + (u32)y0 * width + (u32)x0, width, d, partWidth,
+        LumaInside(ref + (u32)y0 * width + (u32)x0, width, d, partWidth,
             partHeight, xFrac, yFrac);
     else if (!xFrac && !yFrac)
         h264bsdFillBlock(ref, d, x0, y0, width, height, partWidth,
@@ -933,6 +1007,10 @@ void h264bsdPredictSamples(
 
     /* chroma */
     { VJP_BEGIN(VJP_CHROMA);
+#if VJ_PIE
+    if (partWidth < 8 || !ChromaPie(data + 16*16 + (partY>>1)*8 + (partX>>1),
+        xA + partX, yA + partY, partWidth, partHeight, mv, refPic))
+#endif
     PredictChroma(
       data + 16*16 + (partY>>1)*8 + (partX>>1),
       xA + partX,

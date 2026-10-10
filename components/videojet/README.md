@@ -153,6 +153,8 @@ What to know before enabling it:
 
 ## 6. Kconfig (menu "VideoJet")
 - `CONFIG_VJ_IRAM` (default y): run the decoder from internal RAM, 50,901 B (hot code + tables, section 4).
+- `CONFIG_VJ_PIE` (default y, ESP32-S3 only): motion compensation in PIE SIMD assembly for 8 and 16 wide partitions,
+  bit-exact with the C kernels (which every other case and the host build use). About 3 KB of IRAM.
 - `CONFIG_VJ_ERROR_PRINT` (default n): print the decoder's bitstream errors to stderr (about 60 messages, from the decoding task).
 - `CONFIG_VJ_DCACHE_AUTOLOAD` (default n; needs `CONFIG_SPIRAM`): D-cache autoload over the decoder's PSRAM blocks, armed by every
   `vj_decode_au()` (section 4, "D-cache autoload": numbers, hazards and traps).

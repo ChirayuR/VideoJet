@@ -493,3 +493,18 @@ and the SPS change in between, all matched their golden hashes. 25 checks, 0 fai
   (`esp_lcd_panel_rgb.c:841-845`). The ROM function suspends autoload first (disassembly), and no IDF code calls `Cache_End_DCache_Preload()`.
 - Flash operations: `esp_cache_suspend_ext_mem_cache()` (`esp_mm/esp_cache.c:159`) calls `cache_hal_suspend()`, which drops the old autoload
   state, and `cache_hal_resume()` restores only the boot-time flag (off): that is the ENA clear above.
+
+### PIE motion compensation (T8 Stage C)
+`CONFIG_VJ_PIE` kernels (`src/vj_mc_pie.S`) for 8 and 16 wide partitions whose window lies inside the picture: all 16 luma
+positions (1D 6-tap rows/columns, diagonal = horizontal then vertical-averaged, centre = 16-bit two-pass j then a 1D
+average) and both chroma planes.
+- Bit-exactness, on the board: a scratch IDF app (`scratchpad/t8/mctest`) links the library's PIE `h264bsdPredictSamples`
+  and a second copy of `h264bsd_reconstruct.c` built with PIE off, and compares their 384-byte outputs over host/test_mc.c's
+  whole case space (8,314,432 cases) plus a 6x4-MB picture where most windows are inside (7,379,984): **15,694,416 cases,
+  0 mismatches**, and 115,312 sampled cases against the standard's equations, 0 mismatches.
+- Cycles per `h264bsdPredictSamples` call (luma + chroma), 16x16, reference in internal RAM (compute only), C → PIE:
+  G 2,654 → 628; d/h/n 7,269 / 6,498 / 7,267 → 1,165 / 1,082 / 1,172; a/b/c 7,163 / 6,380 / 7,167 → 1,088 / 989 / 1,095;
+  e/g/p/r ~12,210 → ~1,710; f/q 12,874 / 12,926 → 2,828 / 2,812; i/k 13,520 / 13,562 → 2,917 / 2,922; j 11,223 → 2,266.
+- In the decoder (profile build at 6f69e98 + PIE, slow class), MC per frame: full_map 34,935 → 15,615 µs (luma 24,487 →
+  9,762, chroma 10,283 → 5,689), aux_map 10,341 → 5,395 µs. Luma now runs at 5–11 cycles per pixel and chroma at ~10, of
+  which compute is ~2–4: the rest is reference-line misses, a preload candidate (T11), not a kernel one.

@@ -72,6 +72,13 @@ Every change made for VideoJet is listed here, newest last.
     - The eight luma `h264bsdInterpolate*` functions and `lumaFracPos` are gone. Chroma (`h264bsdInterpolateChroma*`,
       `PredictChroma`) is unchanged.
     - Upstream's left shifts of negative values (UBSan shift-base) in this file went with the old kernels.
+  - PIE motion compensation (`h264bsd_reconstruct.c`; kernels in VideoJet's own `src/vj_mc_pie.S`, `CONFIG_VJ_PIE`,
+    ESP32-S3 only, default y). For 8 and 16 wide partitions whose reference window lies inside the picture,
+    `h264bsdPredictSamples` calls the PIE kernels (`LumaInside`, `ChromaPie`); edge windows, 4 wide partitions and
+    the host build keep the C kernels. The kernels read whole 16-byte chunks: up to 47 bytes past a luma row start and
+    31 past a chroma row start, inside the DPB buffers (luma is followed by chroma; 32 bytes of slack after Cr).
+    Bit-exact against the C kernels: an on-board test app compares them over test_mc.c's case space plus a 6x4-MB
+    picture (15.7M cases), and against the standard's equations on a sample (bench-log, T8).
   - CAVLC symbol tables (`h264bsd_cavlc.c`). IDF builds with `-fno-jump-tables`, so the old `switch`es were compare
     trees. Each decoder returns the old information word for every input: `host/test_cavlc.c` holds the original
     routines and compares the two over every input.

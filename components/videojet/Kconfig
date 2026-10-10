@@ -71,4 +71,13 @@ config VJ_DCACHE_AUTOLOAD_SIZE
         gave +9.50 / +5.08 / +4.41 %, size 3 +0.34 / +5.47 / +6.40 % (it favoured full_map) and size 0
         -3.39 / -0.25 / +0.31 %.
 
+config VJ_PIE
+    bool "Motion compensation in PIE SIMD assembly (ESP32-S3)"
+    depends on IDF_TARGET_ESP32S3
+    default y
+    help
+        Luma and chroma interpolation of partitions 8 or 16 wide whose reference window lies inside the picture run
+        as ESP32-S3 PIE (128-bit SIMD) kernels; the rest, and every host build, use the C kernels, which the PIE ones
+        match bit for bit.
+
 endmenu
