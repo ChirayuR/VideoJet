@@ -3,7 +3,8 @@
  *
  * Feed one Annex-B access unit (AU) per vj_decode_au() call. The decoder rewrites the AU in place (it removes
  * emulation-prevention bytes): pass a writable buffer and decode each AU once. A call that completes a picture returns
- * it fully decoded and deblocked, and no decode work is left running when any call returns. Pictures come out in decode
+ * it fully decoded and deblocked, unless the AU also leaves a later picture unfinished: that call returns
+ * VJ_ERR_STREAM instead. No decode work is left running when any call returns. Pictures come out in decode
  * order (no output reordering), which is display order for baseline streams that never reorder.
  * Byte-stream sources split their buffer with vj_au_length(). One decoder per task: calls on one decoder must not
  * overlap. Frame buffers live in PSRAM (about 1.5 x width x height bytes each, refs + 1 of them). */

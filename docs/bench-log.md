@@ -183,6 +183,7 @@ reads only the last record with a label, so a record is identified by label, ELF
 | `9137edb` S3 sizing, DMA-safe alloc | `m2-t2-fix1-final` | dc5ae7a67 | 4 (fast) | +0.12 | −1.34 | −2.14 |
 | `89bd8c9` bench measures (final) | `m2-t3-final` | 6a270d064 | 4 (fast) | −0.06 | −0.21 | −0.36 |
 | `89bd8c9` (final) | `m2-final-all` | 6a270d064 | 5 (slow) | −0.06 | −0.21 | −0.36 |
+| `f72f591` final fix wave (C1 epilogue) | `m2-f72f591` | 3cc14a9cb | 10 (fast) | −0.06 | −0.21 | −0.71 |
 | control: M1 sources rebuilt | `ctl-m1-code` | 758558c2b | 4 (fast) | 0.00 | 0.00 | 0.00 |
 | control: M1 logic, decoder +16 B | `ctl-m1-shift16` | ae66914a5 | 10 (fast) | −0.12 | −3.08 | −4.27 |
 

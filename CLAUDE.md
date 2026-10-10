@@ -113,6 +113,14 @@ h264bsd: Android's Hantro baseline decoder, Apache-2.0, plain C (github.com/onea
 - Espressif `esp_h264` SW decoder = **tinyH264 = closed h264bsd fork**, prebuilt `.a`, no source. Constrained
   baseline, I/P only, Annex-B in, I420 out. README: S3R8 640×480 9 fps (11 dual-task), 320×192 23/27;
   P4 640×480 25/31, 720p 7/10. ≈22 k cycles/MB on S3 (content unknown) [E].
+  - Over h264bsd it adds three things (symbols of `libtinyh264.a`, esp_h264 1.4.1); there is no PIE:
+    - a deblock filter thread, which is its "dual task" (+22 %): `filterThread`, `h264bsdDecodeSliceDataMultiTask`,
+      `h264bsdFilterPictureOneBlock`, `Filter*Cross` edges;
+    - block-copy helpers: `h264bsdBlock{Lum,Chrome,ImageLum,ImageChrome,Block}`;
+    - IRAM for reconstruct/cavlc/transform/vlc/stream/intra. Inter and deblock are not in IRAM.
+  - Its `libopenh264.a` is encoder-only, with S3 PIE asm MC (`McHorVer{01,02,03,10,11,20,22,30}_esp32s3`, `PixelAvg*`).
+    So PIE quarter-pel MC is proven on the S3. It is closed code under a custom licence: evidence, not code to copy.
+  - the consumer app (an AA minimap on the S3, the user's optimisation target since 2026-10-10) decodes with it today.
 - P4 has HW H.264 **encoder** only, no HW decoder. P4 HW JPEG decodes 800×480 at 253 fps. PPA SRM does
   YUV420→RGB565 plus rotate/scale.
 - Only AA-on-MCU prior art: payalneg/esp32p4-android-auto (GPL-3.0, don't copy code). P4 800×480 full frame:
@@ -132,6 +140,8 @@ h264bsd: Android's Hantro baseline decoder, Apache-2.0, plain C (github.com/onea
   round). Next: M3 step 0 (see the layout bullet below), then the meta-harness search.
   - Delivered: the public API, one component with a private decoder, Kconfig `VJ_PROFILE` / `VJ_ERROR_PRINT`, library-owned
     memory placement, the consumer README, and a bench that reports exact `total_us` and the decoder's `int_used` / `psram_used`.
+  - The final fix wave `f72f591` (an AU that leaves a picture unfinished returns VJ_ERR_STREAM) is board-verified:
+    record `m2-f72f591`, ELF `3cc14a9cb`, PASS, −0.06 / −0.21 / −0.71 % at idx 10, inside the ±5 % band.
   - Final firmware (app `89bd8c9`, ELF `6a270d064`, record `m2-final-all`: PASS, all 11 streams). Search fps against the M1
     baseline of the same class: −0.06 / −0.21 / −0.36 % (aux_card / aux_map / full_map), inside the ±5 % M2 bar. The
     committed M2 builds spread −2.14 … +1.25 % with no decoder algorithm changed: that is code layout (below).
