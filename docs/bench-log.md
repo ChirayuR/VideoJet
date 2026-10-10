@@ -379,6 +379,7 @@ are copied into `.superpowers/sdd/2026-10-10-videojet-m3-speed/baseline-t{3,6c}.
 | MC stage B: C luma kernels, register 6-tap (6f69e98) | `m3-mc-c` | 5 | e2efde94c | 73.8374 / 17.7296 / 8.7834 | -0.00 / +3.00 / +6.62 | 39,572 |
 | T6d table-driven CAVLC (8f61f57; 2459a4c adds host/test_cavlc.c) | `m3-cavlctab2` | 5 | 63aeed1ae | 73.8668 / 17.8425 / 8.8237 | +0.04 / +0.64 / +0.46 | 39,572 |
 | T11 D-cache autoload over the decoder's span (931adda; docs 3930d59) | `m3-autoload` | 5 | 2b2cd7855 | 80.7704 / 18.7441 / 9.2244 | +9.35 / +5.05 / +4.54 | 39,572 |
+| PIE motion compensation, per-width alignment guard (e6fd90d, 7931647, 22bf784; test/mc_pie) | `m3-mc-pie4` | 5 | d77df6d26 | 80.9724 / 20.6899 / 11.2375 | +0.25 / +10.38 / +21.82 | 39,572 |
 
 Cumulative since M2 (slow class 17.11 / 9.67 / 5.58), at the T10 tip: **+327 % / +75 % / +45 %**. Skip elision elides 1,438 / 797 / 8.4 MBs
 per frame (aux_card / aux_map / full_map), against the 1,437 / 800 / 6 that the earlier cost model predicted. aux_card is at the

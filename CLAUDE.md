@@ -172,12 +172,11 @@ h264bsd: Android's Hantro baseline decoder, Apache-2.0, plain C (github.com/onea
     - cold code to flash (memory axis);
     - MC stage B: C luma kernels;
     - T6d: table-driven CAVLC.
-  - Tip fps (slow class): **73.87 / 17.84 / 8.82** (aux_card / aux_map / full_map), against M2's 17.11 / 9.67 / 5.58. Library
-    internal RAM ≈ 87.5 KB (heap 39,572 + IRAM 40,968 + DRAM 7,010) of the 100 KB budget.
-  - In flight on 2026-10-11:
-    - **T11, D-cache autoload** (branch `m3/autoload` 62c6806): scored KEEP, **80.77 / 18.74 / 9.22**. Waiting for its safety
-      review (the region must never reach 0x3E000000), then a fast-forward merge.
-    - **MC stage C, PIE SIMD kernels** (branch `m3/mc-pie`, WIP commit a2ed4c4): in progress.
+  - Also merged (2026-10-11): T11 D-cache autoload (`VJ_DCACHE_AUTOLOAD`, opt-in, bench on) and the PIE motion-compensation
+    kernels (`VJ_PIE`, with the on-board oracle `test/mc_pie`: re-run it after any change to `vj_mc_pie.S`).
+  - **Tip fps (slow class): 80.97 / 20.69 / 11.24** (aux_card / aux_map / full_map). Library internal RAM ≈ 91 KB of the
+    100 KB budget (heap 39,572 + IRAM 44.4 KB + DRAM 7.1 KB, with the cold code in flash).
+  - Nothing is in flight. Model rule: Haiku 5.5 and Sonnet 5.5 only (the account is usage-limited; no Opus, no an external consult).
   - Method:
     - `tools/score.sh LABEL [BASELINE]`, slow class pinned with `--tuning 5`. KEEP = every stream ≥ −0.3 % and one ≥ +0.3 %,
       or less internal RAM at equal fps (ruling R10).
