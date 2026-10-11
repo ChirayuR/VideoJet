@@ -383,6 +383,7 @@ are copied into `.superpowers/sdd/2026-10-10-videojet-m3-speed/baseline-t{3,6c}.
 | cheap deblock record for skip MBs (1dc0cb2) | `m3-skiprec` | 5 | f3ae8657c | 94.9683 / 21.2162 / 11.3033 | +17.28 / +2.54 / +0.59 | 39,572 |
 | PIE residual-add/write-out (896bf08; test/wr_pie, host/test_write.c) | `m3-piewrite` | 5 | 198ddf43f | 94.9629 / 21.4728 / 11.4429 | -0.01 / +1.21 / +1.23 | 39,572 |
 | PIE 4x4 inverse transform + aligned mbLayer (154fe8a; host/test_idct.c, test/idct_pie) | `m3-pieidct` | 5 | 4eca3af74 | 95.3020 / 21.8882 / 11.6485 | +0.36 / +1.93 / +1.80 | 39,580 |
+| row-lagged deblock worker on the other core, `VJ_DEBLOCK_WORKER` (c872deb..f046f02; check-tsan, test_worker) | `m3-dbworker2` | 5 | 8d6a31c15 | 100.9494 / 26.0280 / 13.9552 | +5.93 / +18.91 / +19.80 | 42,300 |
 
 Cumulative since M2 (slow class 17.11 / 9.67 / 5.58), at the T10 tip: **+327 % / +75 % / +45 %**. Skip elision elides 1,438 / 797 / 8.4 MBs
 per frame (aux_card / aux_map / full_map), against the 1,437 / 800 / 6 that the earlier cost model predicted. aux_card is at the
@@ -520,3 +521,5 @@ libvideojet.a on: DRAM 7,486 + 8 (.bss) + IRAM 49,034 = 56,528 B (off: 7,486 + 4
 Total internal: 56,528 + 42,300 = **98,828 B** (off 93,488). Marks (n + height = 1,530 B) and the 4-bank undo log are PSRAM-first (`vj_alloc_psram`);
 worker stack 2,048 B (988 B used at 3,072 in the -O2 bench build); PSRAM 1,625,620 vs 1,507,340 (+118,280).
 fps off -> on: 95.30 / 21.89 / 11.65 -> 100.95 / 26.03 / 13.96 (3 boots, `--set all`, PASS).
+
+Worker tip: library internal RAM = libvideojet static 56,528 B (IRAM 49,034 + DRAM 7,486 + bss 8) + heap int_used 42,300 B = 98,828 B of 100,000 B (marks and the 118 KB undo log are PSRAM-first; worker stack 2 KB, call tree <= 736 B at -O0, 464 B at -O2). Take-back after 50 ms if the worker has not started a posted run; a run already started is waited for.

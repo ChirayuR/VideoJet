@@ -174,8 +174,9 @@ h264bsd: Android's Hantro baseline decoder, Apache-2.0, plain C (github.com/onea
     - T6d: table-driven CAVLC.
   - Also merged (2026-10-11): T11 D-cache autoload (`VJ_DCACHE_AUTOLOAD`, opt-in, bench on) and the PIE motion-compensation
     kernels (`VJ_PIE`, with the on-board oracle `test/mc_pie`: re-run it after any change to `vj_mc_pie.S`).
-  - **Tip fps (slow class): 95.3020 / 21.8882 / 11.6485** (aux_card / aux_map / full_map). Library internal RAM ≈ 91 KB of the
-    100 KB budget (heap 39,572 + IRAM 44.4 KB + DRAM 7.1 KB, with the cold code in flash).
+  - **Tip fps (slow class): 100.9494 / 26.0280 / 13.9552** (aux_card / aux_map / full_map). Library internal RAM = 98,828 B of the
+    100 KB budget (heap 42,300 + static 56,528 with the worker; cold code in flash).
+  - Also merged: PIE write-out, PIE inverse transform, cheap skip-MB deblock record, and the deblock worker on the other core (`VJ_DEBLOCK_WORKER`, bench on; ruling: a 50 ms take-back, a started run is waited for).
   - Nothing is in flight. Model rule: Haiku 5.5 and Sonnet 5.5 only (the account is usage-limited; no Opus, no an external consult).
   - Method:
     - `tools/score.sh LABEL [BASELINE]`, slow class pinned with `--tuning 5`. KEEP = every stream ≥ −0.3 % and one ≥ +0.3 %,
