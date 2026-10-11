@@ -17,3 +17,7 @@ void vj_pie_luma_ver3(const u8 *s, u32 ss, u8 *d, u32 w, u32 h); /* averaged int
 void vj_pie_luma_mid(const u8 *s, u32 ss, u8 *d, u32 w, u32 h);  /* j; s at (G - 2, G - 2) */
 /* both chroma planes: w 8 or 4; wts = A | B << 8 | C << 16 | D << 24; Cr window ps after Cb, Cr rows at d + 64 */
 void vj_pie_chroma(const u8 *s, u32 ss, u8 *d, u32 w, u32 h, u32 wts, u32 ps);
+
+/* write-out (vj_wr_pie.S). lum, cb, cr, data: 4-aligned (u32 loads / stores), lstride a multiple of 4, res 16-aligned
+ * (ee.vld.128 rounds down), 24 blocks of 16 i32. */
+void vj_pie_write_out(u8 *lum, u8 *cb, u8 *cr, u32 lstride, const u8 *data, const i32 *res);

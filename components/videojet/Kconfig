@@ -80,6 +80,7 @@ config VJ_PIE
         as ESP32-S3 PIE (128-bit SIMD) kernels; the rest, and every host build, use the C kernels, which the PIE ones
         match bit for bit. Each destination must be aligned to its store width (16 B luma w 16, 8 B w 8, 4 B chroma
         w 4); the library checks per partition and otherwise uses C.
+        The inter write-out (residual add, clip, store) also runs as PIE when the residual array is 16-aligned.
 
         IDF pins a task to its current core at its first PIE instruction (portasm.S _frxt_coproc_exc_hook), so an unpinned decode task is pinned at its first P-frame.
 

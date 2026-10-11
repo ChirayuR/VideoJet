@@ -86,6 +86,15 @@ Every change made for VideoJet is listed here, newest last.
     Bit-exact against the C kernels: the on-board app `test/mc_pie` compares them over test_mc.c's case space plus a
     6x4-MB picture (15.7M cases), and against the standard's equations on a sample (bench-log, T8). Any change to
     `vj_mc_pie.S`, or to the C kernels it mirrors, must re-run `test/mc_pie` on the board: `MC PASS`, 0 mismatches.
+  - PIE write-out (`h264bsd_image.c`; kernels in `src/vj_wr_pie.S`, `CONFIG_VJ_PIE`). `h264bsdWriteOutputBlocks` calls
+    `vj_pie_write_out`: per 4x4 block an empty residual copies the prediction rows, else the residual (low 16 bits of
+    each i32) is added to the zero-extended prediction in s16 lanes with saturation, clipped 0..255 and stored; the C
+    reads a 1280-entry clip table, so the two agree for every pred + residual in -512..767 (all valid streams; out of
+    that range the C reads outside its table). `h264bsdWriteMacroblock` stays C (a PIE 16 B row copy measured equal, 336 vs 342
+    cycles; an all-empty pre-scan cost more than it saved). Exact loads/stores, no over-read. The dispatch falls back to C unless the residual array is 16-aligned
+    (ee.vld.128 rounds down) and the pointers 4-aligned.
+    Oracle: the on-board app `test/wr_pie` (PIE vs the same file compiled with PIE off, guard bytes, all (pred, residual)
+    pairs, every empty-block pattern, pointer offsets) must print `WR PASS`; the C path has `host/test_write.c`.
   - CAVLC symbol tables (`h264bsd_cavlc.c`). IDF builds with `-fno-jump-tables`, so the old `switch`es were compare
     trees. Each decoder returns the old information word for every input: `host/test_cavlc.c` holds the original
     routines and compares the two over every input.

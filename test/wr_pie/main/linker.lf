@@ -1,0 +1,5 @@
+# The C oracle runs from IRAM like the library's code, so its cycle counts are comparable.
+[mapping:wr_pie_test]
+archive: libmain.a
+entries:
+    rec_c (noflash)

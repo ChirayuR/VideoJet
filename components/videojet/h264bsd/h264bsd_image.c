@@ -1,6 +1,7 @@
 /*
  * Copyright (C) 2009 The Android Open Source Project
  * Modified for use by h264bsd standalone library
+ * Modified for VideoJet: see h264bsd/README.md, Local changes.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -36,6 +37,13 @@
 #include "h264bsd_image.h"
 #include "h264bsd_util.h"
 #include "h264bsd_neighbour.h"
+
+#if defined(ESP_PLATFORM) && defined(CONFIG_VJ_PIE)
+#include "vj_mc_pie.h"
+#define VJ_PIE 1
+#else
+#define VJ_PIE 0
+#endif
 
 /*------------------------------------------------------------------------------
     2. External compiler flags
@@ -105,6 +113,7 @@ void h264bsdWriteMacroblock(image_t *image, u8 *data)
     ASSERT(!((u32)lum&0x3));
     ASSERT(!((u32)cb&0x3));
     ASSERT(!((u32)cr&0x3));
+
 
     ptr = (u32*)data;
 
@@ -206,6 +215,16 @@ void h264bsdWriteOutputBlocks(image_t *image, u32 mbNum, u8 *data,
     cr = (cb + picSize * 64);
 
     picWidth *= 16;
+
+#if VJ_PIE
+    /* residual: 16-aligned (ee.vld.128 rounds down); the 4 B loads/stores need 4-aligned pointers and stride */
+    if ((((uintptr_t)residual & 15) |
+         (((uintptr_t)data | (uintptr_t)lum | (uintptr_t)cb | (uintptr_t)cr) & 3)) == 0)
+    {
+        vj_pie_write_out(lum, cb, cr, picWidth, data, &residual[0][0]);
+        return;
+    }
+#endif
 
     for (block = 0; block < 16; block++)
     {

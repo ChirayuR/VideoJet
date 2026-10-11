@@ -9,7 +9,7 @@ LIB_INC := -I$(VJ)/include -I$(VJ)/src -I$(DEC)
 INC := -I$(VJ)/include -I../components/vj_hash/include
 HASH := ../components/vj_hash/include/vj_hash.h
 
-all: $(B)/vjdec $(B)/vjhash_raw $(B)/test_api $(B)/test_mc $(B)/test_cavlc
+all: $(B)/vjdec $(B)/vjhash_raw $(B)/test_api $(B)/test_mc $(B)/test_cavlc $(B)/test_write
 
 $(B):
 	mkdir -p $@
@@ -29,6 +29,10 @@ $(B)/test_mc: test_mc.c $(LIB_SRC) $(LIB_HDR) | $(B)
 $(B)/test_cavlc: test_cavlc.c $(DEC)/h264bsd_cavlc.c $(DEC)/h264bsd_stream.c $(LIB_HDR) | $(B)
 	$(CC) $(CFLAGS) $(LIB_INC) -o $@ test_cavlc.c $(DEC)/h264bsd_stream.c
 
+# The write-out (h264bsd_image.c) against a plain clip(pred + residual) reference.
+$(B)/test_write: test_write.c $(LIB_SRC) $(LIB_HDR) | $(B)
+	$(CC) $(CFLAGS) $(LIB_INC) -o $@ test_write.c $(LIB_SRC)
+
 $(B)/vjhash_raw: vjhash_raw.c $(HASH) | $(B)
 	$(CC) $(CFLAGS) $(INC) -o $@ vjhash_raw.c
 
@@ -37,6 +41,7 @@ check: all
 	@$(B)/test_api ../streams vectors
 	@$(B)/test_mc
 	@$(B)/test_cavlc
+	@$(B)/test_write
 	@./check.sh $(B)/vjdec ../streams
 
 .PHONY: all check
