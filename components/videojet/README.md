@@ -153,9 +153,9 @@ What to know before enabling it:
 
 ## 6. Kconfig (menu "VideoJet")
 - `CONFIG_VJ_IRAM` (default y): run the decoder from internal RAM, 51,533 B (hot code + tables, section 4).
-- `CONFIG_VJ_PIE` (default y, ESP32-S3 only): motion compensation in PIE SIMD assembly for 8 and 16 wide partitions,
+- `CONFIG_VJ_PIE` (default y, ESP32-S3 only): motion compensation, residual write-out and the 4x4 inverse transform in PIE SIMD assembly (MC for 8 and 16 wide partitions),
   bit-exact with the C kernels (which every other case and the host build use). About 3 KB of IRAM.
-  Note: IDF pins a task to its current core at its first PIE instruction (portasm.S _frxt_coproc_exc_hook), so an unpinned decode task is pinned at its first P-frame. PIE destinations must be aligned to the store width (16 B for luma w 16, 8 B for w 8, 4 B for chroma w 4); the library checks per partition and otherwise uses C.
+  Note: IDF pins a task to its current core at its first PIE instruction (portasm.S _frxt_coproc_exc_hook), so an unpinned decode task (any task that calls vj_decode_au) is pinned permanently, normally at its first I-frame (the first block with AC coefficients). PIE destinations must be aligned to the store width (16 B for luma w 16, 8 B for w 8, 4 B for chroma w 4); the library checks per partition and otherwise uses C.
 - `CONFIG_VJ_ERROR_PRINT` (default n): print the decoder's bitstream errors to stderr (about 60 messages, from the decoding task).
 - `CONFIG_VJ_DCACHE_AUTOLOAD` (default n; needs `CONFIG_SPIRAM`): D-cache autoload over the decoder's PSRAM blocks, armed by every
   `vj_decode_au()` (section 4, "D-cache autoload": numbers, hazards and traps).

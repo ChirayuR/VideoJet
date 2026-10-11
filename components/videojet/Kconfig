@@ -85,6 +85,6 @@ config VJ_PIE
         The 4x4 inverse transform of a block with coefficients outside its first row (h264bsdProcessBlock) runs in PIE too,
         when the block is 16-byte aligned and every dequantised coefficient is within +-2^26; otherwise C, bit for bit the same.
 
-        IDF pins a task to its current core at its first PIE instruction (portasm.S _frxt_coproc_exc_hook), so an unpinned decode task is pinned at its first P-frame.
+        IDF pins a task to its current core at its first PIE instruction (portasm.S _frxt_coproc_exc_hook), so an unpinned decode task (any task that calls vj_decode_au) is pinned permanently, normally at its first I-frame (the first block with AC coefficients).
 
 endmenu
