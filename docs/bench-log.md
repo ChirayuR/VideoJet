@@ -513,3 +513,10 @@ average) and both chroma planes.
 - In the decoder (profile build at 6f69e98 + PIE, slow class), MC per frame: full_map 34,935 → 15,615 µs (luma 24,487 →
   9,762, chroma 10,283 → 5,689), aux_map 10,341 → 5,395 µs. Luma now runs at 5–11 cycles per pixel and chroma at ~10, of
   which compute is ~2–4: the rest is reference-line misses, a preload candidate (T11), not a kernel one.
+
+## Deblock worker (VJ_DEBLOCK_WORKER), fix round 1 (budget)
+Bench config, 800x480, tuning 5, ELF 12f40b963 (worker on) / 453b... off build same tree. Static from `esp_idf_size --archives`:
+libvideojet.a on: DRAM 7,486 + 8 (.bss) + IRAM 49,034 = 56,528 B (off: 7,486 + 46,430 = 53,916). Heap `int_used`: 42,300 on, 39,572 off.
+Total internal: 56,528 + 42,300 = **98,828 B** (off 93,488). Marks (n + height = 1,530 B) and the 4-bank undo log are PSRAM-first (`vj_alloc_psram`);
+worker stack 2,048 B (988 B used at 3,072 in the -O2 bench build); PSRAM 1,625,620 vs 1,507,340 (+118,280).
+fps off -> on: 95.30 / 21.89 / 11.65 -> 100.95 / 26.03 / 13.96 (3 boots, `--set all`, PASS).

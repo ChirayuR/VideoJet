@@ -103,8 +103,8 @@ config VJ_DEBLOCK_WORKER
         vj_decoder_create() creates the worker (the task calling it is "the decoding task"): pinned to
         VJ_WORKER_CORE, at the creating task's priority, with a 2 KB internal stack (about 1 KB used);
         vj_decoder_destroy() deletes it. vj_decode_au() returns with the worker idle. Costs per decoder at
-        800x480: about 3.7 KB of internal RAM (stack, control blocks) and 117 KB of PSRAM (the undo log, 4 rows of
-        576 B per macroblock, which scales with the picture width, and 1.5 KB of marks). Code: about 2.6 KB.
+        800x480: about 2.7 KB of internal RAM (2 KB stack, control blocks) and 118 KB of PSRAM (the undo log, 4 rows of
+        576 B per macroblock, which scales with the picture width, and 1.5 KB of marks). Code: 2.6 KB of IRAM.
         The VJP_DEBLOCK profile bucket (VJ_PROFILE) measures only the decoding task's wait for the worker when this is on.
 
         Rules for the consumer: call vj_decoder_create(), vj_decode_au() and vj_decoder_destroy() from one task,

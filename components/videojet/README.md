@@ -159,13 +159,21 @@ What to know before enabling it:
   including slice errors and concealment (undo log of the rows the failed slice touched; `h264bsd/h264bsd_deblocking.c` has
   the argument; the host gate runs it threaded, `make -C host check-tsan` under ThreadSanitizer).
   - **Core and priority:** `vj_decoder_create()` creates a FreeRTOS task "vjdbw" pinned to `CONFIG_VJ_WORKER_CORE`, at the
-    creating task's priority minus one (minimum 1), 3 KB internal stack (about 1 KB used). `vj_decoder_destroy()` stops it.
+    creating task's own priority, with a 2 KB internal stack (about 1 KB used). `vj_decoder_destroy()` stops it.
   - **Rules:** create, decode and destroy from one task pinned to one core (the worker takes the other core); never delete that
-    task while a `vj_decode_au()` is in flight; do not park a higher-priority task on the worker's core that can starve it
-    (the call waits for the worker). `vj_decode_au()` returns with the worker idle on every path.
-  - **Cost** at 800x480: about 5.3 KB internal RAM, 115 KB PSRAM, 2.6 KB IRAM. Gain on the bench (slow PSRAM class, same
-    tree, worker off to on): aux_card / aux_map / full_map 94.98 / 21.22 / 11.31 to 100.87 / 25.15 / 13.52 fps. Both cores
-    share one D-cache and PSRAM bus, so the decode core slows a little while the worker runs.
+    task while a `vj_decode_au()` is in flight. `vj_decode_au()` returns with the worker idle on every path.
+  - **Starvation:** if a task on the worker's core at or above its priority keeps it from starting a run, `vj_decode_au()`
+    takes the run back after 50 ms and filters on the decoding task (bit-identical, no overlap; one warning in the log).
+    A run the worker has started is waited for however long it takes, so a task that preempts the worker mid-run can
+    still stall the call while it runs: keep higher-priority work off the worker's core.
+  - **Profiling:** with `CONFIG_VJ_PROFILE` the deblock bucket measures only the decoding task's wait for the worker.
+  - **Budget** (bench config, 800x480, measured): libvideojet static 56,528 B (IRAM 49,034 + DRAM 7,486 + 8 bss; 53,916 off)
+    + heap `int_used` 42,300 B (39,572 off) = **98,828 B** of the 100,000 B (93,488 off). The worker adds 2.7 KB of heap
+    (2 KB stack, control blocks), 2.6 KB of IRAM, and 118,280 B of PSRAM (1,625,620 vs 1,507,340: the 4-row undo log,
+    115,200 B at 50 MBs per row, and the 1,530 B of marks, both PSRAM-first).
+  - Gain on the bench (slow PSRAM class, same tree, worker off to on): aux_card / aux_map / full_map 95.30 / 21.89 / 11.65
+    to 100.95 / 26.03 / 13.96 fps. Both cores share one D-cache and PSRAM bus, so the decode core slows a little while the
+    worker runs.
 - `CONFIG_VJ_WORKER_CORE` (-1, 0 or 1; default -1 = the core other than the creating task's): the worker's core.
 - `CONFIG_VJ_IRAM` (default y): run the decoder from internal RAM, 51,533 B (hot code + tables, section 4).
 - `CONFIG_VJ_PIE` (default y, ESP32-S3 only): motion compensation, residual write-out and the 4x4 inverse transform in PIE SIMD assembly (MC for 8 and 16 wide partitions),
