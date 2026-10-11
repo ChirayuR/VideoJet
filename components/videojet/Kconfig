@@ -72,7 +72,7 @@ config VJ_DCACHE_AUTOLOAD_SIZE
         -3.39 / -0.25 / +0.31 %.
 
 config VJ_PIE
-    bool "Motion compensation in PIE SIMD assembly (ESP32-S3)"
+    bool "Motion compensation and inverse transform in PIE SIMD assembly (ESP32-S3)"
     depends on IDF_TARGET_ESP32S3
     default y
     help
@@ -81,6 +81,9 @@ config VJ_PIE
         match bit for bit. Each destination must be aligned to its store width (16 B luma w 16, 8 B w 8, 4 B chroma
         w 4); the library checks per partition and otherwise uses C.
         The inter write-out (residual add, clip, store) also runs as PIE when the residual array is 16-aligned.
+
+        The 4x4 inverse transform of a block with coefficients outside its first row (h264bsdProcessBlock) runs in PIE too,
+        when the block is 16-byte aligned and every dequantised coefficient is within +-2^26; otherwise C, bit for bit the same.
 
         IDF pins a task to its current core at its first PIE instruction (portasm.S _frxt_coproc_exc_hook), so an unpinned decode task is pinned at its first P-frame.
 

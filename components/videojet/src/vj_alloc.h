@@ -10,3 +10,6 @@ void *vj_alloc(size_t n);
 /* Internal first whatever the size, PSRAM if that fails: per-MB state the decoder reads for every MB of every picture
  * (the deblock records). It counts against the library's internal-RAM budget. */
 void *vj_alloc_internal(size_t n);
+/* As vj_alloc for a small buffer (internal first), 16-byte aligned: the macroblock layer, whose residual blocks the PIE
+ * inverse transform stores with ee.vst.128. Released with free(). */
+void *vj_alloc_aligned16(size_t n);

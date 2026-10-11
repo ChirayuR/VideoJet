@@ -24,3 +24,14 @@ void *vj_alloc_internal(size_t n)
     return malloc(n);
 #endif
 }
+
+void *vj_alloc_aligned16(size_t n)
+{
+#ifdef ESP_PLATFORM
+    /* internal first, as vj_alloc for small sizes; IDF frees heap_caps_aligned_alloc memory with free() */
+    void *p = heap_caps_aligned_alloc(16, n, MALLOC_CAP_INTERNAL | MALLOC_CAP_DEFAULT);
+    return p ? p : heap_caps_aligned_alloc(16, n, MALLOC_CAP_DEFAULT);
+#else
+    return aligned_alloc(16, (n + 15) & ~(size_t)15);
+#endif
+}

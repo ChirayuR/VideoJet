@@ -9,7 +9,7 @@ LIB_INC := -I$(VJ)/include -I$(VJ)/src -I$(DEC)
 INC := -I$(VJ)/include -I../components/vj_hash/include
 HASH := ../components/vj_hash/include/vj_hash.h
 
-all: $(B)/vjdec $(B)/vjhash_raw $(B)/test_api $(B)/test_mc $(B)/test_cavlc $(B)/test_write
+all: $(B)/vjdec $(B)/vjhash_raw $(B)/test_api $(B)/test_mc $(B)/test_cavlc $(B)/test_write $(B)/test_idct
 
 $(B):
 	mkdir -p $@
@@ -33,15 +33,21 @@ $(B)/test_cavlc: test_cavlc.c $(DEC)/h264bsd_cavlc.c $(DEC)/h264bsd_stream.c $(L
 $(B)/test_write: test_write.c $(LIB_SRC) $(LIB_HDR) | $(B)
 	$(CC) $(CFLAGS) $(LIB_INC) -o $@ test_write.c $(LIB_SRC)
 
+# h264bsdProcessBlock against the original routine, bit for bit (all coeffMaps x qps x skip, extreme coefficients).
+# -fwrapv: the reference's i32 overflow on corrupt-stream coefficients is then defined wrap-around.
+$(B)/test_idct: test_idct.c $(DEC)/h264bsd_transform.c $(LIB_HDR) | $(B)
+	$(CC) $(CFLAGS) -fwrapv $(LIB_INC) -o $@ test_idct.c $(DEC)/h264bsd_transform.c
+
 $(B)/vjhash_raw: vjhash_raw.c $(HASH) | $(B)
 	$(CC) $(CFLAGS) $(INC) -o $@ vjhash_raw.c
 
-# The correctness floor: API unit tests, the MC and CAVLC oracles, then every stream with a .golden decodes bit-exact.
+# The correctness floor: API unit tests, the MC, CAVLC and IDCT oracles, then every stream with a .golden decodes bit-exact.
 check: all
 	@$(B)/test_api ../streams vectors
 	@$(B)/test_mc
 	@$(B)/test_cavlc
 	@$(B)/test_write
+	@$(B)/test_idct
 	@./check.sh $(B)/vjdec ../streams
 
 .PHONY: all check

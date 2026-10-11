@@ -1,0 +1,5 @@
+# The reference runs from IRAM like the library's code, so its cycle counts are comparable.
+[mapping:idct_pie_test]
+archive: libmain.a
+entries:
+    idct_pie_test (noflash)

@@ -1,6 +1,7 @@
 /*
  * Copyright (C) 2009 The Android Open Source Project
  * Modified for use by h264bsd standalone library
+ * Modified for VideoJet: see h264bsd/README.md, Local changes.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -145,7 +146,7 @@ typedef struct
 #else
     i16 totalCoeff[27];
 #endif
-    i32 level[26][16];
+    i32 level[26][16] __attribute__((aligned(16))); /* VideoJet: 16-aligned blocks, for the PIE inverse transform */
     u32 coeffMap[24];
 } residual_t;
 

@@ -103,5 +103,19 @@ Every change made for VideoJet is listed here, newest last.
     - total_zeros: a (table, shift) entry per totalCoeff replaces the `switch`; chroma DC has a table.
     - coeff_token, 0 <= nC < 4: codes over 6 bits come from one table indexed by the leading zeros (`__builtin_clz`)
       and the next 3 bits, in place of 2 or 3 more range tests and tables. The 1- and 2-bit codes keep their tests.
+  - Inverse transform / dequant (`h264bsd_transform.c`, `h264bsdProcessBlock` only; `src/vj_idct_pie.S/.h`).
+    - C: the scan, scaling and both passes run in registers on u32 (no intermediate store/reload), level scales come
+      pre-shifted from a 52x3 u16 table, and the range check ORs (value + 512) over the block. On HANTRO_NOK the block
+      contents are unspecified (the original left it half transformed); the caller abandons the macroblock. The
+      `coeffMap` paths (full, rows 1-3 zero, DC only) are unchanged, so uncoded blocks still rely on the `coeffMap == 0`
+      DC-only path.
+    - PIE (`CONFIG_VJ_PIE`), full path only: the 16 products go (scalar) to a transposed, aligned scratch block;
+      `vj_pie_idct4` does the horizontal pass lane-wise, transposes with four `ee.vzip.32`, does the vertical pass and
+      stores the four output rows. Its arithmetic saturates where the C code wraps, so it first checks every product is
+      within +-2^26 and returns "guard failed" (nothing stored) otherwise, and C runs. `data` must be 16-aligned
+      (`macroblockLayer_t.level` is `aligned(16)`, and `mbLayer` comes from `vj_alloc_aligned16`), else C.
+    - `host/test_idct.c` holds the original and compares return value and outputs over every coeffMap x qp x skip,
+      extreme and guard-edge coefficients, aligned and misaligned blocks. Any change to `vj_idct_pie.S` or to that
+      full path must re-run `test/idct_pie` on the board: `IDCT PASS`, 0 mismatches.
 - Apache-2.0 §4(b) modification notice: every file changed above carries the header line
   `Modified for VideoJet: see h264bsd/README.md, Local changes.` Comment-only.

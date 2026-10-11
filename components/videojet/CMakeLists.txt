@@ -8,7 +8,7 @@ else()
 endif()
 set(vj_srcs "src/videojet.c" "src/vj_au.c" "src/vj_alloc.c")
 if(CONFIG_VJ_PIE)
-    list(APPEND vj_srcs "src/vj_mc_pie.S" "src/vj_wr_pie.S")
+    list(APPEND vj_srcs "src/vj_mc_pie.S" "src/vj_wr_pie.S" "src/vj_idct_pie.S")
 endif()
 idf_component_register(SRCS ${vj_srcs} ${dec_srcs}
                        INCLUDE_DIRS "include"
