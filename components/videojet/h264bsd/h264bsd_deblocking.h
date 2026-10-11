@@ -83,6 +83,7 @@ u32 h264bsdDbwBegin(dbw_t *d, image_t *image, deblockRec_t *rec, u8 *changed,
 void h264bsdDbwSliceStart(dbw_t *d, u32 firstMb, u32 isP, u32 recNext);
 u32 h264bsdDbwRowEnd(dbw_t *d);
 u32 h264bsdDbwActive(const dbw_t *d);
+u32 h264bsdDbwBusy(dbw_t *d);
 void h264bsdDbwAbortError(dbw_t *d);
 void h264bsdDbwAbortKeep(dbw_t *d);
 u32 h264bsdDbwResume(dbw_t *d);

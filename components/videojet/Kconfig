@@ -101,17 +101,20 @@ config VJ_DEBLOCK_WORKER
         sequential decoder's; the argument is in h264bsd_deblocking.c.
 
         vj_decoder_create() creates the worker (the task calling it is "the decoding task"): pinned to
-        VJ_WORKER_CORE, at the creating task's priority minus one (at least 1), with a 3 KB internal stack (about 1 KB
-        used); vj_decoder_destroy() deletes it. vj_decode_au() returns with the worker idle. Costs per decoder at
-        800x480: about 5.3 KB of internal RAM (stack, control blocks, 1.5 KB of marks) and 115 KB of PSRAM (the undo
-        log: 4 rows of 576 B per macroblock; it scales with the picture width). Code: about 2.6 KB.
+        VJ_WORKER_CORE, at the creating task's priority, with a 2 KB internal stack (about 1 KB used);
+        vj_decoder_destroy() deletes it. vj_decode_au() returns with the worker idle. Costs per decoder at
+        800x480: about 3.7 KB of internal RAM (stack, control blocks) and 117 KB of PSRAM (the undo log, 4 rows of
+        576 B per macroblock, which scales with the picture width, and 1.5 KB of marks). Code: about 2.6 KB.
+        The VJP_DEBLOCK profile bucket (VJ_PROFILE) measures only the decoding task's wait for the worker when this is on.
 
         Rules for the consumer: call vj_decoder_create(), vj_decode_au() and vj_decoder_destroy() from one task,
         pinned to one core, and never delete that task while a decode is in flight (the worker would go on filtering
-        buffers that are then freed). A task on the worker's core with a priority above the worker's can starve it,
-        and vj_decode_au() then waits for it. An unpinned decoding task scheduled onto the worker's core is still
-        correct, but the two then take turns. D-cache and PSRAM bandwidth are shared between the cores: the decoding
-        task slows a little while the worker runs (the bench still gains 6 / 19 / 20 % on aux_card / aux_map / full_map).
+        buffers that are then freed). Starvation: if a task on the worker's core at or above the worker's priority keeps
+        it from starting, vj_decode_au() takes the posted run back after 50 ms and filters on the decoding task (still
+        bit-identical, just no overlap); a run the worker has started is waited for however long it takes, so a task that
+        preempts the worker in the middle of a run can still stall the call for as long as it runs. An unpinned
+        decoding task scheduled onto the worker's core is correct, but the two then take turns. D-cache and PSRAM
+        bandwidth are shared between the cores: the decoding task slows a little while the worker runs.
 
 config VJ_WORKER_CORE
     int "Core of the deblock worker (-1: the core other than the one that creates the decoder)"
@@ -120,6 +123,6 @@ config VJ_WORKER_CORE
     default -1
     help
         -1 puts the worker on the other core than the task calling vj_decoder_create() (core 0 on a single-core
-        build). 0 or 1 pins it there.
+        build). 0 or 1 pins it there; 1 on a single-core build (FREERTOS_UNICORE) is clamped to 0.
 
 endmenu

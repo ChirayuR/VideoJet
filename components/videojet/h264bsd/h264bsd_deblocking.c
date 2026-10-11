@@ -1081,8 +1081,8 @@ u32 h264bsdDbwBegin(dbw_t *d, image_t *image, deblockRec_t *rec, u8 *changed,
         free(d->marks);
         free(d->log);
         d->capMbs = d->capW = 0;
-        d->marks = (u8*)vj_alloc(n + image->height);
-        d->log = (u32*)vj_alloc((size_t)DBW_BANKS * image->width *
+        d->marks = (u8*)vj_alloc_psram(n + image->height);
+        d->log = (u32*)vj_alloc_psram((size_t)DBW_BANKS * image->width *
             DBW_SLOT_WORDS * 4);
         if (!d->marks || !d->log)
         {
@@ -1090,6 +1090,7 @@ u32 h264bsdDbwBegin(dbw_t *d, image_t *image, deblockRec_t *rec, u8 *changed,
             free(d->log);
             d->marks = NULL;
             d->log = NULL;
+            vj_worker_warn("no memory for the deblock worker's undo log: filtering in the pass");
             return 0;
         }
         d->capMbs = n;
@@ -1157,6 +1158,12 @@ u32 h264bsdDbwRowEnd(dbw_t *d)
             vj_worker_post(d->w, d->posted);
     }
     return d->nextRowEnd;
+}
+
+/* For tests: a posted run has not finished */
+u32 h264bsdDbwBusy(dbw_t *d)
+{
+    return d && vj_worker_busy(d->w);
 }
 
 u32 h264bsdDbwActive(const dbw_t *d)

@@ -25,6 +25,15 @@ void *vj_alloc_internal(size_t n)
 #endif
 }
 
+void *vj_alloc_psram(size_t n)
+{
+#ifdef ESP_PLATFORM
+    return heap_caps_malloc_prefer(n, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_DEFAULT, MALLOC_CAP_DEFAULT);
+#else
+    return malloc(n);
+#endif
+}
+
 void *vj_alloc_aligned16(size_t n)
 {
 #ifdef ESP_PLATFORM

@@ -1,0 +1,90 @@
+/* The deblock worker's own contracts (host, worker on). Built twice by the Makefile:
+ *  test_join  (-DVJ_WORKER_JITTER_US: the worker dawdles after it claims a run): when vj_decode_au returns, on every path,
+ *             no run is in flight. Remove the join at the end of vj_decode_au and this fails.
+ *  test_stall (-DVJ_WORKER_STALL_MS: the worker is not scheduled before it claims): vj_decode_au takes the run back
+ *             after VJ_WORKER_WAIT_MS and the output is the same as with no worker at all.
+ * Both also run the thread-creation-failure path (no worker: the decoder filters in the pass). */
+#include <assert.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "videojet.h"
+#include "vj_hash.h"
+#include "vj_worker.h"
+#include "h264bsd_storage.h"
+
+static uint8_t *slurp(const char *path, size_t *len)
+{
+    FILE *f = fopen(path, "rb");
+    assert(f);
+    fseek(f, 0, SEEK_END);
+    *len = (size_t)ftell(f);
+    fseek(f, 0, SEEK_SET);
+    uint8_t *p = malloc(*len);
+    assert(fread(p, 1, *len, f) == *len);
+    fclose(f);
+    return p;
+}
+
+static int busy(vj_decoder_t *d)
+{
+    storage_t *s = (storage_t *)(void *)d;
+    return s->vjDbw && h264bsdDbwBusy(s->vjDbw);
+}
+
+/* Decode the first n AUs; hash of every returned frame in out[], status 0/1/2 (none / frame / error) in st[]. When
+ * check, the worker must be idle after every call. cut > 0: every 5th AU is cut to that fraction of its size. */
+static unsigned run(const char *path, int n, int check, int cut, uint32_t *out)
+{
+    size_t len;
+    uint8_t *s = slurp(path, &len), *au = malloc(len);
+    vj_decoder_t *d = vj_decoder_create();
+    unsigned frames = 0;
+    size_t o = 0;
+    for (int i = 0; i < n && o < len; i++) {
+        size_t l = vj_au_length(s + o, len - o), use = l;
+        if (cut && i % 5 == 4)
+            use = l * cut / 100;
+        memcpy(au, s + o, use);
+        vj_frame_t f;
+        vj_status_t r = vj_decode_au(d, au, use, &f);
+        if (check)
+            assert(!busy(d));
+        out[i] = r == VJ_FRAME ? vj_hash_i420(f.y, f.y_stride, f.u, f.v, f.uv_stride, f.crop_x, f.crop_y, f.crop_w, f.crop_h)
+                               : (uint32_t)(r + 100);
+        frames += r == VJ_FRAME;
+        o += l;
+    }
+    vj_decoder_destroy(d);
+    free(au);
+    free(s);
+    return frames;
+}
+
+int main(int argc, char **argv)
+{
+    const char *dir = argc > 1 ? argv[1] : "../streams";
+    const char *names[] = {"heldout/aux_map_dark.h264", "search/aux_card.h264", "search/aux_map.h264"};
+    for (int k = 0; k < 3; k++)
+        for (int cut = 0; cut <= 60; cut += 60) {
+            char path[512];
+            snprintf(path, sizeof path, "%s/%s", dir, names[k]);
+            enum { N = 24 };
+            uint32_t with[N], without[N];
+            vj_worker_test_fail_create = 0;
+            unsigned a = run(path, N, 1, cut, with);
+            vj_worker_test_fail_create = 1; /* thread creation fails: no worker, the pass filters */
+            unsigned b = run(path, N, 1, cut, without);
+            vj_worker_test_fail_create = 0;
+            assert(a && a == b);
+            assert(!memcmp(with, without, sizeof with));
+        }
+#ifdef VJ_WORKER_STALL_MS
+    assert(vj_worker_test_takebacks > 0); /* the fallback really ran */
+    printf("test_stall: ok (%u runs taken back)\n", vj_worker_test_takebacks);
+#else
+    puts("test_join: ok");
+#endif
+    return 0;
+}

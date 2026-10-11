@@ -5,6 +5,8 @@ CFLAGS ?= -std=gnu99 -O2 -g -D_ERROR_PRINT
 WORKER ?= 1
 VJF := $(if $(filter 1,$(WORKER)),-DVJ_DEBLOCK_WORKER -pthread,)
 B := ../build-host
+WORKER_TESTS = $(if $(filter 1,$(WORKER)),@$(B)/test_join ../streams && $(B)/test_stall ../streams,)
+WORKER_BINS = $(if $(filter 1,$(WORKER)),$(B)/test_join $(B)/test_stall,)
 VJ := ../components/videojet
 DEC := ../components/videojet/h264bsd
 LIB_SRC := $(wildcard $(VJ)/src/*.c) $(wildcard $(DEC)/*.c)
@@ -46,6 +48,14 @@ $(B)/test_write: test_write.c $(LIB_SRC) $(LIB_HDR) | $(B)
 $(B)/test_idct: test_idct.c $(DEC)/h264bsd_transform.c $(LIB_HDR) | $(B)
 	$(CC) $(CFLAGS) -fwrapv $(LIB_INC) -o $@ test_idct.c $(DEC)/h264bsd_transform.c
 
+# The worker's contracts: join on every return (worker delayed after its claim) and the owner taking a run back (worker
+# not scheduled), plus thread-creation failure. Host shim hooks only, see test_worker.c.
+$(B)/test_join: test_worker.c $(LIB_SRC) $(LIB_HDR) $(HASH) | $(B)
+	$(CC) $(CFLAGS) $(VJF) -DVJ_WORKER_JITTER_US=3000 $(INC) $(LIB_INC) -o $@ test_worker.c $(LIB_SRC)
+
+$(B)/test_stall: test_worker.c $(LIB_SRC) $(LIB_HDR) $(HASH) | $(B)
+	$(CC) $(CFLAGS) $(VJF) -DVJ_WORKER_STALL_MS=120 $(INC) $(LIB_INC) -o $@ test_worker.c $(LIB_SRC)
+
 $(B)/vjhash_raw: vjhash_raw.c $(HASH) | $(B)
 	$(CC) $(CFLAGS) $(INC) -o $@ vjhash_raw.c
 
@@ -54,6 +64,7 @@ check: all
 	@$(B)/test_api ../streams vectors
 	@$(B)/test_mc
 	@$(B)/test_cavlc
+$(WORKER_TESTS)
 	@$(B)/test_write
 	@$(B)/test_idct
 	@./check.sh $(B)/vjdec ../streams
