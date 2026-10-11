@@ -441,6 +441,7 @@ static void test_vectors(const char *vec)
         {"attack2.h264", "ed86bcae ed86bcae - - 2c2cceb1 "},
         {"elide.h264", "ed86bcae ed86bcae - ed86bcae ed86bcae - 45efe711 45efe711 "},
         {"slerr.h264", "ed86bcae ed86bcae - ed86bcae ed86bcae - ed86bcae - 8a96d75d 8a96d75d 8a96d75d "},
+        {"idc2.h264", "3212d11d 4dd48d7e 4dd48d7e ee23c1b8 61f1afb5 61f1afb5 "}, /* expected from base e5cb354 */
         {"records.h264", "? ? ed86bcae ed86bcae - - - a8fa5c37 - - 917d1454 917d1454 ", "nal"},
     };
     for (int k = 0; k < (int)(sizeof want / sizeof *want); k++) {

@@ -5,7 +5,7 @@ CFLAGS ?= -std=gnu99 -O2 -g -D_ERROR_PRINT
 WORKER ?= 1
 VJF := $(if $(filter 1,$(WORKER)),-DVJ_DEBLOCK_WORKER -pthread,)
 B := ../build-host
-WORKER_TESTS = $(if $(filter 1,$(WORKER)),@$(B)/test_join ../streams && $(B)/test_stall ../streams,)
+WORKER_TESTS = $(if $(filter 1,$(WORKER)),$(B)/test_join ../streams && $(B)/test_stall ../streams,true)
 WORKER_BINS = $(if $(filter 1,$(WORKER)),$(B)/test_join $(B)/test_stall,)
 VJ := ../components/videojet
 DEC := ../components/videojet/h264bsd
@@ -15,7 +15,7 @@ LIB_INC := -I$(VJ)/include -I$(VJ)/src -I$(DEC)
 INC := -I$(VJ)/include -I../components/vj_hash/include
 HASH := ../components/vj_hash/include/vj_hash.h
 
-all: $(B)/vjdec $(B)/vjhash_raw $(B)/test_api $(B)/test_mc $(B)/test_cavlc $(B)/test_write $(B)/test_idct $(B)/fz
+all: $(B)/vjdec $(B)/vjhash_raw $(B)/test_api $(B)/test_mc $(B)/test_cavlc $(B)/test_write $(B)/test_idct $(B)/fz $(WORKER_BINS)
 
 $(B):
 	mkdir -p $@
@@ -64,7 +64,7 @@ check: all
 	@$(B)/test_api ../streams vectors
 	@$(B)/test_mc
 	@$(B)/test_cavlc
-$(WORKER_TESTS)
+	@$(WORKER_TESTS)
 	@$(B)/test_write
 	@$(B)/test_idct
 	@./check.sh $(B)/vjdec ../streams

@@ -4,6 +4,7 @@ host/vectors: python3 gen.py attack > attack.h264; python3 gen.py attack2 > atta
 python3 gen.py elide > elide.h264: a redundant slice re-decodes, as a skip, an MB that its primary slice changed.
 python3 gen.py slerr > slerr.h264: slices that fail mid-way, then re-decodes, around elidable skips.
 python3 gen.py records > records.h264 (decode one NAL per call): slices rewrite MBs whose deblock records were made."""
+python3 gen.py idc2 6 4 > idc2.h264: two slices per picture with idc 2 and no redundant slices, so the deblock worker takes part.
 import sys
 
 class BW:
@@ -29,7 +30,7 @@ def nal(ref_idc, typ, rbsp):
         out.append(b); z = z + 1 if b == 0 else 0
     return b'\x00\x00\x00\x01' + bytes([(ref_idc << 5) | typ]) + bytes(out)
 
-W, H = int(sys.argv[2]) if len(sys.argv) > 2 else 6, 2
+W, H = int(sys.argv[2]) if len(sys.argv) > 2 else 6, int(sys.argv[3]) if len(sys.argv) > 3 else 2
 N = W * H
 QP = 36
 
@@ -78,8 +79,8 @@ def p_slice(first, fn, skip, rpc=0, idc=0, bad_after=False, redundant=1):
     if bad_after: b.ue(31)             # invalid P mb_type -> macroblock_layer error
     b.trailing(); return nal(2, 1, b.bytes())
 
-def p_pcm_slice(first, fn, luma, skip, rpc=0, idc=0, bad_after=False):
-    b = BW(); hdr(b, first, 0, fn, False, rpc, idc); b.ue(0)
+def p_pcm_slice(first, fn, luma, skip, rpc=0, idc=0, bad_after=False, redundant=1):
+    b = BW(); hdr(b, first, 0, fn, False, rpc, idc, redundant); b.ue(0)
     b.ue(30); b.align0()               # I_PCM in a P slice: mb_type 5 + 25
     for _ in range(256): b.u(8, luma)
     for _ in range(128): b.u(8, 128)
@@ -89,7 +90,19 @@ def p_pcm_slice(first, fn, luma, skip, rpc=0, idc=0, bad_after=False):
 
 mode = sys.argv[1]
 luma = [100 if (m % W) < 3 else 110 for m in range(N)]   # step between MB 2 and MB 3 of each row
-s = sps() + pps() + idr_slice(luma)
+s = sps() + pps(0 if mode == 'idc2' else 1) + idr_slice(luma, 0 if mode == 'idc2' else 1)
+if mode == 'idc2':
+    # python3 gen.py idc2 6 4 > idc2.h264: 6x4 MBs, no redundant slices (so the deblock worker takes part), every picture
+    # in two slices [0,12) [12,24) with disable_deblocking_filter_idc 2 (no filtering across the slice boundary, filtering
+    # inside each slice). Each slice puts one I_PCM MB in front of skips: MB 0 and MB 12 differ from their neighbours, so
+    # real edges are filtered inside slices and the boundary MB 12 / MB 6 is not.
+    h = N // 2
+    for fn, (a, b2) in enumerate([(90, 140), (None, None), (None, 60), (200, None), (None, None)], 1):
+        for first, lum in ((0, a), (h, b2)):
+            s += (p_pcm_slice(first, fn, lum, h - 1, idc=2, redundant=0) if lum is not None
+                  else p_slice(first, fn, h, idc=2, redundant=0))
+    sys.stdout.buffer.write(s)
+    sys.exit()
 s += p_slice(0, 1, N)                                     # frame 1: copy of the IDR
 # frame 2 (picture n-1): MB 2 missing -> concealed (I_4x4, qp 40, idc 0); MBs 3.. decoded with idc 2
 s += p_slice(0, 2, 2, idc=2) + p_slice(3, 2, N - 3, idc=2)
