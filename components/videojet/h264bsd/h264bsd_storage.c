@@ -347,8 +347,8 @@ u32 h264bsdActivateParamSets(storage_t *pStorage, u32 ppsId, u32 isIdr)
         FREE(pStorage->sliceGroupMap);
 
         ALLOCATE(pStorage->mb, pStorage->picSizeInMbs, mbStorage_t);
-        /* read for every MB by each deblock pass: internal RAM */
-        pStorage->vjRec = vj_alloc_internal(
+        /* read for every MB by each deblock pass; PSRAM-first (T10 had them internal: 18 KB at 800x480) */
+        pStorage->vjRec = vj_alloc_psram(
             pStorage->picSizeInMbs * sizeof(deblockRec_t));
         ALLOCATE(pStorage->sliceGroupMap, pStorage->picSizeInMbs, u32);
         if (pStorage->mb == NULL || pStorage->vjRec == NULL ||
