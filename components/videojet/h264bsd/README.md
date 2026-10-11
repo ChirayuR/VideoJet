@@ -131,3 +131,11 @@ Every change made for VideoJet is listed here, newest last.
       and I slices are filtered at the end of the picture. The correctness argument is at the top of the worker section
       of `h264bsd_deblocking.c`; the host gate runs it threaded (pthread) and `make -C host check-tsan` under TSan.
     - T3 marks of the rows the worker filters go to its own array and join `changed` when the picture ends.
+  - Parse records (`h264bsd_parse.h` new, `h264bsd_slice_data.c`, `h264bsd_macroblock_layer.c/h`, `h264bsd_storage.c/h`,
+    `h264bsd_decoder.c`). The macroblock loop's bitstream side is `vjParseNext`: one call fills one ring slot
+    (`vjSlot_t`, a `macroblockLayer_t` plus kind) with a parsed MB, a whole skip run (SKIPRUN, count) or an error (ERR, the
+    status the loop used to return), and `last` = no stream data follows. `h264bsdDecodeSliceData` fetches a record
+    where it used to parse and runs the same checks, `SetMbParams`, recon and record code in the same order. The parser
+    writes nothing but its slot and state; nC (`DetermineNc`) reads a parser-private shadow of the neighbours' totalCoeff
+    (`vjNbr`, width + 1 entries, cleared per slice) instead of `mbStorage` (with slice groups it still reads the storage).
+    `mbLayer` became the ring (`vjRing`). The H264DEC_OMXDL branches are untouched (dead).

@@ -89,13 +89,15 @@ static u32 DecodeMbPred(strmData_t *pStrmData, mbPred_t *pMbPred,
     mbType_e mbType, u32 numRefIdxActive);
 static u32 DecodeSubMbPred(strmData_t *pStrmData, subMbPred_t *pSubMbPred,
     mbType_e mbType, u32 numRefIdxActive);
+#ifdef H264DEC_OMXDL
 static u32 DecodeResidual(strmData_t *pStrmData, residual_t *pResidual,
     mbStorage_t *pMb, mbType_e mbType, u32 codedBlockPattern);
-
-#ifdef H264DEC_OMXDL
 static u32 DetermineNc(mbStorage_t *pMb, u32 blockIndex, u8 *pTotalCoeff);
 #else
-static u32 DetermineNc(mbStorage_t *pMb, u32 blockIndex, i16 *pTotalCoeff);
+static u32 DecodeResidual(strmData_t *pStrmData, residual_t *pResidual,
+    const u8 *tcA, const u8 *tcB, mbType_e mbType, u32 codedBlockPattern);
+static u32 DetermineNc(const u8 *tcA, const u8 *tcB, u32 blockIndex,
+    const i16 *pTotalCoeff);
 #endif
 
 static u32 CbpIntra16x16(mbType_e mbType);
@@ -120,7 +122,8 @@ static u32 ProcessResidual(mbStorage_t *pMb, i32 residualLevel[][16], u32 *);
 
         Inputs:
           pStrmData         pointer to stream data structure
-          pMb               pointer to macroblock storage structure
+          tcA, tcB          totalCoeff[0..23] of the left and upper neighbour
+                            macroblocks, NULL when one is not available
           sliceType         type of the current slice
           numRefIdxActive   maximum reference index
 
@@ -134,7 +137,7 @@ static u32 ProcessResidual(mbStorage_t *pMb, i32 residualLevel[][16], u32 *);
 ------------------------------------------------------------------------------*/
 
 u32 h264bsdDecodeMacroblockLayer(strmData_t *pStrmData,
-    macroblockLayer_t *pMbLayer, mbStorage_t *pMb, u32 sliceType,
+    macroblockLayer_t *pMbLayer, const u8 *tcA, const u8 *tcB, u32 sliceType,
     u32 numRefIdxActive)
 {
 
@@ -247,7 +250,7 @@ u32 h264bsdDecodeMacroblockLayer(strmData_t *pStrmData,
                 return(HANTRO_NOK);
             pMbLayer->mbQpDelta = itmp;
 
-            tmp = DecodeResidual(pStrmData, &pMbLayer->residual, pMb,
+            tmp = DecodeResidual(pStrmData, &pMbLayer->residual, tcA, tcB,
                 pMbLayer->mbType, pMbLayer->codedBlockPattern);
 
             if (tmp != HANTRO_OK)
@@ -715,7 +718,7 @@ u32 DecodeResidual(strmData_t *pStrmData, residual_t *pResidual,
 ------------------------------------------------------------------------------*/
 
 u32 DecodeResidual(strmData_t *pStrmData, residual_t *pResidual,
-    mbStorage_t *pMb, mbType_e mbType, u32 codedBlockPattern)
+    const u8 *tcA, const u8 *tcB, mbType_e mbType, u32 codedBlockPattern)
 {
 
 /* Variables */
@@ -737,7 +740,7 @@ u32 DecodeResidual(strmData_t *pStrmData, residual_t *pResidual,
     /* luma DC is at index 24 */
     if (h264bsdMbPartPredMode(mbType) == PRED_MODE_INTRA16x16)
     {
-        nc = (i32)DetermineNc(pMb, 0, pResidual->totalCoeff);
+        nc = (i32)DetermineNc(tcA, tcB, 0, pResidual->totalCoeff);
         tmp = h264bsdDecodeResidualBlockCavlc(pStrmData, level[24], nc, 16);
         if ((tmp & 0xF) != HANTRO_OK)
             return(tmp);
@@ -758,7 +761,7 @@ u32 DecodeResidual(strmData_t *pStrmData, residual_t *pResidual,
             memset(level[blockIndex], 0, 4 * sizeof(*level));
             for (j = 4; j--; blockIndex++)
             {
-                nc = (i32)DetermineNc(pMb, blockIndex, pResidual->totalCoeff);
+                nc = (i32)DetermineNc(tcA, tcB, blockIndex, pResidual->totalCoeff);
                 if (is16x16)
                 {
                     tmp = h264bsdDecodeResidualBlockCavlc(pStrmData,
@@ -801,7 +804,7 @@ u32 DecodeResidual(strmData_t *pStrmData, residual_t *pResidual,
         memset(level[16], 0, 8 * sizeof(*level)); /* lazy clear, as luma */
         for (i = 8; i--;blockIndex++)
         {
-            nc = (i32)DetermineNc(pMb, blockIndex, pResidual->totalCoeff);
+            nc = (i32)DetermineNc(tcA, tcB, blockIndex, pResidual->totalCoeff);
             tmp = h264bsdDecodeResidualBlockCavlc(pStrmData,
                 level[blockIndex] + 1, nc, 15);
             if ((tmp & 0xF) != HANTRO_OK)
@@ -826,9 +829,6 @@ u32 DecodeResidual(strmData_t *pStrmData, residual_t *pResidual,
 ------------------------------------------------------------------------------*/
 #ifdef H264DEC_OMXDL
 u32 DetermineNc(mbStorage_t *pMb, u32 blockIndex, u8 *pTotalCoeff)
-#else
-u32 DetermineNc(mbStorage_t *pMb, u32 blockIndex, i16 *pTotalCoeff)
-#endif
 {
 /*lint -e702 */
 /* Variables */
@@ -888,6 +888,70 @@ u32 DetermineNc(mbStorage_t *pMb, u32 blockIndex, i16 *pTotalCoeff)
     return((u32)n);
 /*lint +e702 */
 }
+#else
+/* VideoJet: the neighbours' totalCoeff come from the parser's own shadow (tcA / tcB, NULL = not available: outside
+ * the picture or slice), not from mbStorage, which the reconstruction side writes. Same arithmetic. */
+u32 DetermineNc(const u8 *tcA, const u8 *tcB, u32 blockIndex,
+    const i16 *pTotalCoeff)
+{
+/*lint -e702 */
+/* Variables */
+
+    u32 tmp;
+    i32 n;
+    const neighbour_t *neighbourA, *neighbourB;
+    u8 neighbourAindex, neighbourBindex;
+
+/* Code */
+
+    ASSERT(blockIndex < 24);
+
+    /* neighbour block in the current macroblock -> pTotalCoeff */
+    neighbourA = h264bsdNeighbour4x4BlockA(blockIndex);
+    neighbourB = h264bsdNeighbour4x4BlockB(blockIndex);
+    neighbourAindex = neighbourA->index;
+    neighbourBindex = neighbourB->index;
+    if (neighbourA->mb == MB_CURR && neighbourB->mb == MB_CURR)
+    {
+        n = (pTotalCoeff[neighbourAindex] +
+             pTotalCoeff[neighbourBindex] + 1)>>1;
+    }
+    else if (neighbourA->mb == MB_CURR)
+    {
+        n = pTotalCoeff[neighbourAindex];
+        if (tcB)
+        {
+            n = (n + tcB[neighbourBindex] + 1) >> 1;
+        }
+    }
+    else if (neighbourB->mb == MB_CURR)
+    {
+        n = pTotalCoeff[neighbourBindex];
+        if (tcA)
+        {
+            n = (n + tcA[neighbourAindex] + 1) >> 1;
+        }
+    }
+    else
+    {
+        n = tmp = 0;
+        if (tcA)
+        {
+            n = tcA[neighbourAindex];
+            tmp = 1;
+        }
+        if (tcB)
+        {
+            if (tmp)
+                n = (n + tcB[neighbourBindex] + 1) >> 1;
+            else
+                n = tcB[neighbourBindex];
+        }
+    }
+    return((u32)n);
+/*lint +e702 */
+}
+#endif
 
 /*------------------------------------------------------------------------------
 

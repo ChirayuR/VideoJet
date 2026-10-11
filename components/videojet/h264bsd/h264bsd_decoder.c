@@ -100,12 +100,12 @@ u32 h264bsdInit(storage_t *pStorage, u32 noOutputReordering)
 
     h264bsdInitStorage(pStorage);
 
-    /* allocate mbLayer to be next multiple of 64 to enable use of
-     * specific NEON optimized "memset" for clearing the structure */
-    size = (sizeof(macroblockLayer_t) + 63) & ~0x3F;
+    /* the parser's ring: macroblockLayer_t slots (the NEON clear wanted a
+     * multiple of 64 B, and still gets it from the slot's padding) */
+    size = VJ_RING_DEPTH * sizeof(vjSlot_t);
 
-    pStorage->mbLayer = (macroblockLayer_t*)vj_alloc_aligned16(size);
-    if (!pStorage->mbLayer)
+    pStorage->vjRing = (vjSlot_t*)vj_alloc_aligned16(size);
+    if (!pStorage->vjRing)
         return HANTRO_NOK;
 
     if (noOutputReordering)
@@ -660,7 +660,8 @@ void h264bsdShutdown(storage_t *pStorage)
     h264bsdDbwDestroy(pStorage->vjDbw);
     pStorage->vjDbw = NULL;
 #endif
-    FREE(pStorage->mbLayer);
+    FREE(pStorage->vjRing);
+    FREE(pStorage->vjNbr);
     FREE(pStorage->mb);
     FREE(pStorage->vjRec);
     FREE(pStorage->sliceGroupMap);

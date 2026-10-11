@@ -25,6 +25,8 @@
      3. Module defines
      4. Local function prototypes
      5. Functions
+          vjParseBegin
+          vjParseNext
           h264bsdDecodeSliceData
           SetMbParams
           h264bsdMarkSliceCorrupted
@@ -54,6 +56,216 @@
 
 static void SetMbParams(mbStorage_t *pMb, sliceHeader_t *pSlice, u32 sliceId,
     i32 chromaQpIndexOffset);
+
+/*------------------------------------------------------------------------------
+
+   5.0  Function name: vjParseBegin, vjParseNext
+
+        Functional description:
+            The slice's bitstream side, split out of h264bsdDecodeSliceData
+            (VideoJet): skip_run, macroblock_layer, more_rbsp_data and the
+            next-address bookkeeping of the macroblock loop, one record at a
+            time. A record is a parsed macroblock (kind MB, layer filled), a
+            run of skipped macroblocks (SKIPRUN, count; layer.mbType = P_Skip,
+            layer.mbPred zero) or an error (ERR, status). last: no stream
+            data follows the record, so the slice ends with it (for a
+            SKIPRUN, with its final macroblock).
+
+            The parser is a function of the bitstream, the slice header and
+            its own state: it reads no mbStorage the reconstruction writes
+            (nC comes from the shadow of the neighbours' totalCoeff, vjNbr),
+            and writes only the slot and its state. So the reconstruction
+            side may take the records later, in order, and an error record is
+            reached exactly where the sequential decoder returned it.
+
+            Shadow rule (one slice group, macroblocks visited first, first+1,
+            ...): the left neighbour is available iff the column is not 0 and
+            the macroblock before was parsed in this slice, the upper iff the
+            one a row before was; the shadow is cleared at the slice start, so
+            an entry is set only for a macroblock of this slice. With slice
+            groups the neighbours' totalCoeff are read from the storage, as
+            before (the sequential path only).
+
+------------------------------------------------------------------------------*/
+
+static const u8 vjZero24[24];
+static const u8 vjSixteen24[24] =
+    {16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16};
+
+void vjParseBegin(vjParse_t *p, storage_t *pStorage, const strmData_t *pStrm,
+    const sliceHeader_t *pSliceHeader)
+{
+    u32 i, w;
+
+    w = pStorage->activeSps->picWidthInMbs;
+    p->strm = *pStrm;
+    p->sliceType = pSliceHeader->sliceType;
+    p->numRefIdxActive = pSliceHeader->numRefIdxL0Active;
+    p->picSizeInMbs = pStorage->picSizeInMbs;
+    p->width = w;
+    p->addr = pSliceHeader->firstMbInSlice;
+    p->prevSkipped = HANTRO_FALSE;
+    p->fin = HANTRO_FALSE;
+    p->useStorage = pStorage->activePps->numSliceGroups != 1;
+#ifdef VJ_NBR_STORAGE /* test: the slice-group path for every slice */
+    p->useStorage = HANTRO_TRUE;
+#endif
+    p->mb = pStorage->mb;
+    p->sliceGroupMap = pStorage->sliceGroupMap;
+    p->sliceId = pStorage->slice->sliceId;
+    p->nbr = pStorage->vjNbr;
+    p->col = p->addr % w;
+    p->idx = p->addr % (w + 1);
+    for (i = 0; i <= w; i++)
+        p->nbr[i].st = VJ_NBR_NONE;
+}
+
+static const u8 *NbrTc(const vjNbr_t *n)
+{
+    switch (n->st)
+    {
+        case VJ_NBR_TC:   return n->tc;
+        case VJ_NBR_ZERO: return vjZero24;
+        case VJ_NBR_PCM:  return vjSixteen24;
+        default:          return NULL;
+    }
+}
+
+/* the next macroblock address of the slice group, 0 at its end */
+static u32 ParseNextAddr(const vjParse_t *p, u32 addr)
+{
+    if (p->useStorage)
+        return h264bsdNextMbAddress(p->sliceGroupMap, p->picSizeInMbs, addr);
+    return (addr + 1 == p->picSizeInMbs) ? 0 : addr + 1;
+}
+
+/* the macroblock at addr was parsed (or skipped): its shadow entry, and move on one macroblock */
+static void ParseAdvance(vjParse_t *p, u32 st, const i16 *tc)
+{
+    if (!p->useStorage)
+    {
+        vjNbr_t *n = p->nbr + p->idx;
+        u32 i;
+
+        n->st = (u8)st;
+        if (st == VJ_NBR_TC)
+            for (i = 0; i < 24; i++)
+                n->tc[i] = (u8)tc[i];
+        if (++p->idx > p->width)
+            p->idx = 0;
+        if (++p->col == p->width)
+            p->col = 0;
+    }
+    p->addr = ParseNextAddr(p, p->addr);
+}
+
+void vjParseNext(vjParse_t *p, vjSlot_t *s)
+{
+    u32 tmp, skipRun, i;
+    const u8 *tcA, *tcB;
+    macroblockLayer_t *mbLayer = &s->layer;
+
+    ASSERT(!p->fin);
+
+#ifdef VJ_POISON /* test: every slot starts as the previous macroblock's bytes, here random ones */
+    vjPoison(s);
+#endif
+
+    if (!IS_I_SLICE(p->sliceType))
+    {
+        if (!p->prevSkipped)
+        {
+            tmp = h264bsdDecodeExpGolombUnsigned(&p->strm, &skipRun);
+            if (tmp != HANTRO_OK)
+                goto err;
+            /* skip_run shall be less than or equal to number of
+             * macroblocks left */
+            if (skipRun > (p->picSizeInMbs - p->addr))
+            {
+                EPRINT("skip_run");
+                tmp = HANTRO_NOK;
+                goto err;
+            }
+            if (skipRun)
+            {
+                p->prevSkipped = HANTRO_TRUE;
+                memset(&mbLayer->mbPred, 0, sizeof(mbPred_t));
+                /* mark current macroblock skipped */
+                mbLayer->mbType = P_Skip;
+                s->kind = VJ_REC_SKIPRUN;
+                s->count = skipRun;
+                s->last = h264bsdMoreRbspData(&p->strm) ?
+                    HANTRO_FALSE : HANTRO_TRUE;
+                for (i = skipRun; i--;)
+                {
+                    ParseAdvance(p, VJ_NBR_ZERO, NULL);
+                    if (!p->addr)
+                        break;
+                }
+                if (s->last || !p->addr)
+                    p->fin = HANTRO_TRUE;
+                return;
+            }
+        }
+    }
+
+    p->prevSkipped = HANTRO_FALSE;
+
+    if (p->useStorage)
+    {
+        mbStorage_t *pMb = p->mb + p->addr;
+        mbStorage_t *mbA = pMb->mbA, *mbB = pMb->mbB;
+
+        tcA = tcB = NULL;
+        if (mbA && mbA->sliceId == p->sliceId)
+        {
+            for (i = 0; i < 24; i++)
+                p->tmpA[i] = (u8)mbA->totalCoeff[i];
+            tcA = p->tmpA;
+        }
+        if (mbB && mbB->sliceId == p->sliceId)
+        {
+            for (i = 0; i < 24; i++)
+                p->tmpB[i] = (u8)mbB->totalCoeff[i];
+            tcB = p->tmpB;
+        }
+    }
+    else
+    {
+        tcA = p->col ? NbrTc(p->nbr + (p->idx ? p->idx - 1 : p->width)) : NULL;
+        tcB = NbrTc(p->nbr + (p->idx == p->width ? 0 : p->idx + 1));
+    }
+
+    tmp = h264bsdDecodeMacroblockLayer(&p->strm, mbLayer, tcA, tcB,
+        p->sliceType, p->numRefIdxActive);
+    if (tmp != HANTRO_OK)
+    {
+        EPRINT("macroblock_layer");
+        goto err;
+    }
+
+    s->kind = VJ_REC_MB;
+    s->count = 1;
+    /* skipRun is 0 here: more data is all that keeps the slice going */
+    s->last = h264bsdMoreRbspData(&p->strm) ? HANTRO_FALSE : HANTRO_TRUE;
+    if (mbLayer->mbType == I_PCM)
+        i = VJ_NBR_PCM;
+    else if (!mbLayer->codedBlockPattern &&
+             h264bsdMbPartPredMode(mbLayer->mbType) != PRED_MODE_INTRA16x16)
+        i = VJ_NBR_ZERO; /* no residual: the lazy clear left totalCoeff 0 */
+    else
+        i = VJ_NBR_TC;
+    ParseAdvance(p, i, mbLayer->residual.totalCoeff);
+    if (s->last || !p->addr)
+        p->fin = HANTRO_TRUE;
+    return;
+
+err:
+    s->kind = VJ_REC_ERR;
+    s->status = tmp;
+    s->last = HANTRO_TRUE;
+    p->fin = HANTRO_TRUE;
+}
 
 /*------------------------------------------------------------------------------
 
@@ -94,12 +306,13 @@ u32 h264bsdDecodeSliceData(strmData_t *pStrmData, storage_t *pStorage,
     u8 mbData[384 + 15 + 32];
     u8 *data;
     u32 tmp;
-    u32 skipRun;
-    u32 prevSkipped;
+    u32 skipLeft;
     u32 currMbAddr;
     u32 moreMbs;
     u32 mbCount;
     i32 qpY;
+    vjParse_t *parse;
+    vjSlot_t *slot;
     macroblockLayer_t *mbLayer;
 
 /* Code */
@@ -112,15 +325,17 @@ u32 h264bsdDecodeSliceData(strmData_t *pStrmData, storage_t *pStorage,
     /* ensure 16-byte alignment */
     data = (u8*)ALIGN(mbData, 16);
 
-    mbLayer = pStorage->mbLayer;
+    parse = pStorage->vjParse;
+    slot = pStorage->vjRing;
+    mbLayer = &slot->layer;
 
     currMbAddr = pSliceHeader->firstMbInSlice;
-    skipRun = 0;
-    prevSkipped = HANTRO_FALSE;
+    skipLeft = 0;
 
     /* increment slice index, will be one for decoding of the first slice of
      * the picture */
     pStorage->slice->sliceId++;
+    vjParseBegin(parse, pStorage, pStrmData, pSliceHeader);
 
     /* lastMbAddr stores address of the macroblock that was last successfully
      * decoded, needed for error handling */
@@ -148,48 +363,23 @@ u32 h264bsdDecodeSliceData(strmData_t *pStrmData, storage_t *pStorage,
         SetMbParams(pStorage->mb + currMbAddr, pSliceHeader,
             pStorage->slice->sliceId, pStorage->activePps->chromaQpIndexOffset);
 
-        if (!IS_I_SLICE(pSliceHeader->sliceType))
+        /* the next record: a macroblock, a run of skipped ones, or the error
+         * the sequential decoder returned here (after the checks above) */
+        if (!skipLeft)
         {
-            if (!prevSkipped)
-            {
-                tmp = h264bsdDecodeExpGolombUnsigned(pStrmData, &skipRun);
-                if (tmp != HANTRO_OK)
-                    return(tmp);
-                /* skip_run shall be less than or equal to number of
-                 * macroblocks left */
-                if (skipRun > (pStorage->picSizeInMbs - currMbAddr))
-                {
-                    EPRINT("skip_run");
-                    return(HANTRO_NOK);
-                }
-                if (skipRun)
-                {
-                    prevSkipped = HANTRO_TRUE;
-                    memset(&mbLayer->mbPred, 0, sizeof(mbPred_t));
-                    /* mark current macroblock skipped */
-                    mbLayer->mbType = P_Skip;
-                }
-            }
+            { VJP_BEGIN(VJP_PARSE);
+            vjParseNext(parse, slot);
+            VJP_END(VJP_PARSE); }
+            if (slot->kind == VJ_REC_ERR)
+                return(slot->status);
+            if (slot->kind == VJ_REC_SKIPRUN)
+                skipLeft = slot->count;
         }
 
-        if (skipRun)
+        if (skipLeft)
         {
             DEBUG(("Skipping macroblock %d\n", currMbAddr));
-            skipRun--;
-        }
-        else
-        {
-            prevSkipped = HANTRO_FALSE;
-            { VJP_BEGIN(VJP_PARSE);
-            tmp = h264bsdDecodeMacroblockLayer(pStrmData, mbLayer,
-                pStorage->mb + currMbAddr, pSliceHeader->sliceType,
-                pSliceHeader->numRefIdxL0Active);
-            VJP_END(VJP_PARSE); }
-            if (tmp != HANTRO_OK)
-            {
-                EPRINT("macroblock_layer");
-                return(tmp);
-            }
+            skipLeft--;
         }
 
         { VJP_BEGIN(VJP_RECON);
@@ -230,8 +420,7 @@ u32 h264bsdDecodeSliceData(strmData_t *pStrmData, storage_t *pStorage,
         /* keep on processing as long as there is stream data left or
          * processing of macroblocks to be skipped based on the last skipRun is
          * not finished */
-        moreMbs = (h264bsdMoreRbspData(pStrmData) || skipRun) ?
-                                        HANTRO_TRUE : HANTRO_FALSE;
+        moreMbs = (skipLeft || !slot->last) ? HANTRO_TRUE : HANTRO_FALSE;
 
         /* lastMbAddr is only updated for intra slices (all macroblocks of
          * inter slices will be lost in case of an error) */

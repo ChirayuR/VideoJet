@@ -45,6 +45,7 @@
 #include "h264bsd_dpb.h"
 #include "h264bsd_pic_order_cnt.h"
 #include "h264bsd_deblocking.h"
+#include "h264bsd_parse.h"
 
 /*------------------------------------------------------------------------------
     2. Module defines
@@ -164,10 +165,11 @@ typedef struct storage
     u32 prevBytesConsumed;
     strmData_t strm[1];
 
-    /* macroblock layer structure, there is no need to store this but it
-     * would have increased the stack size excessively and needed to be
-     * allocated from head -> easiest to put it here */
-    macroblockLayer_t *mbLayer;
+    /* the parser's records (VJ_RING_DEPTH slots, 16-aligned), its state, and
+     * the shadow of the neighbours' totalCoeff (width + 1 entries) */
+    vjSlot_t *vjRing;
+    vjParse_t vjParse[1];
+    vjNbr_t *vjNbr;
 
     u32 pendingActivation; /* Activate parameter sets after returning
                               HEADERS_RDY to the user */

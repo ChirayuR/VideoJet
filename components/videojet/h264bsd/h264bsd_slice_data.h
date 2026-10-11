@@ -54,6 +54,9 @@
 u32 h264bsdDecodeSliceData(strmData_t *pStrmData, storage_t *pStorage,
     image_t *currImage, sliceHeader_t *pSliceHeader);
 
+void vjParseBegin(vjParse_t *p, storage_t *pStorage, const strmData_t *pStrm,
+    const sliceHeader_t *pSliceHeader);
+void vjParseNext(vjParse_t *p, vjSlot_t *s);
 void h264bsdMarkSliceCorrupted(storage_t *pStorage, u32 firstMbInSlice);
 
 #endif /* #ifdef H264SWDEC_SLICE_DATA_H */

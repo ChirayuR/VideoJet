@@ -190,7 +190,7 @@ typedef struct mbStorage
 ------------------------------------------------------------------------------*/
 
 u32 h264bsdDecodeMacroblockLayer(strmData_t *pStrmData,
-    macroblockLayer_t *pMbLayer, mbStorage_t *pMb, u32 sliceType,
+    macroblockLayer_t *pMbLayer, const u8 *tcA, const u8 *tcB, u32 sliceType,
     u32 numRefIdxActive);
 
 u32 h264bsdNumMbPart(mbType_e mbType);
