@@ -65,7 +65,7 @@ typedef struct
 ------------------------------------------------------------------------------*/
 
 void h264bsdDeblockRecord(mbStorage_t *mb, deblockRec_t *rec,
-  u32 picSliceBase);
+  u32 picSliceBase, u32 justDecoded);
 
 void h264bsdFilterPicture(
   image_t *image,

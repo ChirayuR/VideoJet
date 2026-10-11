@@ -211,7 +211,7 @@ u32 h264bsdDecodeSliceData(strmData_t *pStrmData, storage_t *pStorage,
         if (currMbAddr == pStorage->vjRecNext)
         {
             h264bsdDeblockRecord(pStorage->mb + currMbAddr,
-                pStorage->vjRec + currMbAddr, pStorage->picSliceBase);
+                pStorage->vjRec + currMbAddr, pStorage->picSliceBase, 1);
             pStorage->vjRecNext++;
         }
         else

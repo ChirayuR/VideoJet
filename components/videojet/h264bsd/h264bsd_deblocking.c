@@ -562,7 +562,7 @@ u32 EdgeBoundaryStrengthLeft(mbStorage_t *mb1, mbStorage_t *mb2)
 
 ------------------------------------------------------------------------------*/
 void h264bsdDeblockRecord(mbStorage_t *mb, deblockRec_t *rec,
-  u32 picSliceBase)
+  u32 picSliceBase, u32 justDecoded)
 {
 
 /* Variables */
@@ -578,9 +578,40 @@ void h264bsdDeblockRecord(mbStorage_t *mb, deblockRec_t *rec,
 
     flags = GetMbFilteringFlags(mb, picSliceBase);
 
+    /* P_Skip just decoded (justDecoded): totalCoeff is all 0 and the 16 mvs
+     * and 4 refAddrs are one value, so the inner edges are bS 0 and only
+     * the MB edges need a look, with the same tests as GetBoundaryStrengths.
+     * Not for storage of unknown history (a failed decode leaves stale mvs) */
+    if (justDecoded && flags && mb->mbType == P_Skip)
+    {
+        if (flags & FILTER_TOP_EDGE)
+        {
+            mbStorage_t *b = mb->mbB;
+
+            if (IS_INTRA_MB(*b))
+                top = 0xFF;
+            else
+                top = EdgeBoundaryStrength(mb, b, 0, 10) |
+                    (EdgeBoundaryStrength(mb, b, 1, 11) << 2) |
+                    (EdgeBoundaryStrength(mb, b, 4, 14) << 4) |
+                    (EdgeBoundaryStrength(mb, b, 5, 15) << 6);
+        }
+        if (flags & FILTER_LEFT_EDGE)
+        {
+            mbStorage_t *a = mb->mbA;
+
+            if (IS_INTRA_MB(*a))
+                left = (3 << 0) | (3 << 8) | (3 << 16) | (3 << 24);
+            else
+                left = EdgeBoundaryStrength(mb, a, 0, 5) |
+                    (EdgeBoundaryStrength(mb, a, 2, 7) << 8) |
+                    (EdgeBoundaryStrength(mb, a, 8, 13) << 16) |
+                    (EdgeBoundaryStrength(mb, a, 10, 15) << 24);
+        }
+    }
     /* GetBoundaryStrengths function returns non-zero value if any of
      * the bS values for the macroblock being processed was non-zero */
-    if (flags && GetBoundaryStrengths(mb, bS, flags))
+    else if (flags && GetBoundaryStrengths(mb, bS, flags))
     {
         for (i = 16; i--;)
         {
@@ -664,7 +695,7 @@ void h264bsdFilterPicture(
          * Otherwise make each from the storage now, as the pass always
          * did: the raster walk has remade its left and top neighbours' */
         if (!recValid)
-            h264bsdDeblockRecord(mb + (r - rec), r, picSliceBase);
+            h264bsdDeblockRecord(mb + (r - rec), r, picSliceBase, 0);
 
         top = r->bs[0];
         left = r->bs[1];

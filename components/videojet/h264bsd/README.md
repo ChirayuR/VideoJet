@@ -48,6 +48,10 @@ Every change made for VideoJet is listed here, newest last.
     - Records hold only while the picture's MBs are decoded once each in raster order. Otherwise (FMO or ASO decoded out of raster order, a redundant
       re-decode, a slice error, concealment) the pass remakes every record from storage.
     - `GetLumaEdgeThresholds` / `GetChromaEdgeThresholds` became `GetEdgeThresholds`, which works from qps.
+  - Cheap skip record (`h264bsd_deblocking.c/h`, `h264bsd_slice_data.c`): `h264bsdDeblockRecord(..., justDecoded)` takes a
+    shortcut for a P_Skip MB right after it decoded OK (totalCoeff is all 0, mvs and refs uniform, so the inner edges are
+    bS 0): only the two MB edges are evaluated, with the same `EdgeBoundaryStrength` tests. The pass's remake-from-storage
+    path passes 0 and runs the generic code, because stale storage after a failed decode need not be uniform.
   - Bit reader (`h264bsd_stream.c/h`, `h264bsd_vlc.c`, `h264bsd_cavlc.c`, `h264bsd_util.c`, `h264bsd_byte_stream.c`,
     `h264bsd_decoder.c`, `h264bsd_macroblock_layer.c`).
     - `strmData_t` holds the read position in `strmBuffReadBits` alone, plus a window `cache[2]`: the two stream words
