@@ -119,3 +119,15 @@ Every change made for VideoJet is listed here, newest last.
       full path must re-run `test/idct_pie` on the board: `IDCT PASS`, 0 mismatches.
 - Apache-2.0 §4(b) modification notice: every file changed above carries the header line
   `Modified for VideoJet: see h264bsd/README.md, Local changes.` Comment-only.
+  - Row-lagged deblock worker (`VJ_DEBLOCK_WORKER`; `h264bsd_deblocking.c/h`, `h264bsd_decoder.c`, `h264bsd_slice_data.c`,
+    `h264bsd_conceal.c`, `h264bsd_storage.h`, new `src/vj_worker.c/h`).
+    - `h264bsdFilterPicture`'s body is `FilterMbRows` (row range, optional undo log); the picture's rows are filtered by a
+      worker thread while the decoder decodes later rows (row r once row r + 1 is decoded), through the decode-time
+      records. At picture end the decoder waits for the worker; no work is in flight when `h264bsdDecode` returns
+      anything but `H264BSD_RDY` (and `vj_decode_au` joins on every path).
+    - Error paths: a slice error calls `h264bsdDbwAbortError` (waits for the worker, puts back the footprints it logged
+      for rows posted under that slice, drops the marks, resumes the final pass at the first row of the slice); concealment
+      and a picture that left raster order call `h264bsdDbwAbortKeep`. No worker for FMO/ASO or redundant-slice pictures,
+      and I slices are filtered at the end of the picture. The correctness argument is at the top of the worker section
+      of `h264bsd_deblocking.c`; the host gate runs it threaded (pthread) and `make -C host check-tsan` under TSan.
+    - T3 marks of the rows the worker filters go to its own array and join `changed` when the picture ends.

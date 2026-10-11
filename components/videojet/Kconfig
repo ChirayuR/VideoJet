@@ -87,4 +87,39 @@ config VJ_PIE
 
         IDF pins a task to its current core at its first PIE instruction (portasm.S _frxt_coproc_exc_hook), so an unpinned decode task (any task that calls vj_decode_au) is pinned permanently, normally at its first I-frame (the first block with AC coefficients).
 
+config VJ_DEBLOCK_WORKER
+    bool "Deblock on a worker task on the other core"
+    default n
+    help
+        The in-loop deblocking filter (a fifth to a quarter of a frame on the maps) runs on a worker task while the
+        decoding task decodes the next macroblock rows: it filters row r once row r + 1 is decoded, in raster order,
+        with the records made at decode time; the decoding task finishes the picture by waiting for the last rows.
+        The output is bit-identical to the sequential decoder on every path, damaged streams included. Pictures with
+        slice groups (FMO) or redundant slices, and the rows of I slices, are filtered at the end of the picture
+        without overlap. After a slice error, the rows the worker filtered under the failed slice are put back from
+        an undo log (a few rows at most; none for a picture of one slice) before the picture goes on as the
+        sequential decoder's; the argument is in h264bsd_deblocking.c.
+
+        vj_decoder_create() creates the worker (the task calling it is "the decoding task"): pinned to
+        VJ_WORKER_CORE, at the creating task's priority minus one (at least 1), with a 3 KB internal stack (about 1 KB
+        used); vj_decoder_destroy() deletes it. vj_decode_au() returns with the worker idle. Costs per decoder at
+        800x480: about 5.3 KB of internal RAM (stack, control blocks, 1.5 KB of marks) and 115 KB of PSRAM (the undo
+        log: 4 rows of 576 B per macroblock; it scales with the picture width). Code: about 2.6 KB.
+
+        Rules for the consumer: call vj_decoder_create(), vj_decode_au() and vj_decoder_destroy() from one task,
+        pinned to one core, and never delete that task while a decode is in flight (the worker would go on filtering
+        buffers that are then freed). A task on the worker's core with a priority above the worker's can starve it,
+        and vj_decode_au() then waits for it. An unpinned decoding task scheduled onto the worker's core is still
+        correct, but the two then take turns. D-cache and PSRAM bandwidth are shared between the cores: the decoding
+        task slows a little while the worker runs (the bench still gains 6 / 19 / 20 % on aux_card / aux_map / full_map).
+
+config VJ_WORKER_CORE
+    int "Core of the deblock worker (-1: the core other than the one that creates the decoder)"
+    depends on VJ_DEBLOCK_WORKER
+    range -1 1
+    default -1
+    help
+        -1 puts the worker on the other core than the task calling vj_decoder_create() (core 0 on a single-core
+        build). 0 or 1 pins it there.
+
 endmenu

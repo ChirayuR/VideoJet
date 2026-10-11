@@ -54,6 +54,16 @@
 #include "h264bsd_macroblock_layer.h"
 #include "h264bsd_deblocking.h"
 #include "h264bsd_dpb.h"
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#ifdef VJ_DBW_STATS
+#include <stdio.h>
+#endif
+#include "vj_alloc.h"
+#ifdef VJ_DEBLOCK_WORKER
+#include "vj_worker.h"
+#endif
 
 #ifdef H264DEC_OMXDL
 #include "omxtypes.h"
@@ -630,40 +640,152 @@ void h264bsdDeblockRecord(mbStorage_t *mb, deblockRec_t *rec,
 
 }
 
+#ifdef VJ_DEBLOCK_WORKER
+/* Words of undo log per macroblock: what its filtering may modify. Luma: 3
+ * columns left of the MB (in an aligned word per line), the 16 x 16 pixels,
+ * 3 lines above. Chroma, per plane: 1 column, 8 x 8, 1 line. */
+#define DBW_SLOT_WORDS 144
+#define DBW_NOBANK 0xFF
+#define DBW_L_LEFT 0
+#define DBW_L_OWN 16
+#define DBW_L_TOP 80
+#define DBW_C_BASE 92
+#define DBW_C_SIZE 26 /* left 8 words, own 16, top 2 */
+
+static void SaveFootprint(u32 *s, image_t *image, u32 mbRow, u32 mbCol)
+{
+    u32 W = image->width, N = W * image->height, k, j;
+    u32 *p, *q;
+    u32 stride = W * 16;
+
+    /* luma */
+    p = (u32*)(image->data + mbRow * 16 * stride + mbCol * 16);
+    stride >>= 2; /* words */
+    for (k = 0; k < 16; k++)
+    {
+        q = p + k * stride;
+        if (mbCol)
+            s[DBW_L_LEFT + k] = q[-1];
+        s[DBW_L_OWN + 4*k + 0] = q[0];
+        s[DBW_L_OWN + 4*k + 1] = q[1];
+        s[DBW_L_OWN + 4*k + 2] = q[2];
+        s[DBW_L_OWN + 4*k + 3] = q[3];
+    }
+    if (mbRow)
+        for (k = 0; k < 3; k++)
+        {
+            q = p + ((i32)k - 3) * (i32)stride;
+            s[DBW_L_TOP + 4*k + 0] = q[0];
+            s[DBW_L_TOP + 4*k + 1] = q[1];
+            s[DBW_L_TOP + 4*k + 2] = q[2];
+            s[DBW_L_TOP + 4*k + 3] = q[3];
+        }
+
+    /* chroma */
+    for (j = 0; j < 2; j++)
+    {
+        u32 *t = s + DBW_C_BASE + j * DBW_C_SIZE;
+
+        stride = W * 8;
+        p = (u32*)(image->data + N * 256 + j * N * 64 +
+            mbRow * 8 * stride + mbCol * 8);
+        stride >>= 2;
+        for (k = 0; k < 8; k++)
+        {
+            q = p + k * stride;
+            if (mbCol)
+                t[k] = q[-1];
+            t[8 + 2*k + 0] = q[0];
+            t[8 + 2*k + 1] = q[1];
+        }
+        if (mbRow)
+        {
+            q = p - (i32)stride;
+            t[24] = q[0];
+            t[25] = q[1];
+        }
+    }
+}
+
+/* SaveFootprint, backwards */
+static void RestoreFootprint(const u32 *s, image_t *image, u32 mbRow,
+    u32 mbCol)
+{
+    u32 W = image->width, N = W * image->height, k, j;
+    u32 *p, *q;
+    u32 stride = W * 16;
+
+    p = (u32*)(image->data + mbRow * 16 * stride + mbCol * 16);
+    stride >>= 2;
+    for (k = 0; k < 16; k++)
+    {
+        q = p + k * stride;
+        if (mbCol)
+            q[-1] = s[DBW_L_LEFT + k];
+        q[0] = s[DBW_L_OWN + 4*k + 0];
+        q[1] = s[DBW_L_OWN + 4*k + 1];
+        q[2] = s[DBW_L_OWN + 4*k + 2];
+        q[3] = s[DBW_L_OWN + 4*k + 3];
+    }
+    if (mbRow)
+        for (k = 0; k < 3; k++)
+        {
+            q = p + ((i32)k - 3) * (i32)stride;
+            q[0] = s[DBW_L_TOP + 4*k + 0];
+            q[1] = s[DBW_L_TOP + 4*k + 1];
+            q[2] = s[DBW_L_TOP + 4*k + 2];
+            q[3] = s[DBW_L_TOP + 4*k + 3];
+        }
+
+    for (j = 0; j < 2; j++)
+    {
+        const u32 *t = s + DBW_C_BASE + j * DBW_C_SIZE;
+
+        stride = W * 8;
+        p = (u32*)(image->data + N * 256 + j * N * 64 +
+            mbRow * 8 * stride + mbCol * 8);
+        stride >>= 2;
+        for (k = 0; k < 8; k++)
+        {
+            q = p + k * stride;
+            if (mbCol)
+                q[-1] = t[k];
+            q[0] = t[8 + 2*k + 0];
+            q[1] = t[8 + 2*k + 1];
+        }
+        if (mbRow)
+        {
+            q = p - (i32)stride;
+            q[0] = t[24];
+            q[1] = t[25];
+        }
+    }
+}
+
+#endif /* VJ_DEBLOCK_WORKER */
+
 /*------------------------------------------------------------------------------
 
-    Function: h264bsdFilterPicture
+    Function: FilterMbRows
 
         Functional description:
-          Perform deblocking filtering for a picture. Filter does not copy
-          the original picture anywhere but filtering is performed directly
-          on the original image. Parameters controlling the filtering process
-          come from the deblock records (h264bsdDeblockRecord), computed
-          from macroblock structures of the filtered macroblock, macroblock
-          above and macroblock on the left of the filtered one.
+          Filter macroblock rows rowFrom .. rowTo - 1 of a picture, in raster
+          order (the body of h264bsdFilterPicture, which filters them all).
+          When log is not NULL every macroblock that gets filtered first saves
+          the pixels its filtering can modify (SaveFootprint), so that
+          UndoRows can put them back.
 
-        Inputs:
-          image         pointer to image to be filtered
-          mb            pointer to macroblock data structure of the top-left
-                        macroblock of the picture
-          picSliceBase  slice id base of the picture (IsSliceBoundaryOnLeft)
-          changed       per-MB change flags (skip elision), set for every MB
-                        filtering may modify
-          rec           deblock records of the picture's macroblocks
-          recValid      HANTRO_TRUE if the records were made at decode time
-                        and still hold, otherwise they are made here
-
-        Outputs:
-          image         filtered image stored here
-
-        Returns:
-          none
+          The marks of skip elision go to changed. Filtering row r reads and
+          modifies only rows r - 1 and r of the picture, the records of rows
+          r - 1 and r, and (recValid false only) the storage of rows r - 1
+          and r.
 
 ------------------------------------------------------------------------------*/
-void h264bsdFilterPicture(
+static inline __attribute__((always_inline)) void FilterMbRows(
   image_t *image,
   mbStorage_t *mb, u32 picSliceBase,
-  u8 *changed, deblockRec_t *rec, u32 recValid)
+  u8 *changed, deblockRec_t *rec, u32 recValid,
+  u32 rowFrom, u32 rowTo, const u8 *rowBank, u32 *log)
 {
 
 /* Variables */
@@ -678,17 +800,11 @@ void h264bsdFilterPicture(
 
 /* Code */
 
-    ASSERT(image);
-    ASSERT(mb);
-    ASSERT(rec);
-    ASSERT(image->data);
-    ASSERT(image->width);
-    ASSERT(image->height);
-
     picWidthInMbs = image->width;
     picSizeInMbs = picWidthInMbs * image->height;
 
-    for (mbRow = 0, mbCol = 0, r = rec; mbRow < image->height; r++)
+    for (mbRow = rowFrom, mbCol = 0, r = rec + rowFrom * picWidthInMbs;
+         mbRow < rowTo; r++)
     {
         /* records made at decode time hold only if the picture's MBs were
          * decoded once each in raster order (h264bsdDecodeSliceData).
@@ -732,6 +848,13 @@ void h264bsdFilterPicture(
             qpTop = mbRow ? r[-(i32)picWidthInMbs].qp : r->qp;
             qpLeft = mbCol ? r[-1].qp : r->qp;
 
+#ifdef VJ_DEBLOCK_WORKER
+            if (log && rowBank[mbRow] != DBW_NOBANK)
+                SaveFootprint(log + ((size_t)rowBank[mbRow] *
+                    picWidthInMbs + mbCol) * DBW_SLOT_WORDS, image,
+                    mbRow, mbCol);
+#endif
+
             /* luma */
             GetEdgeThresholds(thresholds, r, qpTop, qpLeft, 0);
             data = image->data + mbRow * picWidthInMbs * 256 + mbCol * 16;
@@ -756,6 +879,414 @@ void h264bsdFilterPicture(
     }
 
 }
+
+/*------------------------------------------------------------------------------
+
+    Function: h264bsdFilterPicture
+
+        Functional description:
+          Perform deblocking filtering for a picture. Filter does not copy
+          the original picture anywhere but filtering is performed directly
+          on the original image. Parameters controlling the filtering process
+          come from the deblock records (h264bsdDeblockRecord), computed
+          from macroblock structures of the filtered macroblock, macroblock
+          above and macroblock on the left of the filtered one.
+
+        Inputs:
+          image         pointer to image to be filtered
+          mb            pointer to macroblock data structure of the top-left
+                        macroblock of the picture
+          picSliceBase  slice id base of the picture (IsSliceBoundaryOnLeft)
+          changed       per-MB change flags (skip elision), set for every MB
+                        filtering may modify
+          rec           deblock records of the picture's macroblocks
+          recValid      HANTRO_TRUE if the records were made at decode time
+                        and still hold, otherwise they are made here
+          rowFrom       first macroblock row to filter: the rows before it
+                        were filtered already (deblock worker)
+
+        Outputs:
+          image         filtered image stored here
+
+        Returns:
+          none
+
+------------------------------------------------------------------------------*/
+void h264bsdFilterPicture(
+  image_t *image,
+  mbStorage_t *mb, u32 picSliceBase,
+  u8 *changed, deblockRec_t *rec, u32 recValid, u32 rowFrom)
+{
+
+/* Code */
+
+    ASSERT(image);
+    ASSERT(mb);
+    ASSERT(rec);
+    ASSERT(image->data);
+    ASSERT(image->width);
+    ASSERT(image->height);
+
+    FilterMbRows(image, mb, picSliceBase, changed, rec, recValid,
+        rowFrom, image->height, NULL, NULL);
+
+}
+
+#ifdef VJ_DEBLOCK_WORKER
+/*------------------------------------------------------------------------------
+
+    Row-lagged deblock worker (VJ_DEBLOCK_WORKER)
+
+    The decoding thread decodes the picture; a worker thread filters macroblock
+    row r once rows 0 .. r + 1 are decoded, in raster order, with the records
+    made at decode time.
+
+    1. Bit-exact while nothing goes wrong. Intra prediction reads only
+       unfiltered pixels of its own slice: the rows above (their bottom line,
+       the above-right MB) and the MBs to the left. Filtering row r changes
+       pixels of rows r - 1 and r only, and the decoder reads row r's pixels
+       only while it decodes row r + 1, which is complete before row r is
+       filtered. Inter prediction reads other pictures. The worker's input
+       for row r is what the sequential pass sees: rows 0 .. r - 1 filtered,
+       row r unfiltered, the records as made at decode time. It touches
+       memory the decoder does not write meanwhile: pixels of rows r - 1 and
+       r, records of rows r - 1 and r, its own marks (skip elision; they join
+       the picture's when it ends) and its own undo log.
+
+    2. Bit-exact when something does. The sequential decoder, after a slice
+       error in slice B (first MB s), holds every MB of B as damaged (decoded
+       count 0, as MarkSliceCorrupted leaves a P slice) and the MBs not yet
+       decoded after it, all at addresses >= s; the damaged MBs are rewritten
+       whole, by a later slice or by concealment, before the picture is
+       filtered. What the worker filtered must not show in what the
+       sequential decoder would hold then:
+         - row r's footprint is rows r - 1 and r. If its lowest MB address
+           (that of row r - 1, or 0) is >= s, every pixel it modified is in
+           a damaged MB, which is rewritten: nothing to put back. Single
+           slice pictures (s = 0) are always this case.
+         - else it modified pixels of MBs before s, which concealment may
+           read and the final pass must see unfiltered: its footprints are
+           logged before filtering (SaveFootprint, a bank per such row, at
+           most DBW_BANKS of them per slice: a row that would need a fifth
+           is not posted, so it is filtered when the picture ends).
+       On a slice error in B, h264bsdDbwAbortError waits for the worker, puts
+       back the logged rows posted since B opened (r0 of them are older: their
+       footprints are before s, as the rows posted are at most row(s) - 1
+       when B opens, and those MBs stay as they are), and the final pass
+       resumes at row r0. Marks are rebuilt from the records of rows below r0.
+       Other slices of the picture cannot disturb filtered rows: a primary
+       slice that starts on an MB already decoded fails before it writes.
+       Slices that are not P slices (I: concealment of an I slice reads the
+       decoded MBs next to the damage) are decoded with no worker posts.
+       Concealment of lost MBs at the end of a picture (h264bsdDbwAbortKeep)
+       only touches MBs at or after vjRecNext, rows after those posted.
+    3. No worker at all for pictures with slice groups or redundant slices
+       (h264bsdDbwBegin): they re-decode MBs that have already been filtered.
+
+------------------------------------------------------------------------------*/
+
+/* log banks: one row's footprints each. A slice logs at most its first rows */
+#define DBW_BANKS 4
+
+struct dbw
+{
+    vj_worker_t *w;
+    image_t img;        /* the picture being filtered */
+    deblockRec_t *rec;
+    u8 *changed;        /* the picture's skip elision flags */
+    u8 *marks;          /* the worker's marks, joined into changed */
+    u8 *rowBank;        /* per row: log bank, DBW_NOBANK for none */
+    u32 *log;           /* DBW_BANKS * picture width footprints */
+    u32 capMbs, capW;   /* what marks, rowBank and log have room for */
+    u32 active;         /* the worker takes part in this picture */
+    u32 resume;         /* rows filtered when it is not active */
+    /* the decoding thread's */
+    u32 rowsComplete;   /* rows decoded in raster order */
+    u32 nextRowEnd;     /* vjRecNext at which the next row is complete */
+    u32 posted;         /* rows handed to the worker */
+    u32 sOpen;          /* first MB of the slice being decoded */
+    u32 postOk;         /* that slice may post rows (P, in raster order) */
+    u32 r0;             /* rows posted when it opened */
+    u32 banksUsed;
+    /* the worker's while it runs, the decoding thread's when it is idle */
+    u32 filtered;       /* rows filtered */
+#ifdef VJ_DBW_STATS
+    unsigned nBegin, nFinish, nErr, nErrUndo, nKeep;
+#endif
+};
+
+/* the worker: filter the rows posted since the last call */
+static void DbwRun(void *arg, uint32_t upto)
+{
+    dbw_t *d = (dbw_t*)arg;
+
+    if (upto > d->filtered)
+    {
+        FilterMbRows(&d->img, NULL, 0, d->marks, d->rec, HANTRO_TRUE,
+            d->filtered, upto, d->rowBank, d->log);
+        d->filtered = upto;
+    }
+}
+
+dbw_t *h264bsdDbwCreate(void)
+{
+    dbw_t *d = (dbw_t*)calloc(1, sizeof(dbw_t));
+
+    if (d)
+    {
+        d->w = vj_worker_create(DbwRun, d);
+        if (!d->w)
+        {
+            free(d);
+            d = NULL;
+        }
+    }
+    return d;
+}
+
+void h264bsdDbwDestroy(dbw_t *d)
+{
+    if (d)
+    {
+#ifdef VJ_DBW_STATS
+        fprintf(stderr, "dbw: %u pictures armed, %u finished by the worker, "
+            "%u slice errors (%u with logged rows to undo), %u kept at a "
+            "concealment\n", d->nBegin, d->nFinish, d->nErr, d->nErrUndo,
+            d->nKeep);
+#endif
+        vj_worker_destroy(d->w);
+        free(d->marks);
+        free(d->log);
+        free(d);
+    }
+}
+
+/* Start of a picture: decide whether the worker takes part and arm it. The
+ * worker is idle here. Returns the vjRecNext value at which the first row is
+ * complete, 0 when the worker is not taking part */
+u32 h264bsdDbwBegin(dbw_t *d, image_t *image, deblockRec_t *rec, u8 *changed,
+    u32 numSliceGroups, u32 redundantPicCntPresent)
+{
+    u32 n = image->width * image->height;
+
+    h264bsdDbwAbortKeep(d);
+    d->resume = 0;
+    d->filtered = 0;
+    d->posted = 0;
+    if (numSliceGroups != 1 || redundantPicCntPresent ||
+        image->height < 3 || ((uintptr_t)image->data & 3))
+        return 0;
+    if (d->capMbs != n || d->capW != image->width)
+    {
+        free(d->marks);
+        free(d->log);
+        d->capMbs = d->capW = 0;
+        d->marks = (u8*)vj_alloc(n + image->height);
+        d->log = (u32*)vj_alloc((size_t)DBW_BANKS * image->width *
+            DBW_SLOT_WORDS * 4);
+        if (!d->marks || !d->log)
+        {
+            free(d->marks);
+            free(d->log);
+            d->marks = NULL;
+            d->log = NULL;
+            return 0;
+        }
+        d->capMbs = n;
+        d->capW = image->width;
+        memset(d->marks, 0, n);
+    }
+    d->rowBank = d->marks + n;
+    d->img = *image;
+    d->rec = rec;
+    d->changed = changed;
+    d->active = HANTRO_TRUE;
+    d->rowsComplete = 0;
+    d->nextRowEnd = image->width;
+    d->sOpen = 0;
+    d->postOk = HANTRO_FALSE;
+    d->r0 = 0;
+    d->banksUsed = 0;
+#ifdef VJ_DBW_STATS
+    d->nBegin++;
+#endif
+    return d->nextRowEnd;
+}
+
+/* A slice is about to be decoded; recNext is vjRecNext */
+void h264bsdDbwSliceStart(dbw_t *d, u32 firstMb, u32 isP, u32 recNext)
+{
+    if (d && d->active)
+    {
+        d->sOpen = firstMb;
+        d->postOk = isP && firstMb == recNext;
+        d->r0 = d->posted;
+        d->banksUsed = 0;
+    }
+}
+
+/* vjRecNext reached the value Begin or the last RowEnd returned: another row
+ * is complete, in raster order, and its records are made. The rows before the
+ * last complete one are now safe to filter. Returns the next such value */
+u32 h264bsdDbwRowEnd(dbw_t *d)
+{
+    u32 W = d->img.width, before = d->posted;
+
+    d->rowsComplete++;
+    d->nextRowEnd += W;
+    if (d->postOk)
+    {
+        while (d->posted + 1 < d->rowsComplete)
+        {
+            u32 r = d->posted;
+            /* lowest MB the filtering of row r modifies: the first of the
+             * row above */
+            u32 lowest = r ? (r - 1) * W : 0;
+
+            if (lowest < d->sOpen)
+            {
+                if (d->banksUsed == DBW_BANKS)
+                    break;
+                d->rowBank[r] = (u8)d->banksUsed++;
+            }
+            else
+                d->rowBank[r] = DBW_NOBANK;
+            d->posted++;
+        }
+        if (d->posted != before)
+            vj_worker_post(d->w, d->posted);
+    }
+    return d->nextRowEnd;
+}
+
+u32 h264bsdDbwActive(const dbw_t *d)
+{
+    return d && d->active;
+}
+
+/* The worker is idle and filtered rows [0, keep) stay filtered: the marks of
+ * the rest are dropped, those of the kept rows made from their records, and
+ * the final pass resumes at keep */
+static void DbwSettle(dbw_t *d, u32 keep)
+{
+    u32 W = d->img.width, n;
+
+    memset(d->marks, 0, d->img.height * W);
+    for (n = 0; n < keep * W; n++)
+    {
+        const deblockRec_t *r = d->rec + n;
+
+        if (r->bs[0] | r->bs[1])
+        {
+            d->changed[n] = 1;
+            if (r->bs[1] & 0x03030303U)
+                d->changed[n - 1] = 1;
+            if (r->bs[0] & 0xFFU)
+                d->changed[n - W] = 1;
+        }
+    }
+    d->resume = keep;
+    d->filtered = 0;
+    d->posted = 0;
+    d->active = HANTRO_FALSE;
+}
+
+/* A slice failed. Put back what the worker filtered under it (rows posted
+ * since it opened, those with a log), see 2. above. The caller clears its
+ * row-end value */
+void h264bsdDbwAbortError(dbw_t *d)
+{
+    u32 W, r, c;
+
+    if (!d || !d->active)
+        return;
+    vj_worker_wait(d->w);
+    W = d->img.width;
+#ifdef VJ_DBW_STATS
+    d->nErr++;
+    {
+        u32 k;
+        for (k = d->r0; k < d->filtered; k++)
+            if (d->rowBank[k] != DBW_NOBANK)
+            {
+                d->nErrUndo++;
+                break;
+            }
+    }
+#endif
+    for (r = d->filtered; r-- > d->r0;)
+    {
+        if (d->rowBank[r] == DBW_NOBANK)
+            continue;
+        for (c = W; c--;)
+        {
+            const deblockRec_t *rec = d->rec + r * W + c;
+
+            if (rec->bs[0] | rec->bs[1])
+                RestoreFootprint(d->log +
+                    ((size_t)d->rowBank[r] * W + c) * DBW_SLOT_WORDS,
+                    &d->img, r, c);
+        }
+    }
+    DbwSettle(d, d->r0);
+}
+
+/* The picture goes on without the worker, keeping what it filtered: for the
+ * concealment of lost macroblocks and a picture that left raster order (see
+ * 2. above) */
+void h264bsdDbwAbortKeep(dbw_t *d)
+{
+    if (!d || !d->active)
+        return;
+    vj_worker_wait(d->w);
+#ifdef VJ_DBW_STATS
+    d->nKeep++;
+#endif
+    DbwSettle(d, d->filtered);
+}
+
+/* The row the final pass starts at, after taking the worker out of the
+ * picture: 0 without a worker */
+u32 h264bsdDbwResume(dbw_t *d)
+{
+    if (!d)
+        return 0;
+    h264bsdDbwAbortKeep(d);
+    return d->resume;
+}
+
+/* Wait until the worker has nothing in flight (its rows stay filtered). For
+ * the exits of h264bsdDecode that do not abort or finish */
+void h264bsdDbwJoin(dbw_t *d)
+{
+    if (d && d->active)
+        vj_worker_wait(d->w);
+}
+
+/* The picture is complete, decoded once in raster order, records valid, no
+ * error to come: the worker filters the rows left (no log), and its marks join
+ * the picture's */
+void h264bsdDbwFinish(dbw_t *d)
+{
+    u32 n = d->img.width * d->img.height, i;
+
+    for (i = d->posted; i < d->img.height; i++)
+        d->rowBank[i] = DBW_NOBANK;
+#ifdef VJ_DBW_STATS
+    d->nFinish++;
+#endif
+    vj_worker_post(d->w, d->img.height);
+    vj_worker_wait(d->w);
+    for (i = 0; i < n; i++)
+        d->changed[i] |= d->marks[i];
+    memset(d->marks, 0, n);
+    d->resume = d->img.height;
+    d->filtered = 0;
+    d->posted = 0;
+    d->active = HANTRO_FALSE;
+}
+#endif /* VJ_DEBLOCK_WORKER */
+
 
 int sample = 0;
 unsigned int hashA = 0;

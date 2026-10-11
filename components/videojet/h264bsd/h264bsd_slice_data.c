@@ -213,6 +213,11 @@ u32 h264bsdDecodeSliceData(strmData_t *pStrmData, storage_t *pStorage,
             h264bsdDeblockRecord(pStorage->mb + currMbAddr,
                 pStorage->vjRec + currMbAddr, pStorage->picSliceBase, 1);
             pStorage->vjRecNext++;
+#ifdef VJ_DEBLOCK_WORKER
+            /* a row is complete: the deblock worker may filter those behind it */
+            if (pStorage->vjRecNext == pStorage->vjDbwRowEnd)
+                pStorage->vjDbwRowEnd = h264bsdDbwRowEnd(pStorage->vjDbw);
+#endif
         }
         else
             pStorage->vjRecNext = VJ_REC_OFF;

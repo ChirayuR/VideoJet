@@ -143,6 +143,12 @@ u32 h264bsdConceal(storage_t *pStorage, image_t *currImage, u32 sliceType)
 
     /* concealment rewrites storage the deblock records were made from */
     pStorage->vjRecNext = VJ_REC_OFF;
+#ifdef VJ_DEBLOCK_WORKER
+    /* the worker leaves the picture: what it filtered lies before the
+     * concealed MBs (see h264bsd_deblocking.c) */
+    h264bsdDbwAbortKeep(pStorage->vjDbw);
+    pStorage->vjDbwRowEnd = 0;
+#endif
 
     DEBUG(("Concealing %s slice\n", IS_I_SLICE(sliceType) ?
             "intra" : "inter"));

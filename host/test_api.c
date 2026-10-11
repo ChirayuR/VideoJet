@@ -240,6 +240,38 @@ static void test_contract(const char *dir)
  * boundary only at a slice with first_mb_in_slice 0, so N+1's other slices ride along with AU N: one call that
  * completes a picture and leaves the next one unfinished. That is an error, not a frame: the next call conceals and
  * drops the unfinished picture, and every picture after it would decode on a lost reference with nothing to say so. */
+/* The decoder may be destroyed at any point a call can return: after an AU that ends inside a picture (the deblock worker
+ * may have rows posted), or one cut mid-slice. No call may leave work running on freed memory (ASan/TSan builds), and
+ * the next AU of a fresh decoder still decodes. */
+static void test_destroy_midway(const char *dir)
+{
+    char path[512];
+    snprintf(path, sizeof path, "%s/heldout/aux_map_dark.h264", dir);
+    size_t total;
+    uint8_t *s = slurp(path, &total);
+    size_t n0 = vj_au_length(s, total), n1 = vj_au_length(s + n0, total - n0);
+    uint8_t *cutbuf = malloc(n1);
+    for (int k = 1; k <= 3; k++) {
+        size_t cut = slice_at(s + n0, n1, k);
+        for (int mid = 0; mid < 2; mid++) {
+            for (int rep = 0; rep < 8; rep++) {
+                size_t len = cut + (mid ? (n1 - cut) / 3 : 0); /* up to slice k, or a third of the way into it */
+                memcpy(cutbuf, s + n0, len);
+                uint8_t *first = malloc(n0);
+                memcpy(first, s, n0);
+                vj_frame_t f;
+                vj_decoder_t *d = vj_decoder_create();
+                assert(vj_decode_au(d, first, n0, &f) == VJ_FRAME);
+                assert(vj_decode_au(d, cutbuf, len, &f) == VJ_ERR_STREAM);
+                vj_decoder_destroy(d);
+                free(first);
+            }
+        }
+    }
+    free(cutbuf);
+    free(s);
+}
+
 static void test_lost_slice(const char *dir)
 {
     char path[512];
@@ -546,6 +578,7 @@ int main(int argc, char **argv)
     test_recovery(dir);
     test_contract(dir);
     test_lost_slice(dir);
+    test_destroy_midway(dir);
     test_resume(dir);
     test_twice(dir);
     test_conceal_history(dir);

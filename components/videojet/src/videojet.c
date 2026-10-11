@@ -142,7 +142,7 @@ static int describe(storage_t *s, const u8 *pic, u32 idr, u32 nerr, vj_frame_t *
     return 1;
 }
 
-vj_status_t vj_decode_au(vj_decoder_t *dec, uint8_t *au, size_t len, vj_frame_t *out)
+static vj_status_t decode_au(vj_decoder_t *dec, uint8_t *au, size_t len, vj_frame_t *out)
 {
     if (!dec || !au || !len || !out || len > 0xffffffffu)
         return VJ_ERR_ARG;
@@ -200,6 +200,18 @@ vj_status_t vj_decode_au(vj_decoder_t *dec, uint8_t *au, size_t len, vj_frame_t 
             d->vjChanged[i] = d->vjLastChanged[i] > d->vjLastOut;
     d->vjLastOut = d->vjPicIdx;
     return VJ_FRAME;
+}
+
+vj_status_t vj_decode_au(vj_decoder_t *dec, uint8_t *au, size_t len, vj_frame_t *out)
+{
+    vj_status_t r = decode_au(dec, au, len, out);
+#ifdef VJ_DEBLOCK_WORKER
+    /* whatever the status: no deblock work in flight when a call returns. The worker waits on posted rows only, so this
+     * is a no-op unless the call left a picture unfinished. */
+    if (dec)
+        h264bsdDbwJoin(S(dec)->vjDbw);
+#endif
+    return r;
 }
 
 #if defined(ESP_PLATFORM) && defined(CONFIG_VJ_PROFILE)

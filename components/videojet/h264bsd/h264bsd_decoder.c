@@ -111,6 +111,12 @@ u32 h264bsdInit(storage_t *pStorage, u32 noOutputReordering)
     if (noOutputReordering)
         pStorage->noReordering = HANTRO_TRUE;
 
+#ifdef VJ_DEBLOCK_WORKER
+    /* no worker (thread creation failed) is not an error: the decoder filters
+     * in the pass, as it always did */
+    pStorage->vjDbw = h264bsdDbwCreate();
+#endif
+
     return HANTRO_OK;
 }
 
@@ -151,7 +157,7 @@ u32 h264bsdInit(storage_t *pStorage, u32 noOutputReordering)
 
 ------------------------------------------------------------------------------*/
 
-u32 h264bsdDecode(storage_t *pStorage, u8 *byteStrm, u32 len, u32 picId,
+static u32 DecodeNal(storage_t *pStorage, u8 *byteStrm, u32 len, u32 picId,
     u32 *readBytes)
 {
 
@@ -442,6 +448,14 @@ u32 h264bsdDecode(storage_t *pStorage, u8 *byteStrm, u32 len, u32 picId,
                     }
                     pStorage->currImage->data =
                         h264bsdAllocateDpbImage(pStorage->dpb);
+#ifdef VJ_DEBLOCK_WORKER
+                    if (pStorage->vjDbw)
+                        pStorage->vjDbwRowEnd = h264bsdDbwBegin(
+                            pStorage->vjDbw, pStorage->currImage,
+                            pStorage->vjRec, pStorage->dpb->vjChanged,
+                            pStorage->activePps->numSliceGroups,
+                            pStorage->activePps->redundantPicCntPresentFlag);
+#endif
                 }
 
                 /* store slice header to storage if successfully decoded */
@@ -465,11 +479,23 @@ u32 h264bsdDecode(storage_t *pStorage, u8 *byteStrm, u32 len, u32 picId,
 
                 DEBUG(("SLICE DATA, FIRST %d\n",
                         pStorage->sliceHeader->firstMbInSlice));
+#ifdef VJ_DEBLOCK_WORKER
+                h264bsdDbwSliceStart(pStorage->vjDbw,
+                    pStorage->sliceHeader->firstMbInSlice,
+                    IS_P_SLICE(pStorage->sliceHeader->sliceType),
+                    pStorage->vjRecNext);
+#endif
                 tmp = h264bsdDecodeSliceData(&strm, pStorage,
                     pStorage->currImage, pStorage->sliceHeader);
                 if (tmp != HANTRO_OK)
                 {
                     EPRINT("SLICE_DATA");
+#ifdef VJ_DEBLOCK_WORKER
+                    /* the picture goes on as the sequential decoder's: what
+                     * the worker filtered under this slice is put back */
+                    h264bsdDbwAbortError(pStorage->vjDbw);
+                    pStorage->vjDbwRowEnd = 0;
+#endif
                     h264bsdMarkSliceCorrupted(pStorage,
                         pStorage->sliceHeader->firstMbInSlice);
                     /* MBs this slice wrote may be decoded again: the buffer
@@ -499,9 +525,30 @@ u32 h264bsdDecode(storage_t *pStorage, u8 *byteStrm, u32 len, u32 picId,
     if (picReady)
     {
         { VJP_BEGIN(VJP_DEBLOCK);
+#ifdef VJ_DEBLOCK_WORKER
+        if (h264bsdDbwActive(pStorage->vjDbw) &&
+            pStorage->vjRecNext == pStorage->picSizeInMbs)
+        {
+            /* decoded once each in raster order, records valid: the worker
+             * has filtered the rows behind the decoder, it does the rest */
+            h264bsdDbwFinish(pStorage->vjDbw);
+        }
+        else
+#endif
         h264bsdFilterPicture(pStorage->currImage, pStorage->mb,
             pStorage->picSliceBase, pStorage->dpb->vjChanged, pStorage->vjRec,
-            pStorage->vjRecNext == pStorage->picSizeInMbs);
+            pStorage->vjRecNext == pStorage->picSizeInMbs,
+#ifdef VJ_DEBLOCK_WORKER
+            /* the rows the worker filtered stay filtered (a picture that left
+             * raster order, concealment, or an error that rewrote the rest) */
+            h264bsdDbwResume(pStorage->vjDbw)
+#else
+            0
+#endif
+            );
+#ifdef VJ_DEBLOCK_WORKER
+        pStorage->vjDbwRowEnd = 0;
+#endif
         VJP_END(VJP_DEBLOCK); }
         h264bsdRecordChanges(pStorage->dpb, pStorage->numConcealedMbs);
 
@@ -543,6 +590,20 @@ u32 h264bsdDecode(storage_t *pStorage, u8 *byteStrm, u32 len, u32 picId,
     else
         return(H264BSD_RDY);
 
+}
+
+u32 h264bsdDecode(storage_t *pStorage, u8 *byteStrm, u32 len, u32 picId,
+    u32 *readBytes)
+{
+    u32 r = DecodeNal(pStorage, byteStrm, len, picId, readBytes);
+
+#ifdef VJ_DEBLOCK_WORKER
+    /* no deblock work in flight on any exit but a NAL that leaves the picture
+     * going on (H264BSD_RDY): vj_decode_au joins before it returns, too */
+    if (r != H264BSD_RDY)
+        h264bsdDbwJoin(pStorage->vjDbw);
+#endif
+    return r;
 }
 
 /*------------------------------------------------------------------------------
@@ -595,6 +656,10 @@ void h264bsdShutdown(storage_t *pStorage)
         }
     }
 
+#ifdef VJ_DEBLOCK_WORKER
+    h264bsdDbwDestroy(pStorage->vjDbw);
+    pStorage->vjDbw = NULL;
+#endif
     FREE(pStorage->mbLayer);
     FREE(pStorage->mb);
     FREE(pStorage->vjRec);

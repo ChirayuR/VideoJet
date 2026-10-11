@@ -60,6 +60,9 @@ typedef struct
     i8 chromaQpOff;
 } deblockRec_t;
 
+/* the deblock worker's state (h264bsd_deblocking.c, VJ_DEBLOCK_WORKER) */
+typedef struct dbw dbw_t;
+
 /*------------------------------------------------------------------------------
     4. Function prototypes
 ------------------------------------------------------------------------------*/
@@ -70,7 +73,22 @@ void h264bsdDeblockRecord(mbStorage_t *mb, deblockRec_t *rec,
 void h264bsdFilterPicture(
   image_t *image,
   mbStorage_t *mb, u32 picSliceBase,
-  u8 *changed, deblockRec_t *rec, u32 recValid);
+  u8 *changed, deblockRec_t *rec, u32 recValid, u32 rowFrom);
+
+#ifdef VJ_DEBLOCK_WORKER
+dbw_t *h264bsdDbwCreate(void);
+void h264bsdDbwDestroy(dbw_t *d);
+u32 h264bsdDbwBegin(dbw_t *d, image_t *image, deblockRec_t *rec, u8 *changed,
+  u32 numSliceGroups, u32 redundantPicCntPresent);
+void h264bsdDbwSliceStart(dbw_t *d, u32 firstMb, u32 isP, u32 recNext);
+u32 h264bsdDbwRowEnd(dbw_t *d);
+u32 h264bsdDbwActive(const dbw_t *d);
+void h264bsdDbwAbortError(dbw_t *d);
+void h264bsdDbwAbortKeep(dbw_t *d);
+u32 h264bsdDbwResume(dbw_t *d);
+void h264bsdDbwJoin(dbw_t *d);
+void h264bsdDbwFinish(dbw_t *d);
+#endif
 
 #endif /* #ifdef H264SWDEC_DEBLOCKING_H */
 

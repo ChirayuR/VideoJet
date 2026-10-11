@@ -127,6 +127,13 @@ typedef struct storage
     deblockRec_t *vjRec;
     u32 vjRecNext;
 
+    /* deblock worker (VJ_DEBLOCK_WORKER; NULL when off): vjDbwRowEnd is the
+     * vjRecNext at which it is told that another row is complete, 0 when it
+     * takes no part in the picture. Always present, so the decode loop has
+     * one layout */
+    dbw_t *vjDbw;
+    u32 vjDbwRowEnd;
+
     /* flag to store noOutputReordering flag set by the application */
     u32 noReordering;
 
