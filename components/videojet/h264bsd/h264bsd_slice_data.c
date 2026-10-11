@@ -122,7 +122,9 @@ void vjParseBegin(vjParse_t *p, storage_t *pStorage, const strmData_t *pStrm,
     p->sliceId = pStorage->slice->sliceId;
     p->nbr = pStorage->vjNbr;
     p->ring = pStorage->vjRing;
-    p->head = p->tail = 0;
+    /* atomic: the worker's lock-free hint loads of head / tail may still run */
+    __atomic_store_n(&p->head, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&p->tail, 0, __ATOMIC_RELAXED);
     p->mode = VJ_MODE_INLINE;
     p->col = p->addr % w;
     p->idx = p->addr % (w + 1);
@@ -400,7 +402,7 @@ static void ParseArm(vjParse_t *p, dbw_t *dbw)
 /* The next record, in the order the slice has them. The slot stays the caller's until vjParseConsume. */
 static vjSlot_t *ParseFetch(vjParse_t *p)
 {
-    u32 t = p->tail;
+    u32 t = __atomic_load_n(&p->tail, __ATOMIC_RELAXED);
 
     VJ_STAT(1);
     if (p->mode != VJ_MODE_PIPE)
@@ -443,17 +445,18 @@ static vjSlot_t *ParseFetch(vjParse_t *p)
         }
     }
 #endif
-    if (p->head == t)
+    if (__atomic_load_n(&p->head, __ATOMIC_RELAXED) == t)
     {
         vjParseNext(p, p->ring + t % VJ_RING_DEPTH);
-        p->head = t + 1;
+        __atomic_store_n(&p->head, t + 1, __ATOMIC_RELAXED);
     }
     return p->ring + t % VJ_RING_DEPTH;
 }
 
 static void ParseConsume(vjParse_t *p)
 {
-    __atomic_store_n(&p->tail, p->tail + 1, __ATOMIC_RELEASE);
+    __atomic_store_n(&p->tail, __atomic_load_n(&p->tail, __ATOMIC_RELAXED) + 1,
+        __ATOMIC_RELEASE);
 }
 
 /* the slice is over (any way): the worker has no step in flight, the context is the caller's */
