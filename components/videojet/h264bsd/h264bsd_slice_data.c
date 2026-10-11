@@ -42,6 +42,13 @@
 #include "h264bsd_vlc.h"
 #include "vj_prof.h"
 
+#ifndef VJ_PIPE_MIN_BYTES
+#define VJ_PIPE_MIN_BYTES 0
+#endif
+#if defined(VJ_PARSE_PIPELINE) && !defined(VJ_DEBLOCK_WORKER)
+#error "VJ_PARSE_PIPELINE needs VJ_DEBLOCK_WORKER (one core-1 task)"
+#endif
+
 /*------------------------------------------------------------------------------
     2. External compiler flags
 --------------------------------------------------------------------------------
@@ -114,6 +121,9 @@ void vjParseBegin(vjParse_t *p, storage_t *pStorage, const strmData_t *pStrm,
     p->sliceGroupMap = pStorage->sliceGroupMap;
     p->sliceId = pStorage->slice->sliceId;
     p->nbr = pStorage->vjNbr;
+    p->ring = pStorage->vjRing;
+    p->head = p->tail = 0;
+    p->mode = VJ_MODE_INLINE;
     p->col = p->addr % w;
     p->idx = p->addr % (w + 1);
     for (i = 0; i <= w; i++)
@@ -269,6 +279,194 @@ err:
 
 /*------------------------------------------------------------------------------
 
+   5.0b Parse pipeline: ring protocol (VJ_PARSE_PIPELINE)
+
+        The deblock worker's task also runs the parser. Ownership of the
+        parse context passes by pstate: IDLE (the decoding task's) -> ARMED
+        (the worker's; release store after the context is set up) -> IDLE
+        (the decoding task, by compare-and-swap from ARMED or DONE, spinning
+        while the worker is PARSING one record). vjParseStep is the worker's
+        side: one record per call, into slot head % depth, then head (release).
+        The decoding task polls head (acquire), uses the slot in place, and
+        frees it with tail (release). The parser reads no storage the
+        decoding task writes, so records are a pure function of the stream:
+        the schedule cannot change the output. If the worker has not
+        produced a record for 50 ms (not scheduled), the decoding task takes
+        the context back and parses itself, after the records already made.
+
+------------------------------------------------------------------------------*/
+
+#define VJ_TAKEBACK_US 50000
+
+#ifdef VJ_PIPE_STATS /* test: slices armed, records fetched, fetches that found the ring empty, take-backs, worker steps that found it full */
+#include <stdio.h>
+#include <stdlib.h>
+unsigned long vjPipeStat[6];
+static void vjPipeStatPrint(void)
+{
+    fprintf(stderr, "pipe: armed=%lu fetched=%lu empty=%lu takeback=%lu full=%lu inline=%lu\n", vjPipeStat[0], vjPipeStat[1],
+        vjPipeStat[2], vjPipeStat[3], vjPipeStat[4], vjPipeStat[5]);
+}
+#define VJ_STAT(i) do { static int reg; if (!reg) { reg = 1; atexit(vjPipeStatPrint); } __atomic_fetch_add(&vjPipeStat[i], 1, __ATOMIC_RELAXED); } while (0)
+#else
+#define VJ_STAT(i) ((void)0)
+#endif
+
+#ifdef VJ_PIPE_JITTER_US
+static unsigned vjJitter(void)
+{
+    static __thread unsigned x = 0x9E3779B9u;
+    x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+    return x % VJ_PIPE_JITTER_US;
+}
+#define VJ_JITTER() do { if (vjJitter() < VJ_PIPE_JITTER_US / 2) usleep(vjJitter()); } while (0)
+#else
+#define VJ_JITTER() ((void)0)
+#endif
+
+#ifdef VJ_PARSE_PIPELINE
+#include "vj_worker.h"
+#ifdef VJ_PIPE_JITTER_US
+#include <unistd.h>
+#endif
+
+/* the worker's side. 1: made a record. 2: armed but the ring is full. 0: not armed */
+int vjParseStep(void *arg)
+{
+    vjParse_t *p = (vjParse_t *)arg;
+    u32 h, t, exp = VJ_PS_ARMED;
+
+    if (__atomic_load_n(&p->pstate, __ATOMIC_RELAXED) != VJ_PS_ARMED)
+        return 0;
+    h = __atomic_load_n(&p->head, __ATOMIC_RELAXED);
+    t = __atomic_load_n(&p->tail, __ATOMIC_ACQUIRE);
+    if (h - t >= VJ_RING_DEPTH)
+    {
+        VJ_STAT(4);
+        return 2;
+    }
+    if (!__atomic_compare_exchange_n(&p->pstate, &exp, VJ_PS_PARSING, 0,
+            __ATOMIC_ACQUIRE, __ATOMIC_RELAXED))
+        return 0;
+    /* the context may have been taken back and armed for another slice since the loads above */
+    h = __atomic_load_n(&p->head, __ATOMIC_RELAXED);
+    t = __atomic_load_n(&p->tail, __ATOMIC_ACQUIRE);
+    if (h - t >= VJ_RING_DEPTH)
+    {
+        __atomic_store_n(&p->pstate, VJ_PS_ARMED, __ATOMIC_RELEASE);
+        return 2;
+    }
+    VJ_JITTER();
+    vjParseNext(p, p->ring + h % VJ_RING_DEPTH);
+#ifndef VJ_MUTANT_PUBLISH_FIRST
+    __atomic_store_n(&p->head, h + 1, __ATOMIC_RELEASE);
+#else
+    p->head = h + 1;
+#endif
+    __atomic_store_n(&p->pstate, p->fin ? VJ_PS_DONE : VJ_PS_ARMED,
+        __ATOMIC_RELEASE);
+    return 1;
+}
+
+/* the decoding task owns the context again; no worker step is in flight */
+static void ParseDisarm(vjParse_t *p)
+{
+    for (;;)
+    {
+        u32 st = __atomic_load_n(&p->pstate, __ATOMIC_ACQUIRE);
+
+        if (st == VJ_PS_IDLE)
+            return;
+        if (st == VJ_PS_PARSING)
+        {
+            vj_relax();
+            continue;
+        }
+        if (__atomic_compare_exchange_n(&p->pstate, &st, VJ_PS_IDLE, 0,
+                __ATOMIC_ACQ_REL, __ATOMIC_RELAXED))
+            return;
+    }
+}
+
+static void ParseArm(vjParse_t *p, dbw_t *dbw)
+{
+    p->mode = VJ_MODE_PIPE;
+    VJ_STAT(0);
+    __atomic_store_n(&p->pstate, VJ_PS_ARMED, __ATOMIC_RELEASE);
+    h264bsdDbwKick(dbw);
+}
+#endif /* VJ_PARSE_PIPELINE */
+
+/* The next record, in the order the slice has them. The slot stays the caller's until vjParseConsume. */
+static vjSlot_t *ParseFetch(vjParse_t *p)
+{
+    u32 t = p->tail;
+
+    VJ_STAT(1);
+    if (p->mode != VJ_MODE_PIPE)
+        VJ_STAT(5);
+
+#ifdef VJ_PARSE_PIPELINE
+    if (p->mode == VJ_MODE_PIPE)
+    {
+        u32 spins = 0;
+        uint64_t t0 = 0;
+
+        for (;;)
+        {
+            VJ_JITTER();
+#ifndef VJ_MUTANT_NOACQUIRE
+            if (__atomic_load_n(&p->head, __ATOMIC_ACQUIRE) != t)
+#else
+            if (p->head != t)
+#endif
+                return p->ring + t % VJ_RING_DEPTH;
+            if (!spins)
+                VJ_STAT(2);
+            if (!(++spins & 255))
+            {
+                uint64_t now = vj_now_us();
+
+                if (!t0)
+                    t0 = now;
+                else if (now - t0 > VJ_TAKEBACK_US)
+                {
+                    /* the worker is not producing: do it here, from the first record not made */
+                    ParseDisarm(p);
+                    p->mode = VJ_MODE_INLINE;
+                    VJ_STAT(3);
+                    vj_worker_warn("parse pipeline: the worker task did not run; the decoding task parsed");
+                    break;
+                }
+            }
+            vj_relax();
+        }
+    }
+#endif
+    if (p->head == t)
+    {
+        vjParseNext(p, p->ring + t % VJ_RING_DEPTH);
+        p->head = t + 1;
+    }
+    return p->ring + t % VJ_RING_DEPTH;
+}
+
+static void ParseConsume(vjParse_t *p)
+{
+    __atomic_store_n(&p->tail, p->tail + 1, __ATOMIC_RELEASE);
+}
+
+/* the slice is over (any way): the worker has no step in flight, the context is the caller's */
+static void ParseEnd(vjParse_t *p)
+{
+#ifdef VJ_PARSE_PIPELINE
+    ParseDisarm(p);
+#endif
+    p->mode = VJ_MODE_INLINE;
+}
+
+/*------------------------------------------------------------------------------
+
    5.1  Function name: h264bsdDecodeSliceData
 
         Functional description:
@@ -297,7 +495,7 @@ err:
 
 ------------------------------------------------------------------------------*/
 
-u32 h264bsdDecodeSliceData(strmData_t *pStrmData, storage_t *pStorage,
+static u32 DecodeSliceLoop(strmData_t *pStrmData, storage_t *pStorage,
     image_t *currImage, sliceHeader_t *pSliceHeader)
 {
 
@@ -336,6 +534,16 @@ u32 h264bsdDecodeSliceData(strmData_t *pStrmData, storage_t *pStorage,
      * the picture */
     pStorage->slice->sliceId++;
     vjParseBegin(parse, pStorage, pStrmData, pSliceHeader);
+#ifdef VJ_PARSE_PIPELINE
+    /* the worker task parses ahead when: it exists and runs on another core, one slice group, a primary slice, and the
+     * slice has enough data to be worth the hand-off. Otherwise the same records are made here, one at a time. */
+    if (pStorage->vjDbw && !parse->useStorage &&
+        pStorage->activePps->numSliceGroups == 1 &&
+        !pSliceHeader->redundantPicCnt && h264bsdDbwParallel(pStorage->vjDbw) &&
+        (pStrmData->strmBuffSize - (pStrmData->strmBuffReadBits >> 3)) >=
+            VJ_PIPE_MIN_BYTES)
+        ParseArm(parse, pStorage->vjDbw);
+#endif
 
     /* lastMbAddr stores address of the macroblock that was last successfully
      * decoded, needed for error handling */
@@ -368,7 +576,8 @@ u32 h264bsdDecodeSliceData(strmData_t *pStrmData, storage_t *pStorage,
         if (!skipLeft)
         {
             { VJP_BEGIN(VJP_PARSE);
-            vjParseNext(parse, slot);
+            slot = ParseFetch(parse);
+            mbLayer = &slot->layer;
             VJP_END(VJP_PARSE); }
             if (slot->kind == VJ_REC_ERR)
                 return(slot->status);
@@ -421,6 +630,8 @@ u32 h264bsdDecodeSliceData(strmData_t *pStrmData, storage_t *pStorage,
          * processing of macroblocks to be skipped based on the last skipRun is
          * not finished */
         moreMbs = (skipLeft || !slot->last) ? HANTRO_TRUE : HANTRO_FALSE;
+        if (!skipLeft)
+            ParseConsume(parse);
 
         /* lastMbAddr is only updated for intra slices (all macroblocks of
          * inter slices will be lost in case of an error) */
@@ -449,6 +660,16 @@ u32 h264bsdDecodeSliceData(strmData_t *pStrmData, storage_t *pStorage,
 
     return(HANTRO_OK);
 
+}
+
+u32 h264bsdDecodeSliceData(strmData_t *pStrmData, storage_t *pStorage,
+    image_t *currImage, sliceHeader_t *pSliceHeader)
+{
+    u32 r = DecodeSliceLoop(pStrmData, pStorage, currImage, pSliceHeader);
+
+    /* every way out: nothing of the slice is in flight on the worker */
+    ParseEnd(pStorage->vjParse);
+    return r;
 }
 
 /*------------------------------------------------------------------------------

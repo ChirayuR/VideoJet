@@ -28,8 +28,16 @@
 
 /* slots in the ring (1 = parse and reconstruct alternate on one thread) */
 #ifndef VJ_RING_DEPTH
+#ifdef VJ_PARSE_PIPELINE
+#define VJ_RING_DEPTH 6
+#else
 #define VJ_RING_DEPTH 1
 #endif
+#endif
+
+/* parser ownership (vjParse_t.pstate): the worker task parses only while ARMED */
+enum { VJ_PS_IDLE = 0, VJ_PS_ARMED = 1, VJ_PS_PARSING = 2, VJ_PS_DONE = 3 };
+enum { VJ_MODE_INLINE = 0, VJ_MODE_PIPE = 1 };
 
 enum { VJ_REC_MB = 0, VJ_REC_SKIPRUN = 1, VJ_REC_ERR = 2 };
 
@@ -71,6 +79,13 @@ typedef struct vjParse
     u32 *sliceGroupMap;
     u32 sliceId;
     u8 tmpA[24], tmpB[24];
+    /* the ring: head = records published, tail = records consumed (free running, slot = count % VJ_RING_DEPTH).
+     * Pipelined: the worker writes the slot, then head (release); the owner reads head (acquire), uses the slot in
+     * place, then writes tail (release). pstate hands the whole context to the worker (ARMED) and back (IDLE). */
+    vjSlot_t *ring;
+    u32 head, tail;
+    u32 pstate;
+    u32 mode;
 } vjParse_t;
 
 #endif /* #ifndef H264SWDEC_PARSE_H */

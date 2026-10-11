@@ -78,6 +78,9 @@ void h264bsdFilterPicture(
 #ifdef VJ_DEBLOCK_WORKER
 dbw_t *h264bsdDbwCreate(void);
 void h264bsdDbwDestroy(dbw_t *d);
+void h264bsdDbwSetStep(dbw_t *d, int (*step)(void *), void *arg);
+void h264bsdDbwKick(dbw_t *d);
+u32 h264bsdDbwParallel(dbw_t *d);
 u32 h264bsdDbwBegin(dbw_t *d, image_t *image, deblockRec_t *rec, u8 *changed,
   u32 numSliceGroups, u32 redundantPicCntPresent);
 void h264bsdDbwSliceStart(dbw_t *d, u32 firstMb, u32 isP, u32 recNext);

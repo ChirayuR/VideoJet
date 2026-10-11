@@ -785,7 +785,7 @@ static inline __attribute__((always_inline)) void FilterMbRows(
   image_t *image,
   mbStorage_t *mb, u32 picSliceBase,
   u8 *changed, deblockRec_t *rec, u32 recValid,
-  u32 rowFrom, u32 rowTo, const u8 *rowBank, u32 *log)
+  u32 mbFrom, u32 mbTo, const u8 *rowBank, u32 *log)
 {
 
 /* Variables */
@@ -803,8 +803,11 @@ static inline __attribute__((always_inline)) void FilterMbRows(
     picWidthInMbs = image->width;
     picSizeInMbs = picWidthInMbs * image->height;
 
-    for (mbRow = rowFrom, mbCol = 0, r = rec + rowFrom * picWidthInMbs;
-         mbRow < rowTo; r++)
+    /* VideoJet: the range is in macroblocks (raster order), so the deblock
+     * worker can filter a few at a time and parse in between */
+    mbRow = mbFrom / picWidthInMbs;
+    mbCol = mbFrom % picWidthInMbs;
+    for (r = rec + mbFrom; r < rec + mbTo; r++)
     {
         /* records made at decode time hold only if the picture's MBs were
          * decoded once each in raster order (h264bsdDecodeSliceData).
@@ -928,7 +931,7 @@ void h264bsdFilterPicture(
     ASSERT(image->height);
 
     FilterMbRows(image, mb, picSliceBase, changed, rec, recValid,
-        rowFrom, image->height, NULL, NULL);
+        rowFrom * image->width, image->width * image->height, NULL, NULL);
 
 }
 
@@ -1010,22 +1013,40 @@ struct dbw
     u32 banksUsed;
     /* the worker's while it runs, the decoding thread's when it is idle */
     u32 filtered;       /* rows filtered */
+    u32 fmb;            /* next macroblock to filter (a run in progress) */
 #ifdef VJ_DBW_STATS
     unsigned nBegin, nFinish, nErr, nErrUndo, nKeep;
 #endif
 };
 
-/* the worker: filter the rows posted since the last call */
-static void DbwRun(void *arg, uint32_t upto)
+/* Filter macroblocks per call of the worker's run, so the worker can parse
+ * between the pieces (~80 us on the S3) */
+#ifndef VJ_DBW_SEG_MBS
+#define VJ_DBW_SEG_MBS 10
+#endif
+
+/* the worker: filter the rows posted since the last call, a segment at a time.
+ * Returns 1 when the run is complete (filtered == upto), 0 when it wants to be
+ * called again with the same upto. fmb is the next macroblock to filter; it is
+ * filtered * width whenever no run is in progress. */
+static int DbwRun(void *arg, uint32_t upto)
 {
     dbw_t *d = (dbw_t*)arg;
+    u32 W = d->img.width, end, to;
 
-    if (upto > d->filtered)
-    {
-        FilterMbRows(&d->img, NULL, 0, d->marks, d->rec, HANTRO_TRUE,
-            d->filtered, upto, d->rowBank, d->log);
-        d->filtered = upto;
-    }
+    if (upto <= d->filtered)
+        return 1;
+    to = upto * W;
+    end = d->fmb + VJ_DBW_SEG_MBS;
+    if (end > to)
+        end = to;
+    FilterMbRows(&d->img, NULL, 0, d->marks, d->rec, HANTRO_TRUE,
+        d->fmb, end, d->rowBank, d->log);
+    d->fmb = end;
+    if (end < to)
+        return 0;
+    d->filtered = upto;
+    return 1;
 }
 
 dbw_t *h264bsdDbwCreate(void)
@@ -1042,6 +1063,26 @@ dbw_t *h264bsdDbwCreate(void)
         }
     }
     return d;
+}
+
+/* The worker's task also runs the parser (VJ_PARSE_PIPELINE): step is called
+ * between deblock segments, kick wakes the task when a slice is armed */
+void h264bsdDbwSetStep(dbw_t *d, int (*step)(void *), void *arg)
+{
+    if (d)
+        vj_worker_set_step(d->w, step, arg);
+}
+
+void h264bsdDbwKick(dbw_t *d)
+{
+    if (d)
+        vj_worker_kick(d->w);
+}
+
+/* the worker runs on another core than the calling task */
+u32 h264bsdDbwParallel(dbw_t *d)
+{
+    return d && vj_worker_parallel(d->w);
 }
 
 void h264bsdDbwDestroy(dbw_t *d)
@@ -1071,7 +1112,7 @@ u32 h264bsdDbwBegin(dbw_t *d, image_t *image, deblockRec_t *rec, u8 *changed,
 
     h264bsdDbwAbortKeep(d);
     d->resume = 0;
-    d->filtered = 0;
+    d->filtered = d->fmb = 0;
     d->posted = 0;
     if (numSliceGroups != 1 || redundantPicCntPresent ||
         image->height < 3 || ((uintptr_t)image->data & 3))
@@ -1193,7 +1234,7 @@ static void DbwSettle(dbw_t *d, u32 keep)
         }
     }
     d->resume = keep;
-    d->filtered = 0;
+    d->filtered = d->fmb = 0;
     d->posted = 0;
     d->active = HANTRO_FALSE;
 }
@@ -1288,7 +1329,7 @@ void h264bsdDbwFinish(dbw_t *d)
         d->changed[i] |= d->marks[i];
     memset(d->marks, 0, n);
     d->resume = d->img.height;
-    d->filtered = 0;
+    d->filtered = d->fmb = 0;
     d->posted = 0;
     d->active = HANTRO_FALSE;
 }

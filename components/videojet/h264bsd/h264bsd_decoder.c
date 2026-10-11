@@ -115,6 +115,10 @@ u32 h264bsdInit(storage_t *pStorage, u32 noOutputReordering)
     /* no worker (thread creation failed) is not an error: the decoder filters
      * in the pass, as it always did */
     pStorage->vjDbw = h264bsdDbwCreate();
+#ifdef VJ_PARSE_PIPELINE
+    /* the same task parses ahead (h264bsd_slice_data.c) */
+    h264bsdDbwSetStep(pStorage->vjDbw, vjParseStep, pStorage->vjParse);
+#endif
 #endif
 
     return HANTRO_OK;

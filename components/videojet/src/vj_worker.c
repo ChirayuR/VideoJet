@@ -12,11 +12,17 @@
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 
-#define VJ_WORKER_STACK 2048 /* bytes; internal RAM (IDF allocates task stacks there). Measured use: 988 B */
+#include "esp_cpu.h"
+#include "esp_timer.h"
+
+#define VJ_WORKER_STACK 3072 /* bytes; internal RAM (IDF allocates task stacks there) */
+#define VJ_SPIN_CYCLES (240 * 200) /* an armed worker with a full ring polls this long (200 us) before it sleeps a tick */
 
 struct vj_worker {
     vj_worker_fn fn;
     void *arg;
+    vj_worker_step_fn step;
+    void *sarg;
     TaskHandle_t task;
     SemaphoreHandle_t idle;   /* given by the worker each time it drains its posts */
     SemaphoreHandle_t exited; /* given once, just before the task deletes itself */
@@ -25,7 +31,18 @@ struct vj_worker {
     uint32_t hseq;            /* the last seq handled */
     int running;              /* a run (worker's, or one the owner took back) is between its claim and its end */
     int quit;
+    int core;
 };
+
+uint64_t vj_now_us(void)
+{
+    return (uint64_t)esp_timer_get_time();
+}
+
+void vj_relax(void)
+{
+    __asm__ __volatile__("nop");
+}
 
 static void warn_once(const char *msg, int *flag)
 {
@@ -35,35 +52,59 @@ static void warn_once(const char *msg, int *flag)
     }
 }
 
+/* One cooperative loop: parse when the ring has room (never preempted by deblock), else a deblock segment of a claimed
+ * run, else poll an armed parser for 200 us, else sleep. One task, so there is no kernel wake per macroblock. */
 static void worker_main(void *p)
 {
     struct vj_worker *w = p;
+    uint32_t s = 0, u = 0, t0 = esp_cpu_get_cycle_count();
+    int active = 0;
     for (;;) {
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        for (;;) {
-            uint32_t s, u;
-            int q, claimed;
-            portENTER_CRITICAL(&w->lock);
+        vj_worker_step_fn stepf = __atomic_load_n(&w->step, __ATOMIC_ACQUIRE);
+        int r = stepf ? stepf(w->sarg) : 0;
+        if (r == 1) {
+            t0 = esp_cpu_get_cycle_count();
+            continue;
+        }
+        if (active) {
+            if (w->fn(w->arg, u)) {
+                portENTER_CRITICAL(&w->lock);
+                w->hseq = s;
+                w->running = 0;
+                portEXIT_CRITICAL(&w->lock);
+                xSemaphoreGive(w->idle);
+                active = 0;
+            }
+            t0 = esp_cpu_get_cycle_count();
+            continue;
+        }
+        int q, claimed;
+        portENTER_CRITICAL(&w->lock);
+        q = w->quit;
+        claimed = !q && w->seq != w->hseq && !w->running;
+        if (claimed) {
             s = w->seq;
             u = w->upto;
-            q = w->quit;
-            claimed = !q && s != w->hseq && !w->running;
-            if (claimed)
-                w->running = 1;
-            portEXIT_CRITICAL(&w->lock);
-            if (q) {
-                xSemaphoreGive(w->exited);
-                vTaskDelete(NULL); /* does not return; w may be freed from here on */
-            }
-            if (!claimed)
-                break; /* nothing posted, or the owner took the run back */
-            w->fn(w->arg, u);
-            portENTER_CRITICAL(&w->lock);
-            w->hseq = s;
-            w->running = 0;
-            portEXIT_CRITICAL(&w->lock);
-            xSemaphoreGive(w->idle);
+            w->running = 1;
         }
+        portEXIT_CRITICAL(&w->lock);
+        if (q) {
+            xSemaphoreGive(w->exited);
+            vTaskDelete(NULL); /* does not return; w may be freed from here on */
+        }
+        if (claimed) {
+            active = 1;
+            continue;
+        }
+        if (r == 2) {
+            if (esp_cpu_get_cycle_count() - t0 < VJ_SPIN_CYCLES)
+                continue;
+            ulTaskNotifyTake(pdTRUE, 1);
+            t0 = esp_cpu_get_cycle_count();
+            continue;
+        }
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        t0 = esp_cpu_get_cycle_count();
     }
 }
 
@@ -86,6 +127,7 @@ vj_worker_t *vj_worker_create(vj_worker_fn fn, void *arg)
 #else
     BaseType_t core = portNUM_PROCESSORS > 1 ? 1 - xPortGetCoreID() : 0; /* the core the creating task is not on */
 #endif
+    w->core = (int)core;
     if (!w->idle || !w->exited ||
         xTaskCreatePinnedToCore(worker_main, "vjdbw", VJ_WORKER_STACK, w, prio, &w->task, core) != pdPASS) {
         if (w->idle)
@@ -96,6 +138,22 @@ vj_worker_t *vj_worker_create(vj_worker_fn fn, void *arg)
         return NULL;
     }
     return w;
+}
+
+void vj_worker_set_step(vj_worker_t *w, vj_worker_step_fn f, void *arg)
+{
+    w->sarg = arg; /* before the pointer: the task reads step first */
+    __atomic_store_n(&w->step, f, __ATOMIC_RELEASE);
+}
+
+void vj_worker_kick(vj_worker_t *w)
+{
+    xTaskNotifyGive(w->task);
+}
+
+int vj_worker_parallel(vj_worker_t *w)
+{
+    return w->core != (int)xPortGetCoreID();
 }
 
 void vj_worker_post(vj_worker_t *w, uint32_t upto)
@@ -141,7 +199,8 @@ void vj_worker_wait(vj_worker_t *w)
         if (take) {
             warn_once("deblock worker not scheduled: the decoding task ran its work (a task on the worker's core "
                       "at or above its priority?)", &warned);
-            w->fn(w->arg, u);
+            while (!w->fn(w->arg, u))
+                ;
             portENTER_CRITICAL(&w->lock);
             w->hseq = s;
             w->running = 0;
@@ -173,6 +232,7 @@ void vj_worker_warn(const char *msg)
 
 #else /* host: pthreads */
 #include <pthread.h>
+#include <sched.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -182,45 +242,89 @@ unsigned vj_worker_test_takebacks;
 struct vj_worker {
     vj_worker_fn fn;
     void *arg;
+    vj_worker_step_fn step;
+    void *sarg;
     pthread_t th;
     pthread_mutex_t m;
     pthread_cond_t work, idle;
     uint32_t seq, upto, hseq;
     int running;
     int quit;
+    int kicked;
 };
 
+uint64_t vj_now_us(void)
+{
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (uint64_t)t.tv_sec * 1000000u + (uint64_t)t.tv_nsec / 1000u;
+}
+
+void vj_relax(void)
+{
+    sched_yield();
+}
+
+/* The same cooperative loop as the ESP task: parse step, deblock segment, poll, sleep. */
 static void *worker_main(void *p)
 {
     struct vj_worker *w = p;
-    pthread_mutex_lock(&w->m);
+    uint32_t s = 0, u = 0, stalled = 0;
+    int active = 0;
     for (;;) {
-        while (!w->quit && (w->seq == w->hseq || w->running))
-            pthread_cond_wait(&w->work, &w->m);
-        if (w->quit)
-            break;
-#ifdef VJ_WORKER_STALL_MS /* test: a worker that is not scheduled for a while before it claims the run */
-        pthread_mutex_unlock(&w->m);
-        usleep(VJ_WORKER_STALL_MS * 1000);
-        pthread_mutex_lock(&w->m);
-        if (w->quit)
-            break;
-        if (w->seq == w->hseq || w->running)
+        vj_worker_step_fn stepf = __atomic_load_n(&w->step, __ATOMIC_ACQUIRE);
+        int r = stepf ? stepf(w->sarg) : 0;
+        if (r == 1)
             continue;
-#endif
-        uint32_t s = w->seq, u = w->upto;
-        w->running = 1;
-        pthread_mutex_unlock(&w->m);
-#ifdef VJ_WORKER_JITTER_US /* race stress: the worker dawdles a random time before each run */
-        usleep((unsigned)rand() % VJ_WORKER_JITTER_US);
-#endif
-        w->fn(w->arg, u);
+        if (active) {
+            if (w->fn(w->arg, u)) {
+                pthread_mutex_lock(&w->m);
+                w->hseq = s;
+                w->running = 0;
+                pthread_cond_broadcast(&w->idle);
+                pthread_mutex_unlock(&w->m);
+                active = 0;
+            }
+            continue;
+        }
         pthread_mutex_lock(&w->m);
-        w->hseq = s;
-        w->running = 0;
-        pthread_cond_broadcast(&w->idle);
+        if (w->quit) {
+            pthread_mutex_unlock(&w->m);
+            break;
+        }
+        if (w->seq != w->hseq && !w->running) {
+#ifdef VJ_WORKER_STALL_MS /* test: a worker that is not scheduled for a while before it claims the run */
+            if (stalled != w->seq) {
+                stalled = w->seq;
+                pthread_mutex_unlock(&w->m);
+                usleep(VJ_WORKER_STALL_MS * 1000);
+                continue;
+            }
+#endif
+            (void)stalled;
+            s = w->seq;
+            u = w->upto;
+            w->running = 1;
+            active = 1;
+            pthread_mutex_unlock(&w->m);
+#ifdef VJ_WORKER_JITTER_US /* race stress: the worker dawdles a random time before each run */
+            usleep((unsigned)rand() % VJ_WORKER_JITTER_US);
+#endif
+            continue;
+        }
+        if (w->kicked) {
+            w->kicked = 0;
+            pthread_mutex_unlock(&w->m);
+            continue;
+        }
+        if (r == 2) {
+            pthread_mutex_unlock(&w->m);
+            sched_yield();
+            continue;
+        }
+        pthread_cond_wait(&w->work, &w->m);
+        pthread_mutex_unlock(&w->m);
     }
-    pthread_mutex_unlock(&w->m);
     return NULL;
 }
 
@@ -241,6 +345,26 @@ vj_worker_t *vj_worker_create(vj_worker_fn fn, void *arg)
         return NULL;
     }
     return w;
+}
+
+void vj_worker_set_step(vj_worker_t *w, vj_worker_step_fn f, void *arg)
+{
+    w->sarg = arg;
+    __atomic_store_n(&w->step, f, __ATOMIC_RELEASE);
+}
+
+void vj_worker_kick(vj_worker_t *w)
+{
+    pthread_mutex_lock(&w->m);
+    w->kicked = 1;
+    pthread_cond_signal(&w->work);
+    pthread_mutex_unlock(&w->m);
+}
+
+int vj_worker_parallel(vj_worker_t *w)
+{
+    (void)w;
+    return 1;
 }
 
 void vj_worker_post(vj_worker_t *w, uint32_t upto)
@@ -279,7 +403,8 @@ void vj_worker_wait(vj_worker_t *w)
         w->running = 1;
         vj_worker_test_takebacks++;
         pthread_mutex_unlock(&w->m);
-        w->fn(w->arg, u);
+        while (!w->fn(w->arg, u))
+            ;
         pthread_mutex_lock(&w->m);
         w->hseq = s;
         w->running = 0;

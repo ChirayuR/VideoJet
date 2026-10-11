@@ -16,7 +16,12 @@
 #define VJ_WORKER_WAIT_MS 50
 
 typedef struct vj_worker vj_worker_t;
-typedef void (*vj_worker_fn)(void *arg, uint32_t upto);
+/* Returns 1 when the run up to `upto` is complete, 0 when it wants to be called again with the same upto (the worker
+ * may run the parser's step between calls). */
+typedef int (*vj_worker_fn)(void *arg, uint32_t upto);
+/* The parse pipeline's step (VJ_PARSE_PIPELINE), run by the same task ahead of the deblock run: 1 = did a piece of work,
+ * 0 = nothing to do (not armed), 2 = armed but blocked (ring full): poll. Called often, lock free. */
+typedef int (*vj_worker_step_fn)(void *arg);
 
 /* NULL when the thread cannot be created. */
 vj_worker_t *vj_worker_create(vj_worker_fn fn, void *arg);
@@ -26,6 +31,14 @@ void vj_worker_wait(vj_worker_t *w);
 void vj_worker_destroy(vj_worker_t *w);
 /* True while a posted run has not finished (for tests: nothing may be in flight when vj_decode_au returns). */
 int vj_worker_busy(vj_worker_t *w);
+void vj_worker_set_step(vj_worker_t *w, vj_worker_step_fn f, void *arg);
+/* Wake the task: a step became possible (the owner armed a slice). */
+void vj_worker_kick(vj_worker_t *w);
+/* The task runs on another core than the caller (always 1 on the host). */
+int vj_worker_parallel(vj_worker_t *w);
+/* Monotonic microseconds, and a pause for spin loops. */
+uint64_t vj_now_us(void);
+void vj_relax(void);
 /* One line on the log, the first time only (the worker is a best-effort speedup: what it cannot do it says once). */
 void vj_worker_warn(const char *msg);
 #ifndef ESP_PLATFORM

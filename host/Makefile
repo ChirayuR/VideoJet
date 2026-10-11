@@ -3,7 +3,9 @@ CFLAGS ?= -std=gnu99 -O2 -g -D_ERROR_PRINT
 # WORKER=1 (default): the deblock worker (VJ_DEBLOCK_WORKER) runs as a pthread, so every check below exercises the
 # threaded path. WORKER=0 builds the sequential decoder (make WORKER=0 B=../build-host-seq), the reference for diffs.
 WORKER ?= 1
-VJF := $(if $(filter 1,$(WORKER)),-DVJ_DEBLOCK_WORKER -pthread,)
+# PIPE=1: the parse pipeline too (needs WORKER=1); PIPEF adds test macros (VJ_RING_DEPTH=n, VJ_PIPE_JITTER_US=n, ...)
+PIPE ?= 0
+VJF := $(if $(filter 1,$(WORKER)),-DVJ_DEBLOCK_WORKER -pthread,) $(if $(filter 1,$(PIPE)),-DVJ_PARSE_PIPELINE,) $(PIPEF)
 B := ../build-host
 WORKER_TESTS = $(if $(filter 1,$(WORKER)),$(B)/test_join ../streams && $(B)/test_stall ../streams,true)
 WORKER_BINS = $(if $(filter 1,$(WORKER)),$(B)/test_join $(B)/test_stall,)
@@ -72,11 +74,11 @@ check: all
 # The same gate under ThreadSanitizer (worker on): any data race between the decoding thread and the worker fails it.
 # setarch -R: TSan aborts ("unexpected memory mapping") under the high-entropy ASLR of recent kernels.
 check-tsan:
-	setarch $$(uname -m) -R $(MAKE) B=../build-host-tsan WORKER=1 CFLAGS='-std=gnu99 -O1 -g -fsanitize=thread -D_ERROR_PRINT' check
+	setarch $$(uname -m) -R $(MAKE) B=../build-host-tsan WORKER=1 PIPE=1 CFLAGS='-std=gnu99 -O1 -g -fsanitize=thread -D_ERROR_PRINT' check
 
 # And under AddressSanitizer + UBSan, worker on and off (shift off: the filters shift negative values, benign on GCC, pre-existing).
 check-asan:
-	$(MAKE) B=../build-host-asan WORKER=1 CFLAGS='-std=gnu99 -O1 -g -fsanitize=address,undefined -fno-sanitize=shift -fno-sanitize-recover=undefined -D_ERROR_PRINT' check
+	$(MAKE) B=../build-host-asan WORKER=1 PIPE=1 CFLAGS='-std=gnu99 -O1 -g -fsanitize=address,undefined -fno-sanitize=shift -fno-sanitize-recover=undefined -D_ERROR_PRINT' check
 	$(MAKE) B=../build-host-asan-seq WORKER=0 CFLAGS='-std=gnu99 -O1 -g -fsanitize=address,undefined -fno-sanitize=shift -fno-sanitize-recover=undefined -D_ERROR_PRINT' check
 
 # Worker on against worker off, damaged streams included (see fzdiff.sh).
