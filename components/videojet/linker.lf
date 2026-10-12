@@ -8,5 +8,7 @@ entries:
         h264bsd_seq_param_set (default)
         h264bsd_pic_param_set (default)
         h264bsd_vui (default)
+        # NAL extraction: once per NAL (one call per slice), its word loop runs from the I-cache. The internal RAM budget (R12).
+        h264bsd_byte_stream (default)
     else:
         * (default)

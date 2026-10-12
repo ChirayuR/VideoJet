@@ -117,17 +117,6 @@ Every change made for VideoJet is listed here, newest last.
     - `host/test_idct.c` holds the original and compares return value and outputs over every coeffMap x qp x skip,
       extreme and guard-edge coefficients, aligned and misaligned blocks. Any change to `vj_idct_pie.S` or to that
       full path must re-run `test/idct_pie` on the board: `IDCT PASS`, 0 mismatches.
-  - NAL extraction (`h264bsd_byte_stream.c`, `h264bsdExtractNalUnit`). The start-code search keeps its byte loop (the
-    start code is a few bytes in). The NAL-end scan and the emulation-byte removal work on zero runs: only a run of two or
-    more zeros can matter, and only the byte that ends it (01 = the next start code; 03 after exactly two zeros = an
-    emulation byte; anything else after three or more = invalid stream), so the bytes that are not zero are skipped four
-    at a time (`SkipNonZero`: a scalar head to a word boundary, aligned 32-bit loads, `(w - 0x01010101) & ~w &
-    0x80808080` as the has-a-zero-byte test; nothing outside the buffer is read). The removal pass moves the bytes
-    between emulation bytes with one `memmove` each (none before the first), and an error still leaves the bytes before
-    the offending one moved down, as the byte loop did.
-    Identical to the byte-at-a-time original for every input (status, `*readBytes`, every field of `strmData_t`, the
-    buffer afterwards): `host/test_nal.c` holds the original and compares them on every buffer of length 1..8 over
-    {00 01 02 03 04 FF} (and 9..13 over smaller alphabets), 10 M random ones and 4000 long ones, each at 4 alignments.
 - Apache-2.0 §4(b) modification notice: every file changed above carries the header line
   `Modified for VideoJet: see h264bsd/README.md, Local changes.` Comment-only.
   - Row-lagged deblock worker (`VJ_DEBLOCK_WORKER`; `h264bsd_deblocking.c/h`, `h264bsd_decoder.c`, `h264bsd_slice_data.c`,
@@ -166,3 +155,25 @@ Every change made for VideoJet is listed here, newest last.
     fence, wakes it only if the flag is set. The worker's run is now `DbwRun` in segments of 10 MBs (`FilterMbRows` takes an MB
     range) so the task can parse between them. Test hooks, each used by a committed test: `VJ_POISON`, `VJ_NBR_STORAGE`,
     `VJ_PIPE_JITTER_US`, `VJ_PIPE_NOSTEP`, `VJ_PIPE_STALL_EVERY`, `VJ_RING_DEPTH` (see `host/Makefile`).
+  - NAL extraction (`h264bsd_byte_stream.c`, `h264bsdExtractNalUnit`). The start-code search keeps its byte loop (the
+    start code is a few bytes in). The NAL-end scan and the emulation-byte removal work on zero runs: only a run of two or
+    more zeros can matter, and only the byte that ends it (01 = the next start code; 03 after exactly two zeros = an
+    emulation byte; anything else after three or more = invalid stream), so the bytes that are not zero are skipped four
+    at a time (`SkipNonZero`: a scalar head to a word boundary, aligned 32-bit loads, `(w - 0x01010101) & ~w &
+    0x80808080` as the has-a-zero-byte test; nothing outside the buffer is read). The removal pass moves the bytes
+    between emulation bytes with one `memmove` each (none before the first), and an error still leaves the bytes before
+    the offending one moved down, as the byte loop did.
+    - `memmove` is the S3 ROM's byte loop (about 8-10 cycles per byte), so an NAL with an early emulation byte pays that
+      for every byte after it (still less than the two byte passes it replaces); a word-copy helper would be the next
+      step if emulation-heavy streams matter.
+    - One `SkipNonZero` call per zero run: with a zero byte every 4th byte or denser it is no faster than the byte loop
+      (x86 proxy: 0.94x at every 4th, 0.3x at every 2nd; every 16th 4x faster, no zeros 5.7x). The corpus has one zero run
+      per ~80 bytes (real AA captures are not measured yet).
+    - The object is mapped to flash (`components/videojet/linker.lf`, with the other once-per-NAL-or-less code): one call per
+      NAL, and its loop runs from the I-cache. So the 645 B of the new code are not added to internal RAM and the 337 B of
+      the old function are freed (the internal RAM budget, ruling R12).
+    - Identical to the byte-at-a-time original for every input (status, `*readBytes`, every field of `strmData_t`, the
+      buffer afterwards): `host/test_nal.c` holds the original and compares them on every buffer of length 1..8 over
+      {00 01 02 03 04 FF} (and 9..13 over smaller alphabets), 10 M random ones and 4000 long ones, each at 4 alignments with
+      a varying filler below the buffer. It runs once in `make check` (it does not depend on the worker or the pipeline). A
+      read past the end of the buffer is seen only by ASan: an edit of this file must pass `make check-asan` too.

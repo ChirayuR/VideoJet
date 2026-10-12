@@ -19,7 +19,7 @@ LIB_INC := -I$(VJ)/include -I$(VJ)/src -I$(DEC)
 INC := -I$(VJ)/include -I../components/vj_hash/include
 HASH := ../components/vj_hash/include/vj_hash.h
 
-all: $(B)/vjdec $(B)/vjhash_raw $(B)/test_api $(B)/test_mc $(B)/test_cavlc $(B)/test_nal $(B)/test_write $(B)/test_idct $(B)/test_nbr $(B)/fz $(WORKER_BINS)
+all: $(B)/vjdec $(B)/vjhash_raw $(B)/test_api $(B)/test_mc $(B)/test_cavlc $(B)/test_write $(B)/test_idct $(B)/test_nbr $(B)/fz $(WORKER_BINS)
 
 $(B):
 	mkdir -p $@
@@ -45,10 +45,15 @@ $(B)/test_cavlc: test_cavlc.c $(DEC)/h264bsd_cavlc.c $(DEC)/h264bsd_stream.c $(L
 
 # h264bsdExtractNalUnit against the original byte-at-a-time version (status, readBytes, strmData_t, the buffer after),
 # exhaustive on short buffers plus NAL_RANDOM random ones (default 10 M, 1 M under a sanitizer), each at 4 alignments.
-# It links only the two files it needs.
+# It links only h264bsd_byte_stream.c and h264bsd_stream.c, so it does not depend on WORKER / PIPE: `check` and `check-asan`
+# run it once, not once per configuration. A read past the end of the buffer is seen only by ASan (exact-size blocks), so an
+# edit of h264bsd_byte_stream.c must pass `make check-asan` too.
 NAL_RANDOM ?=
 $(B)/test_nal: test_nal.c $(DEC)/h264bsd_byte_stream.c $(DEC)/h264bsd_stream.c $(LIB_HDR) | $(B)
 	$(CC) $(CFLAGS) $(LIB_INC) -o $@ test_nal.c $(DEC)/h264bsd_byte_stream.c $(DEC)/h264bsd_stream.c
+
+check-nal: $(B)/test_nal
+	@$(B)/test_nal $(NAL_RANDOM)
 
 # The write-out (h264bsd_image.c) against a plain clip(pred + residual) reference.
 $(B)/test_write: test_write.c $(LIB_SRC) $(LIB_HDR) | $(B)
@@ -86,6 +91,7 @@ $(B)/vjhash_raw: vjhash_raw.c $(HASH) | $(B)
 # The correctness floor, for each configuration the library ships: the sequential decoder, the deblock worker, the deblock
 # worker with the parse pipeline.
 check:
+	$(MAKE) check-nal
 	$(MAKE) B=$(B)-seq WORKER=0 PIPE=0 check-one
 	$(MAKE) B=$(B)-pipe0 WORKER=1 PIPE=0 check-one
 	$(MAKE) B=$(B)-pipe1 WORKER=1 PIPE=1 check-one
@@ -96,7 +102,6 @@ check-one: all
 	@$(B)/test_api ../streams vectors
 	@$(B)/test_mc
 	@$(B)/test_cavlc
-	@$(B)/test_nal $(NAL_RANDOM)
 	@$(B)/test_nbr
 	@$(WORKER_TESTS)
 	@$(B)/test_write
@@ -111,6 +116,7 @@ check-tsan:
 # And under AddressSanitizer + UBSan, worker on and off (shift off: the filters shift negative values, benign on GCC, pre-existing).
 ASAN_CFLAGS = -std=gnu99 -O1 -g -fsanitize=address,undefined -fno-sanitize=shift -fno-sanitize-recover=undefined -D_ERROR_PRINT
 check-asan:
+	$(MAKE) B=../build-host-asan CFLAGS='$(ASAN_CFLAGS)' check-nal
 	$(MAKE) B=../build-host-asan WORKER=1 PIPE=1 CFLAGS='$(ASAN_CFLAGS)' check-one
 	$(MAKE) B=../build-host-asan-pipe0 WORKER=1 PIPE=0 CFLAGS='$(ASAN_CFLAGS)' check-one
 	$(MAKE) B=../build-host-asan-seq WORKER=0 PIPE=0 CFLAGS='$(ASAN_CFLAGS)' check-one
@@ -154,4 +160,4 @@ check-diff:
 	  REPS=3 SEEDS=4 ./fzdiff.sh ../build-host-pipe$$pipe/fz ../build-host-seq/fz ../build-host-pipe$$pipe/crafted || exit 1; \
 	done
 
-.PHONY: all check check-one check-tsan check-asan check-poison check-storage check-depth check-diff
+.PHONY: all check check-nal check-one check-tsan check-asan check-poison check-storage check-depth check-diff

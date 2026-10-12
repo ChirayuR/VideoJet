@@ -8,11 +8,18 @@
  *     past them, and what an error leaves behind (the bytes before the offending one are moved down already).
  * The struct and *readBytes are poisoned first, so "not written" is compared as well.
  * Each case runs at all four alignments of the buffer start (0..3) on a buffer that ends exactly at the end of its
- * allocation, so ASan/valgrind flag any read or write outside [buf, buf + len).
+ * allocation. What that catches:
+ *   - a read or write past the end: ASan flags it (make check-asan). A plain build cannot see a read past the end, so an
+ *     edit of h264bsd_byte_stream.c must pass `make check-asan` too;
+ *   - a read below the start that changes a result: nothing flags the access itself (the up to 3 bytes between the
+ *     allocation start and the buffer share an ASan granule with the buffer's first byte), so those bytes hold a filler that
+ *     changes from case to case (00 03 01 FF) and the result must still equal the original's, which never reads them;
+ *   - a write below the start: those bytes are checked afterwards.
+ *   A read whose value is never used cannot be seen by any of this; it is harmless (the same aligned word, the same page).
  *
  * Inputs:
  *   1. exhaustive: every buffer of length 1..8 over {00 01 02 03 04 FF}; length 9..10 over {00 01 03 04};
- *      length 11..13 over {00 01 03} (and length 0, once);
+ *      length 11..13 over {00 01 03} (and length 0, once, unless asserts are on: it is not a legal call);
  *   2. RANDOM_BUFFERS random buffers of length 1..300 from six generators (biased to 00 and 03, NAL-like with start codes,
  *      emulation bytes and trailing zeros, sparse zeros, runs of zeros, plain random, mutated NAL-like), many with
  *      the start code at the front so the byte stream branch runs;
@@ -225,6 +232,9 @@ static u8 *bufA[MAXLEN + 1][4], *bufB[MAXLEN + 1][4];
 
 static unsigned long cases, nOk, nOkMoved, nNokNoStart, nNokKept, nNokMoved;
 
+/* what the bytes just below the new function's buffer hold (see the header) */
+static const u8 below[4] = {0x00, 0x03, 0x01, 0xFF};
+
 static void hexdump(const char *tag, const u8 *p, u32 n)
 {
     printf("  %s:", tag);
@@ -247,19 +257,24 @@ static int check(const u8 *src, u32 len, unsigned al, u8 *a, u8 *b)
 {
     strmData_t sa, sb, ca, cb;
     u32 ra = 0xDEADBEEFu, rb = 0xDEADBEEFu, st_a, st_b;
+    u8 fill = below[((cases >> 2) + al) & 3]; /* the 4 alignments of one input come in a row */
+    int wroteBelow = 0;
 
     memcpy(a, src, len);
     memcpy(b, src, len);
+    memset(b - al, fill, al);
     memset(&sa, 0xA5, sizeof sa);
     memset(&sb, 0xA5, sizeof sb);
     st_a = h264bsdExtractNalUnitOld(a, len, &sa, &ra);
     st_b = h264bsdExtractNalUnit(b, len, &sb, &rb);
     ca = canon(&sa, a, len);
     cb = canon(&sb, b, len);
+    for (unsigned i = 1; i <= al; i++)
+        wroteBelow |= b[-(int)i] != fill;
     cases++;
-    if (st_a != st_b || ra != rb || memcmp(&ca, &cb, sizeof ca) || memcmp(a, b, len))
+    if (st_a != st_b || ra != rb || memcmp(&ca, &cb, sizeof ca) || memcmp(a, b, len) || wroteBelow)
     {
-        printf("MISMATCH len %u alignment %u\n", len, al);
+        printf("MISMATCH len %u alignment %u%s\n", len, al, wroteBelow ? " (bytes below the buffer were written)" : "");
         hexdump("input", src, len);
         printf("  old: status %u readBytes %u size %u readBits %u cache %08x %08x start+%ld\n", st_a, ra, sa.strmBuffSize,
                sa.strmBuffReadBits, sa.cache[0], sa.cache[1], (long)(uintptr_t)ca.pStrmBuffStart);
@@ -517,7 +532,6 @@ int main(int argc, char **argv)
     unsigned long nrandom = argc > 1 ? strtoul(argv[1], 0, 10) : 10000000UL;
 #endif
     static const u8 a6[6] = {0x00, 0x01, 0x02, 0x03, 0x04, 0xFF}, a4[4] = {0x00, 0x01, 0x03, 0x04}, a3[3] = {0x00, 0x01, 0x03};
-    u8 empty[1] = {0};
 
     for (unsigned len = 0; len <= MAXLEN; len++)
         for (unsigned al = 0; al < 4; al++)
@@ -528,8 +542,13 @@ int main(int argc, char **argv)
 
     if (named())
         return 1;
-    if (all_alignments(empty, 0)) /* len 0: not a legal call (ASSERT(len)), but identical */
-        return 1;
+#ifndef _ASSERT_USED
+    {
+        u8 empty[1] = {0};
+        if (all_alignments(empty, 0)) /* len 0: not a legal call (ASSERT(len)), but identical */
+            return 1;
+    }
+#endif
     if (exhaustive(a6, 6, 1, 8) || exhaustive(a4, 4, 9, 10) || exhaustive(a3, 3, 11, 13))
         return 1;
     printf("exhaustive: %lu cases\n", cases);
