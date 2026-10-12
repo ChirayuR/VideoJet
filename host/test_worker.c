@@ -1,9 +1,13 @@
-/* The deblock worker's own contracts (host, worker on). Built twice by the Makefile:
+/* The deblock worker's own contracts (host, worker on). Built by the Makefile as:
  *  test_join  (-DVJ_WORKER_JITTER_US: the worker dawdles after it claims a run): when vj_decode_au returns, on every path,
  *             no run is in flight. Remove the join at the end of vj_decode_au and this fails.
  *  test_stall (-DVJ_WORKER_STALL_MS: the worker is not scheduled before it claims): vj_decode_au takes the run back
  *             after VJ_WORKER_WAIT_MS and the output is the same as with no worker at all.
- * Both also run the thread-creation-failure path (no worker: the decoder filters in the pass). */
+ *  test_starve (PIPE=1, -DVJ_PIPE_NOSTEP: the worker task never runs the parser): the decoding task takes it back after 50 ms
+ *             and parses inline; the output is the same as with no worker at all.
+ *  test_sleep (PIPE=1, -DVJ_PIPE_STALL_EVERY: the decoding task stalls now and then): the ring stays full, the worker sleeps
+ *             and is woken by the decoding task freeing a slot; the output is the same as with no worker at all.
+ * All also run the thread-creation-failure path (no worker: the decoder filters in the pass). */
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -13,8 +17,9 @@
 #include "vj_hash.h"
 #include "vj_worker.h"
 #include "h264bsd_storage.h"
-#ifdef VJ_PIPE_NOSTEP
-extern unsigned vjParseTestTakebacks;
+#ifdef VJ_PARSE_PIPELINE
+extern unsigned vjParseTestArmed, vjParseTestTakebacks;
+static unsigned g_sleeps, g_wakes; /* of every decoder's worker, summed */
 #endif
 
 static uint8_t *slurp(const char *path, size_t *len)
@@ -64,6 +69,18 @@ static unsigned run(const char *path, int n, int check, int cut, uint32_t *out)
         frames += r == VJ_FRAME;
         o += l;
     }
+#ifdef VJ_PARSE_PIPELINE
+    {
+        storage_t *st = (storage_t *)(void *)d;
+        unsigned k, sl, wk;
+
+        if (st->vjDbw) {
+            h264bsdDbwStats(st->vjDbw, &k, &sl, &wk);
+            g_sleeps += sl;
+            g_wakes += wk;
+        }
+    }
+#endif
     vj_decoder_destroy(d);
     free(au);
     free(s);
@@ -93,8 +110,17 @@ int main(int argc, char **argv)
     printf("test_stall: ok (%u runs taken back)\n", vj_worker_test_takebacks);
 #elif defined(VJ_PIPE_NOSTEP)
     assert(vjParseTestTakebacks > 0); /* the parser really was taken back */
-    printf("test_starve: ok (%u slices parsed by the decoding task)\n", vjParseTestTakebacks);
+    printf("test_starve: ok (%u take-backs in %u armed slices)\n", vjParseTestTakebacks, vjParseTestArmed);
+#elif defined(VJ_PIPE_STALL_EVERY)
+    assert(g_sleeps > 0 && g_wakes > 0); /* the worker slept on a full ring and was woken */
+    /* a lost wake-up would leave the decoding task waiting for a record until its 50 ms take-back */
+    assert(vjParseTestTakebacks <= vjParseTestArmed / 10);
+    printf("test_sleep: ok (%u worker sleeps, %u wakes, %u slices armed, %u take-backs)\n", g_sleeps, g_wakes, vjParseTestArmed,
+        vjParseTestTakebacks);
 #else
+#ifdef VJ_PARSE_PIPELINE
+    assert(vjParseTestArmed > 0); /* the pipeline really ran: slices were handed to the worker */
+#endif
     puts("test_join: ok");
 #endif
     return 0;

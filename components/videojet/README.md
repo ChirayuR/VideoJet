@@ -181,6 +181,13 @@ What to know before enabling it:
   order (`h264bsd/h264bsd_slice_data.c` has the protocol). Between records the task filters in segments of 10 macroblocks.
   - **When it runs:** one slice group, a primary (not redundant) slice, a worker on another core than the caller. Otherwise the same
     records are made on the decoding task, as without the option (single-core builds, FMO, redundant slices).
+  - **Scheduling:** the worker task stays runnable through each slice it parses: it parses while the ring has room, filters
+    in between, polls for about 200 us when the ring is full and no slot was freed, and then sleeps until the decoding task
+    frees one (the decoding task notifies only a sleeping worker: no kernel call per macroblock in the normal case). Tasks on
+    its core with a lower priority than the worker (the priority of the task that created the decoder) run only in its gaps
+    between slices and while it sleeps; work that must run on that core during a decode needs a higher priority, which
+    stalls the decode for its run time (and after 50 ms without a record the decoding task parses itself). One decoder per
+    worker core.
   - **Rules:** as for the worker (create, decode, destroy from one task; keep the decoding task off the worker's core). The take-back
     uses the esp_timer clock, so an unpinned decoding task is safe: if the worker produces no record for 50 ms the decoding task takes
     the parser back and parses inline (one warning in the log); a waiter that lands on the worker's core sleeps a tick instead of

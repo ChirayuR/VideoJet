@@ -138,6 +138,14 @@ config VJ_PARSE_PIPELINE
         Slices with slice groups (FMO) or redundant slices, and single-core builds (or a worker on the decoding task's
         own core), parse on the decoding task as before. If the worker task produces no record for 50 ms, the decoding
         task takes the parser back and parses itself.
+        The worker task stays runnable through each slice it parses: it parses while the ring has room, filters in
+        between, and polls for about 200 us when the ring is full and the decoding task has freed no slot; after that it
+        sleeps until the decoding task frees one (the decoding task wakes it only if it is asleep, so there is no
+        kernel call per macroblock in the normal case). Tasks on the worker's core with a lower priority than the worker
+        (the priority of the task that created the decoder) run only in its gaps between slices and while it sleeps. Work
+        that must run on that core during a decode needs a higher priority than the worker; it then preempts the worker
+        and stalls the decode for as long as it runs (after 50 ms without a record the decoding task takes the parser
+        back). One decoder per worker core.
         Cost at 800x480, measured on the bench: heap +12.6 KB of internal RAM (the ring of 6 records, 2.1 KB each, less
         the one record the decoder always had; the neighbour shadow, 1.3 KB; the worker's stack, 2 KB -> 3 KB, of which
         1,152 B is used), libvideojet's code +1.9 KB of IRAM. The worker's task needs the esp_timer clock for the 50 ms

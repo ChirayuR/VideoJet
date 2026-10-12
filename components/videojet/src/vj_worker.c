@@ -14,6 +14,7 @@
 
 #include "esp_cpu.h"
 #include "esp_timer.h"
+#include "esp_rom_sys.h"
 
 /* Stack bytes (internal RAM; IDF allocates task stacks there). Measured high water, deblock filter alone 988 B, with
  * the parser on the same task 1,152 B on every bench stream (VJ_PROFILE builds log it at destroy). 3 KB leaves the
@@ -24,9 +25,11 @@
 #else
 #define VJ_WORKER_STACK 3072
 #endif
-/* An armed worker with nothing to do (the ring is full) polls this long before it sleeps a tick: the decoding task
- * empties a full ring in well under a millisecond, and a sleeping worker would only wake at the next tick. */
-#define VJ_SPIN_CYCLES (240 * 3000)
+/* An armed worker with nothing to do (the ring is full) polls this long (CPU cycles, about 200 us), then announces a
+ * sleep and blocks until the decoding task, which frees a slot, wakes it (vj_worker_wake: a notify only when the worker
+ * announced the sleep, so no kernel call per macroblock). A fixed constant: the ring holds 6 macroblocks, the decoding
+ * task frees one every 10-100 us, so the poll only ends when the decoding task itself stalls. */
+#define VJ_STALL_CYCLES (CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ * 200u)
 
 struct vj_worker {
     vj_worker_fn fn;
@@ -42,6 +45,7 @@ struct vj_worker {
     int running;              /* a run (worker's, or one the owner took back) is between its claim and its end */
     int quit;
     int core;
+    unsigned nkick, nsleep, nwake; /* counters (relaxed atomics): tests and profile builds */
 };
 
 uint32_t vj_ticks(void)
@@ -68,7 +72,9 @@ static void warn_once(const char *msg, int *flag)
 }
 
 /* One cooperative loop: parse when the ring has room (never preempted by deblock), else a deblock segment of a claimed
- * run, else poll an armed parser (3 ms), else sleep. One task, so there is no kernel wake per macroblock. */
+ * run, else poll an armed parser for 200 us, else sleep (a blocked ring: until the decoding task frees a slot; nothing
+ * armed: until a post or an arm). One task, so there is no kernel wake per macroblock. The task is runnable for as long
+ * as it parses, filters or polls, i.e. through each slice it parses; lower-priority tasks on its core run in its gaps. */
 static void worker_main(void *p)
 {
     struct vj_worker *w = p;
@@ -76,7 +82,7 @@ static void worker_main(void *p)
     int active = 0;
     for (;;) {
         vj_worker_step_fn stepf = __atomic_load_n(&w->step, __ATOMIC_ACQUIRE);
-        int r = stepf ? stepf(w->sarg) : 0;
+        int r = stepf ? stepf(w->sarg, 0) : 0;
         if (r == 1) {
             t0 = esp_cpu_get_cycle_count();
             continue;
@@ -93,36 +99,35 @@ static void worker_main(void *p)
             t0 = esp_cpu_get_cycle_count();
             continue;
         }
-        int q, claimed;
-        /* armed, ring full, nothing posted or asked: poll without taking the lock (the owner takes it for every post) */
-        if (r == 2 && !__atomic_load_n(&w->quit, __ATOMIC_RELAXED) &&
-            __atomic_load_n(&w->seq, __ATOMIC_RELAXED) == __atomic_load_n(&w->hseq, __ATOMIC_RELAXED)) {
-            if (esp_cpu_get_cycle_count() - t0 >= VJ_SPIN_CYCLES) {
-                ulTaskNotifyTake(pdTRUE, 1);
-                t0 = esp_cpu_get_cycle_count();
+        /* a run to claim? When armed and blocked with nothing posted or asked, skip the lock (the owner takes it for
+         * every post) */
+        if (r != 2 || __atomic_load_n(&w->quit, __ATOMIC_RELAXED) ||
+            __atomic_load_n(&w->seq, __ATOMIC_RELAXED) != __atomic_load_n(&w->hseq, __ATOMIC_RELAXED)) {
+            int q, claimed;
+            portENTER_CRITICAL(&w->lock);
+            q = w->quit;
+            claimed = !q && w->seq != w->hseq && !w->running;
+            if (claimed) {
+                s = w->seq;
+                u = w->upto;
+                w->running = 1;
             }
-            continue;
+            portEXIT_CRITICAL(&w->lock);
+            if (q) {
+                xSemaphoreGive(w->exited);
+                vTaskDelete(NULL); /* does not return; w may be freed from here on */
+            }
+            if (claimed) {
+                active = 1;
+                continue;
+            }
         }
-        portENTER_CRITICAL(&w->lock);
-        q = w->quit;
-        claimed = !q && w->seq != w->hseq && !w->running;
-        if (claimed) {
-            s = w->seq;
-            u = w->upto;
-            w->running = 1;
-        }
-        portEXIT_CRITICAL(&w->lock);
-        if (q) {
-            xSemaphoreGive(w->exited);
-            vTaskDelete(NULL); /* does not return; w may be freed from here on */
-        }
-        if (claimed) {
-            active = 1;
-            continue;
-        }
-        if (r == 2) { /* armed and blocked, but the run is the owner's (taken back): keep polling */
-            if (esp_cpu_get_cycle_count() - t0 >= VJ_SPIN_CYCLES) {
-                ulTaskNotifyTake(pdTRUE, 1);
+        if (r == 2) { /* armed and blocked: poll, and after 200 us without a slot freed, sleep until one is */
+            if (esp_cpu_get_cycle_count() - t0 >= VJ_STALL_CYCLES) {
+                if (stepf(w->sarg, 1) == 3) {
+                    __atomic_fetch_add(&w->nsleep, 1, __ATOMIC_RELAXED);
+                    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+                }
                 t0 = esp_cpu_get_cycle_count();
             }
             continue;
@@ -172,7 +177,26 @@ void vj_worker_set_step(vj_worker_t *w, vj_worker_step_fn f, void *arg)
 
 void vj_worker_kick(vj_worker_t *w)
 {
+    __atomic_fetch_add(&w->nkick, 1, __ATOMIC_RELAXED);
     xTaskNotifyGive(w->task);
+}
+
+void vj_worker_wake(vj_worker_t *w)
+{
+    __atomic_fetch_add(&w->nwake, 1, __ATOMIC_RELAXED);
+    xTaskNotifyGive(w->task);
+}
+
+void vj_worker_stats(vj_worker_t *w, unsigned *kicks, unsigned *sleeps, unsigned *wakes)
+{
+    *kicks = __atomic_load_n(&w->nkick, __ATOMIC_RELAXED);
+    *sleeps = __atomic_load_n(&w->nsleep, __ATOMIC_RELAXED);
+    *wakes = __atomic_load_n(&w->nwake, __ATOMIC_RELAXED);
+}
+
+void vj_stall_us(unsigned us)
+{
+    esp_rom_delay_us(us);
 }
 
 int vj_worker_parallel(vj_worker_t *w)
@@ -239,8 +263,9 @@ void vj_worker_destroy(vj_worker_t *w)
         return;
     vj_worker_wait(w);
 #ifdef CONFIG_VJ_PROFILE /* profiling builds: how much of the worker's stack the deblock filter and the parser used */
-    ESP_LOGI("vjdbw", "worker stack: %u of %u B used (high water)", (unsigned)(VJ_WORKER_STACK - uxTaskGetStackHighWaterMark(w->task)),
-        (unsigned)VJ_WORKER_STACK);
+    ESP_LOGI("vjdbw", "worker stack: %u of %u B used (high water); slice arms %u, ring-full sleeps %u, wakes %u",
+        (unsigned)(VJ_WORKER_STACK - uxTaskGetStackHighWaterMark(w->task)), (unsigned)VJ_WORKER_STACK, w->nkick, w->nsleep,
+        w->nwake);
 #endif
     portENTER_CRITICAL(&w->lock);
     w->quit = 1;
@@ -279,6 +304,7 @@ struct vj_worker {
     int running;
     int quit;
     int kicked;
+    unsigned nkick, nsleep, nwake;
 };
 
 uint32_t vj_ticks(void)
@@ -298,17 +324,19 @@ void vj_yield_wait(void)
     usleep(50);
 }
 
-/* The same cooperative loop as the ESP task: parse step, deblock segment, poll, sleep. */
+/* The same cooperative loop as the ESP task: parse step, deblock segment, poll 200 us, sleep. */
 static void *worker_main(void *p)
 {
     struct vj_worker *w = p;
-    uint32_t s = 0, u = 0, stalled = 0;
+    uint32_t s = 0, u = 0, stalled = 0, t0 = vj_ticks();
     int active = 0;
     for (;;) {
         vj_worker_step_fn stepf = __atomic_load_n(&w->step, __ATOMIC_ACQUIRE);
-        int r = stepf ? stepf(w->sarg) : 0;
-        if (r == 1)
+        int r = stepf ? stepf(w->sarg, 0) : 0;
+        if (r == 1) {
+            t0 = vj_ticks();
             continue;
+        }
         if (active) {
             if (w->fn(w->arg, u)) {
                 pthread_mutex_lock(&w->m);
@@ -318,6 +346,7 @@ static void *worker_main(void *p)
                 pthread_mutex_unlock(&w->m);
                 active = 0;
             }
+            t0 = vj_ticks();
             continue;
         }
         pthread_mutex_lock(&w->m);
@@ -350,13 +379,25 @@ static void *worker_main(void *p)
             pthread_mutex_unlock(&w->m);
             continue;
         }
-        if (r == 2) {
+        if (r == 2) { /* armed and blocked: poll, and after 200 us without a slot freed, sleep until one is */
             pthread_mutex_unlock(&w->m);
-            sched_yield();
+            if (vj_ticks() - t0 >= 200) {
+                if (stepf(w->sarg, 1) == 3) {
+                    __atomic_fetch_add(&w->nsleep, 1, __ATOMIC_RELAXED);
+                    pthread_mutex_lock(&w->m);
+                    while (!w->quit && !w->kicked && !(w->seq != w->hseq && !w->running))
+                        pthread_cond_wait(&w->work, &w->m);
+                    w->kicked = 0;
+                    pthread_mutex_unlock(&w->m);
+                }
+                t0 = vj_ticks();
+            } else
+                sched_yield();
             continue;
         }
         pthread_cond_wait(&w->work, &w->m);
         pthread_mutex_unlock(&w->m);
+        t0 = vj_ticks();
     }
     return NULL;
 }
@@ -388,10 +429,34 @@ void vj_worker_set_step(vj_worker_t *w, vj_worker_step_fn f, void *arg)
 
 void vj_worker_kick(vj_worker_t *w)
 {
+    __atomic_fetch_add(&w->nkick, 1, __ATOMIC_RELAXED);
     pthread_mutex_lock(&w->m);
     w->kicked = 1;
     pthread_cond_signal(&w->work);
     pthread_mutex_unlock(&w->m);
+}
+
+void vj_worker_wake(vj_worker_t *w)
+{
+    __atomic_fetch_add(&w->nwake, 1, __ATOMIC_RELAXED);
+    pthread_mutex_lock(&w->m);
+    w->kicked = 1;
+    pthread_cond_signal(&w->work);
+    pthread_mutex_unlock(&w->m);
+}
+
+void vj_worker_stats(vj_worker_t *w, unsigned *kicks, unsigned *sleeps, unsigned *wakes)
+{
+    *kicks = __atomic_load_n(&w->nkick, __ATOMIC_RELAXED);
+    *sleeps = __atomic_load_n(&w->nsleep, __ATOMIC_RELAXED);
+    *wakes = __atomic_load_n(&w->nwake, __ATOMIC_RELAXED);
+}
+
+void vj_stall_us(unsigned us)
+{
+    uint32_t t0 = vj_ticks();
+    while (vj_ticks() - t0 < us)
+        ;
 }
 
 int vj_worker_parallel(vj_worker_t *w)

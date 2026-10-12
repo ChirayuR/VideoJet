@@ -402,6 +402,17 @@ err:
         produced a record for 50 ms (not scheduled), the decoding task takes
         the context back and parses itself, after the records already made.
 
+        Sleeping: a worker that finds the ring full for about 200 us calls
+        the step with stalled = 1, which sets p->sleeping, issues a full
+        fence and re-reads tail: a slot freed meanwhile cancels the sleep,
+        otherwise the worker blocks. The decoding task frees a slot (tail,
+        release), issues a full fence and reads p->sleeping: a set flag is
+        cleared and wakes the worker (a notify; none in the normal case).
+        Each side's store
+        precedes its load of the other's variable, with a full fence between,
+        so one of them sees the other: the worker never sleeps with a free
+        slot unseen.
+
 ------------------------------------------------------------------------------*/
 
 #define VJ_TAKEBACK_TICKS (50u * VJ_TICKS_PER_MS)
@@ -410,7 +421,8 @@ err:
 #define VJ_SPIN_TICKS (500u * VJ_TICKS_PER_MS / 1000u)
 
 #ifndef ESP_PLATFORM
-unsigned vjParseTestTakebacks; /* host tests: slices whose parser the decoding task took back */
+/* host tests: slices handed to the worker, slices whose parser the decoding task took back */
+unsigned vjParseTestArmed, vjParseTestTakebacks;
 #endif
 
 #ifdef VJ_PIPE_JITTER_US
@@ -431,8 +443,9 @@ static unsigned vjJitter(void)
 #include <unistd.h>
 #endif
 
-/* the worker's side. 1: made a record. 2: armed but the ring is full. 0: not armed */
-int vjParseStep(void *arg)
+/* the worker's side. 1: made a record. 2: armed but the ring is full. 3: (stalled only) the ring is full, the sleeping
+ * flag is set, sleep until woken. 0: not armed */
+int vjParseStep(void *arg, int stalled)
 {
     vjParse_t *p = (vjParse_t *)arg;
     u32 h, t, exp = VJ_PS_ARMED;
@@ -445,7 +458,18 @@ int vjParseStep(void *arg)
     h = __atomic_load_n(&p->head, __ATOMIC_RELAXED);
     t = __atomic_load_n(&p->tail, __ATOMIC_ACQUIRE);
     if (h - t >= VJ_RING_DEPTH)
-        return 2;
+    {
+        if (!stalled)
+            return 2;
+        /* announce the sleep, then look again: the decoding task stores tail, fences, then reads the flag */
+        VJ_JITTER(); /* test: widens the window between the decision and the announcement */
+        __atomic_store_n(&p->sleeping, 1, __ATOMIC_RELAXED);
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+        t = __atomic_load_n(&p->tail, __ATOMIC_ACQUIRE);
+        if (h - t >= VJ_RING_DEPTH)
+            return 3;
+        __atomic_store_n(&p->sleeping, 0, __ATOMIC_RELAXED);
+    }
     if (!__atomic_compare_exchange_n(&p->pstate, &exp, VJ_PS_PARSING, 0,
             __ATOMIC_ACQUIRE, __ATOMIC_RELAXED))
         return 0;
@@ -502,6 +526,8 @@ static void ParseDisarm(vjParse_t *p)
 static void ParseArm(vjParse_t *p, dbw_t *dbw)
 {
     p->mode = VJ_MODE_PIPE;
+    p->dbw = dbw;
+    __atomic_store_n(&p->sleeping, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&p->pstate, VJ_PS_ARMED, __ATOMIC_RELEASE);
     h264bsdDbwKick(dbw);
 }
@@ -566,8 +592,20 @@ static vjSlot_t *ParseFetch(vjParse_t *p)
 static void ParseConsume(vjParse_t *p)
 {
 #ifdef VJ_PARSE_PIPELINE
+    VJ_JITTER(); /* test: widens the windows around the slot being freed */
     __atomic_store_n(&p->tail, __atomic_load_n(&p->tail, __ATOMIC_RELAXED) + 1,
         __ATOMIC_RELEASE);
+    if (p->mode == VJ_MODE_PIPE)
+    {
+        VJ_JITTER();
+        /* a worker that announced a sleep on the full ring is woken, once (the flag is clear in the normal case) */
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+        if (__atomic_load_n(&p->sleeping, __ATOMIC_RELAXED))
+        {
+            __atomic_store_n(&p->sleeping, 0, __ATOMIC_RELAXED);
+            h264bsdDbwWake(p->dbw);
+        }
+    }
 #else
     (void)p;
 #endif
@@ -660,7 +698,12 @@ static u32 DecodeSliceLoop(strmData_t *pStrmData, storage_t *pStorage,
     if (pStorage->vjDbw && !parse->useStorage &&
         pStorage->activePps->numSliceGroups == 1 &&
         !pSliceHeader->redundantPicCnt && h264bsdDbwParallel(pStorage->vjDbw))
+    {
+#ifndef ESP_PLATFORM
+        vjParseTestArmed++;
+#endif
         ParseArm(parse, pStorage->vjDbw);
+    }
 #endif
 
     /* lastMbAddr stores address of the macroblock that was last successfully
@@ -750,6 +793,14 @@ static u32 DecodeSliceLoop(strmData_t *pStrmData, storage_t *pStorage,
         moreMbs = (skipLeft || !slot->last) ? HANTRO_TRUE : HANTRO_FALSE;
         if (!skipLeft)
             ParseConsume(parse);
+#ifdef VJ_PIPE_STALL_EVERY /* test hook: the decoding task stalls now and then, so the ring stays full and the worker sleeps */
+        {
+            static unsigned vjStallN;
+
+            if (++vjStallN % VJ_PIPE_STALL_EVERY == 0)
+                vj_stall_us(1000);
+        }
+#endif
 
         /* lastMbAddr is only updated for intra slices (all macroblocks of
          * inter slices will be lost in case of an error) */

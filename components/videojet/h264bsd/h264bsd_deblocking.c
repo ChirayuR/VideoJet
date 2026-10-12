@@ -1067,7 +1067,7 @@ dbw_t *h264bsdDbwCreate(void)
 
 /* The worker's task also runs the parser (VJ_PARSE_PIPELINE): step is called
  * between deblock segments, kick wakes the task when a slice is armed */
-void h264bsdDbwSetStep(dbw_t *d, int (*step)(void *), void *arg)
+void h264bsdDbwSetStep(dbw_t *d, int (*step)(void *, int), void *arg)
 {
     if (d)
         vj_worker_set_step(d->w, step, arg);
@@ -1077,6 +1077,19 @@ void h264bsdDbwKick(dbw_t *d)
 {
     if (d)
         vj_worker_kick(d->w);
+}
+
+/* the worker announced a sleep on a full ring: a slot was freed */
+void h264bsdDbwWake(dbw_t *d)
+{
+    if (d)
+        vj_worker_wake(d->w);
+}
+
+/* tests and profile builds: slice arms, ring-full sleeps and wakes of the worker */
+void h264bsdDbwStats(dbw_t *d, unsigned *kicks, unsigned *sleeps, unsigned *wakes)
+{
+    vj_worker_stats(d->w, kicks, sleeps, wakes);
 }
 
 /* the worker runs on another core than the calling task */

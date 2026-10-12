@@ -7,9 +7,9 @@ WORKER ?= 1
 PIPE ?= 0
 VJF := $(if $(filter 1,$(WORKER)),-DVJ_DEBLOCK_WORKER -pthread,) $(if $(filter 1,$(PIPE)),-DVJ_PARSE_PIPELINE,) $(PIPEF)
 B := ../build-host
-STARVE_RUN = $(if $(filter 1,$(PIPE)), && $(B)/test_starve ../streams,)
+STARVE_RUN = $(if $(filter 1,$(PIPE)), && $(B)/test_starve ../streams && $(B)/test_sleep ../streams,)
 WORKER_TESTS = $(if $(filter 1,$(WORKER)),$(B)/test_join ../streams && $(B)/test_stall ../streams$(STARVE_RUN),true)
-WORKER_BINS = $(if $(filter 1,$(WORKER)),$(B)/test_join $(B)/test_stall $(if $(filter 1,$(PIPE)),$(B)/test_starve,),)
+WORKER_BINS = $(if $(filter 1,$(WORKER)),$(B)/test_join $(B)/test_stall $(if $(filter 1,$(PIPE)),$(B)/test_starve $(B)/test_sleep,),)
 VJ := ../components/videojet
 DEC := ../components/videojet/h264bsd
 LIB_SRC := $(wildcard $(VJ)/src/*.c) $(wildcard $(DEC)/*.c)
@@ -67,6 +67,10 @@ $(B)/test_starve: test_worker.c $(LIB_SRC) $(LIB_HDR) $(HASH) | $(B)
 # The parser's shadow copies only the totalCoeff entries nC can read (VJ_COPY_TC): exactly the neighbour tables' MB_A / MB_B targets.
 $(B)/test_nbr: test_nbr.c $(LIB_SRC) $(LIB_HDR) | $(B)
 	$(CC) $(CFLAGS) $(VJF) $(INC) $(LIB_INC) -o $@ test_nbr.c $(LIB_SRC)
+
+# The decoding task stalls every 40th record (VJ_PIPE_STALL_EVERY): the ring stays full, so the worker sleeps and is woken.
+$(B)/test_sleep: test_worker.c $(LIB_SRC) $(LIB_HDR) $(HASH) | $(B)
+	$(CC) $(CFLAGS) $(VJF) -DVJ_PIPE_STALL_EVERY=40 -DVJ_PIPE_JITTER_US=200 $(INC) $(LIB_INC) -o $@ test_worker.c $(LIB_SRC)
 
 $(B)/vjhash_raw: vjhash_raw.c $(HASH) | $(B)
 	$(CC) $(CFLAGS) $(INC) -o $@ vjhash_raw.c

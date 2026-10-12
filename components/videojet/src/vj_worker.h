@@ -20,8 +20,11 @@ typedef struct vj_worker vj_worker_t;
  * may run the parser's step between calls). */
 typedef int (*vj_worker_fn)(void *arg, uint32_t upto);
 /* The parse pipeline's step (VJ_PARSE_PIPELINE), run by the same task ahead of the deblock run: 1 = did a piece of work,
- * 0 = nothing to do (not armed), 2 = armed but blocked (ring full): poll. Called often, lock free. */
-typedef int (*vj_worker_step_fn)(void *arg);
+ * 0 = nothing to do (not armed), 2 = armed but blocked (ring full): poll. Called often, lock free. With stalled != 0 (the
+ * worker polled a blocked step for about 200 us) a blocked step announces a sleep and re-checks that it is still blocked:
+ * it then returns 3 and the worker blocks until vj_worker_wake() (or a post, a kick, quit); if the block was gone it
+ * returns 1 or 2 as usual and the worker does not sleep. */
+typedef int (*vj_worker_step_fn)(void *arg, int stalled);
 
 /* NULL when the thread cannot be created. */
 vj_worker_t *vj_worker_create(vj_worker_fn fn, void *arg);
@@ -34,6 +37,12 @@ int vj_worker_busy(vj_worker_t *w);
 void vj_worker_set_step(vj_worker_t *w, vj_worker_step_fn f, void *arg);
 /* Wake the task: a step became possible (the owner armed a slice). */
 void vj_worker_kick(vj_worker_t *w);
+/* Wake the task after it announced a sleep (step returned 3): the owner freed a slot. */
+void vj_worker_wake(vj_worker_t *w);
+/* Counters for tests and profile builds: kicks, sleeps (the worker blocked on a full ring), wakes. */
+void vj_worker_stats(vj_worker_t *w, unsigned *kicks, unsigned *sleeps, unsigned *wakes);
+/* Busy-wait, for the VJ_PIPE_STALL_EVERY test hook (the decoding task stalls so the ring stays full). */
+void vj_stall_us(unsigned us);
 /* The task runs on another core than the caller (always 1 on the host). */
 int vj_worker_parallel(vj_worker_t *w);
 /* A free-running 32-bit microsecond clock, the same on every core and under frequency scaling (esp_timer on ESP; wraps:
