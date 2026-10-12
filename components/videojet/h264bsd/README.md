@@ -138,7 +138,8 @@ Every change made for VideoJet is listed here, newest last.
     where it used to parse and runs the same checks, `SetMbParams`, recon and record code in the same order. The parser
     writes nothing but its slot and state; nC (`DetermineNc`) reads a parser-private shadow of the neighbours' totalCoeff
     (`vjNbr`, width + 1 entries, cleared per slice) instead of `mbStorage` (with slice groups it still reads the storage).
-    `mbLayer` became the ring (`vjRing`). The H264DEC_OMXDL branches are untouched (dead).
+    `mbLayer` became the ring (`vjRing`). The H264DEC_OMXDL branches are dead code and no longer compile consistently
+    (`DecodeResidual` / `DetermineNc` take the neighbours' totalCoeff instead of `mbStorage_t *` in the non-OMXDL build only); left alone.
   - Parse pipeline (`VJ_PARSE_PIPELINE`; `h264bsd_slice_data.c`, `h264bsd_parse.h`, `h264bsd_deblocking.c/h`,
     `h264bsd_decoder.c`, `src/vj_worker.c/h`). The deblock worker's task also runs `vjParseStep`: one record per call into the
     ring (depth 6), published with a release store of `head`; the decoding task polls `head`, reconstructs the slot in place

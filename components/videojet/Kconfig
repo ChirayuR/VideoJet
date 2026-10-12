@@ -127,7 +127,7 @@ config VJ_WORKER_CORE
 
 config VJ_PARSE_PIPELINE
     bool "Parse macroblocks on the other core, ahead of the decoding task"
-    depends on VJ_DEBLOCK_WORKER
+    depends on VJ_DEBLOCK_WORKER && !FREERTOS_UNICORE
     default n
     help
         The deblock worker's task (core VJ_WORKER_CORE) also runs the bitstream parser: it parses the slice's macroblocks

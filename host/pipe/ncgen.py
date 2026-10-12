@@ -1,6 +1,7 @@
 """Crafted CAVLC stream whose parse depends on the neighbours' totalCoeff (nC), with I_PCM (nC 16), skip runs (nC 0),
 I4x4/I16x16/P16x16 with random 0/1-coefficient blocks, random slice partitions (mid-row starts), several slices per picture.
-usage: ncgen.py SEED W H FRAMES > out.h264   (the generator replicates the standard's nC rule: a desync in a decoder's
+usage: ncgen.py SEED W H FRAMES [plain|aso|fmo0|fmo1] > out.h264   (aso: the slices of a picture after the first in random order;
+fmo0 / fmo1: two slice groups, interleaved runs / dispersed; the generator replicates the standard's nC rule: a desync in a decoder's
 neighbour model changes the parse, so a decoder that differs from the standard cannot decode this cleanly)."""
 import sys, random
 seed, W, H, NF = (int(x) for x in sys.argv[1:5])

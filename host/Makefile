@@ -120,6 +120,13 @@ check-storage:
 	$(MAKE) B=../build-host-nbrstorage WORKER=1 PIPE=1 CFLAGS='-std=gnu99 -O2 -g -DVJ_NBR_STORAGE' ../build-host-nbrstorage/vjdec
 	./check.sh ../build-host-nbrstorage/vjdec ../streams
 
+# The ring at its smallest depths (VJ_RING_DEPTH 1 and 2: the worker and the decoding task meet at every record).
+check-depth:
+	for d in 1 2; do \
+	  $(MAKE) B=../build-host-depth$$d WORKER=1 PIPE=1 CFLAGS="-std=gnu99 -O2 -g -DVJ_RING_DEPTH=$$d" ../build-host-depth$$d/vjdec && \
+	  ./check.sh ../build-host-depth$$d/vjdec ../streams || exit 1; \
+	done
+
 # Crafted streams (ncgen.py: I_PCM, nC across slices, skip runs, mid-row slices, ASO, FMO 0 / 1), generated into $(B)/crafted.
 CRAFTED := $(B)/crafted
 $(CRAFTED)/.stamp: pipe/ncgen.py | $(B)
@@ -139,4 +146,4 @@ check-diff:
 	  REPS=3 SEEDS=4 ./fzdiff.sh ../build-host-pipe$$pipe/fz ../build-host-seq/fz ../build-host-pipe$$pipe/crafted || exit 1; \
 	done
 
-.PHONY: all check check-one check-tsan check-asan check-poison check-storage check-diff
+.PHONY: all check check-one check-tsan check-asan check-poison check-storage check-depth check-diff
