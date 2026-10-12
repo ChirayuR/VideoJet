@@ -175,12 +175,12 @@ h264bsd: Android's Hantro baseline decoder, Apache-2.0, plain C (github.com/onea
     - T6d: table-driven CAVLC.
   - Also merged (2026-10-11): T11 D-cache autoload (`VJ_DCACHE_AUTOLOAD`, opt-in, bench on) and the PIE motion-compensation
     kernels (`VJ_PIE`, with the on-board oracle `test/mc_pie`: re-run it after any change to `vj_mc_pie.S`).
-  - **Tip fps (slow class): 100.3418 / 32.7286 / 16.9640** (aux_card / aux_map / full_map, main c4db5d5): aux_map clears the
+  - **Tip fps (slow class): 100.5256 / 33.6082 / 17.3268** (aux_card / aux_map / full_map, main db02b06): aux_map clears the
     head-unit software 30 fps gate.
   - Library internal RAM, as `tools/ram_static.py` section sums plus heap `int_used`, which includes the worker stack:
-    - pipeline on: 96,158 B;
-    - pipeline off with the worker: 99,875 B, about 100,091 B counting alignment padding. That is about 91 B over until task R
-      drops the 18 KB internal records array from worker builds.
+    - pipeline on: 95,833 B;
+    - pipeline off with the worker: 99,550 B. NAL extraction moved to flash (R12, −325 B static), so padding (~216 B)
+      included it is under 100 KB. Task R would drop the 18 KB internal records array from worker builds.
   - Also merged: PIE write-out, PIE inverse transform, cheap skip-MB deblock record, and the deblock worker on the other core (`VJ_DEBLOCK_WORKER`, bench on; ruling: a 50 ms take-back, a started run is waited for).
   - Also merged: the **parse pipeline** (`VJ_PARSE_PIPELINE`, bench on). The parser runs in the core-1 worker task and feeds a
     ring of MB records; core 0 reconstructs. Deblock records are PSRAM-first with it. Ruling R11 keeps it even though aux_card
@@ -196,7 +196,7 @@ h264bsd: Android's Hantro baseline decoder, Apache-2.0, plain C (github.com/onea
     one fill engine. `EXTMEM_DBUS_ACS_SPIRAM_MISS_CNT` counts D-cache misses. Autoload traps: a region ending at 0x3E000000
     panics, and IDF flash operations clear the enable bit.
   - The user wants the maximum fps, not just the 30 fps gate (2026-10-12). Queue (ledger, measure4-report.md, brainstorm2.md):
-    1. N, the word-at-a-time NAL scan (`m3/unescape`, reviewed; R12 maps `h264bsd_byte_stream` to flash for the budget);
+    1. N, the word-at-a-time NAL scan: done, `m3-unescape`, +2.69 % aux_map; R12 runs it from flash;
     2. R, the deblock records in a rolling internal ring (task-R-brief.md);
     3. deblock segment 10 → 4 MBs: done, `m3-seg4`, +2.72 % aux_map;
     4. skip the deblock of alpha/beta-0 MBs: exact, but the gain is a low-QP corpus effect;

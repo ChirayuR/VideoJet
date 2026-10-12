@@ -386,6 +386,7 @@ are copied into `.superpowers/sdd/2026-10-10-videojet-m3-speed/baseline-t{3,6c}.
 | row-lagged deblock worker on the other core, `VJ_DEBLOCK_WORKER` (c872deb..f046f02; check-tsan, test_worker) | `m3-dbworker2` | 5 | 8d6a31c15 | 100.9494 / 26.0280 / 13.9552 | +5.93 / +18.91 / +19.80 | 42,300 |
 | parse pipeline: the parser on the other core, in the worker task, through a ring of MB records, `VJ_PARSE_PIPELINE`; deblock records PSRAM-first with it (8e75095..2f93fb6; check-tsan/asan/diff/poison/storage/depth, test_starve, test_nbr) | `m3-pipeline2` | 5 | d5c425753 | 100.2799 / 31.8626 / 16.6124 | -0.66 / +22.42 / +19.04 | 36,952 |
 | deblock worker segments of 4 MBs, was 10 (c4db5d5) | `m3-seg4` | 5 | 31dcfccb1 | 100.3418 / 32.7286 / 16.9640 | +0.06 / +2.72 / +2.12 | 36,952 |
+| word-at-a-time NAL extraction, run from flash for the budget (R12) (1202574..db02b06; host/test_nal.c) | `m3-unescape` | 5 | 2173cead8 | 100.5256 / 33.6082 / 17.3268 | +0.18 / +2.69 / +2.14 | 36,952 |
 
 The parse pipeline (2026-10-12):
 - **Records in PSRAM, as a standalone step:** `m3-recpsram`, 8e75095, scored DROP at −3.31 / −1.18 / −0.92 %. It only frees the 18 KB of internal RAM that the ring needs, so it was never merged on its own.
