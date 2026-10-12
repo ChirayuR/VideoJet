@@ -5,6 +5,7 @@
 # times per case (default 50) so a race shows up as a run that differs. Env: SEEDS (default 6), RATE (default 5: about
 # 1 AU in 5 damaged), REPS. Also prints the changed_mb violation counts fz reports on stderr (must be 0 in both builds).
 set -u
+ulimit -v 4000000 # a damaged SPS can ask for GBs: both builds then fail the same way instead of an OOM kill
 w=${1:?usage: fzdiff.sh FZ_WORKER FZ_SEQ STREAMS_DIR}
 q=${2:?}
 dir=${3:?}

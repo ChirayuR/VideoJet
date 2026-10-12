@@ -41,6 +41,9 @@ void *vj_alloc_aligned16(size_t n)
     void *p = heap_caps_aligned_alloc(16, n, MALLOC_CAP_INTERNAL | MALLOC_CAP_DEFAULT);
     return p ? p : heap_caps_aligned_alloc(16, n, MALLOC_CAP_DEFAULT);
 #else
-    return aligned_alloc(16, (n + 15) & ~(size_t)15);
+    /* posix_memalign, not C11 aligned_alloc: -std=gnu99 does not declare that one, and an implicit declaration returns int
+     * (a 64-bit host pointer cut to 32 bits) */
+    void *p;
+    return posix_memalign(&p, 16, n) ? NULL : p;
 #endif
 }
