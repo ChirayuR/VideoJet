@@ -400,7 +400,9 @@ err:
         decoding task writes, so records are a pure function of the stream:
         the schedule cannot change the output. If the worker has not
         produced a record for 50 ms (not scheduled), the decoding task takes
-        the context back and parses itself, after the records already made.
+        the context back and parses itself, after the records already made,
+        and parses the next VJ_TAKEBACK_HOLDOFF slices inline before it asks
+        the worker again (a dead worker costs 50 ms once, not once per slice).
 
         Sleeping: a worker that finds the ring full for about 200 us calls
         the step with stalled = 1, which sets p->sleeping, issues a full
@@ -416,13 +418,15 @@ err:
 ------------------------------------------------------------------------------*/
 
 #define VJ_TAKEBACK_TICKS (50u * VJ_TICKS_PER_MS)
+/* slices parsed inline after a take-back, before the worker is asked again */
+#define VJ_TAKEBACK_HOLDOFF 30
 /* A wait that has lasted this long is no longer a spin: the worker may share the waiting task's core (an unpinned
  * decoding task that migrated, a priority change), so the waiter sleeps a tick and lets it run (vj_yield_wait) */
 #define VJ_SPIN_TICKS (500u * VJ_TICKS_PER_MS / 1000u)
 
 #ifndef ESP_PLATFORM
-/* host tests: slices handed to the worker, slices whose parser the decoding task took back */
-unsigned vjParseTestArmed, vjParseTestTakebacks;
+/* host tests: slices seen, slices handed to the worker, slices whose parser the decoding task took back */
+unsigned vjParseTestSlices, vjParseTestArmed, vjParseTestTakebacks;
 #endif
 
 #ifdef VJ_PIPE_JITTER_US
@@ -567,6 +571,7 @@ static vjSlot_t *ParseFetch(vjParse_t *p)
                      * back and parse here, after the records already made */
                     ParseDisarm(p);
                     p->mode = VJ_MODE_INLINE;
+                    p->holdoff = VJ_TAKEBACK_HOLDOFF;
 #ifndef ESP_PLATFORM
                     __atomic_fetch_add(&vjParseTestTakebacks, 1, __ATOMIC_RELAXED);
 #endif
@@ -695,14 +700,23 @@ static u32 DecodeSliceLoop(strmData_t *pStrmData, storage_t *pStorage,
     /* the worker task parses ahead when it exists and runs on another core, with one slice group and a primary slice.
      * Otherwise the same records are made here, one at a time. No size gate: handing over every slice measured best,
      * even the near-empty P slices of a static card (aux_card; see docs/bench-log.md). */
+#ifndef ESP_PLATFORM
+    vjParseTestSlices++;
+#endif
     if (pStorage->vjDbw && !parse->useStorage &&
         pStorage->activePps->numSliceGroups == 1 &&
         !pSliceHeader->redundantPicCnt && h264bsdDbwParallel(pStorage->vjDbw))
     {
+        /* after a take-back the worker is not asked again for a while: a dead one costs 50 ms once */
+        if (parse->holdoff)
+            parse->holdoff--;
+        else
+        {
 #ifndef ESP_PLATFORM
-        vjParseTestArmed++;
+            vjParseTestArmed++;
 #endif
-        ParseArm(parse, pStorage->vjDbw);
+            ParseArm(parse, pStorage->vjDbw);
+        }
     }
 #endif
 

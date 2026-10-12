@@ -104,6 +104,7 @@ typedef struct vjParse
     u32 pstate;
     u32 mode;
     u32 sleeping;               /* the worker sleeps on a full ring: free a slot, then wake it (ParseConsume) */
+    u32 holdoff;                /* slices left that parse inline after a take-back (the worker did not run) */
     struct dbw *dbw;            /* the worker to wake */
 #endif
     vjSlot_t *ring;
