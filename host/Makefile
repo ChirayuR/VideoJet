@@ -7,8 +7,9 @@ WORKER ?= 1
 PIPE ?= 0
 VJF := $(if $(filter 1,$(WORKER)),-DVJ_DEBLOCK_WORKER -pthread,) $(if $(filter 1,$(PIPE)),-DVJ_PARSE_PIPELINE,) $(PIPEF)
 B := ../build-host
-WORKER_TESTS = $(if $(filter 1,$(WORKER)),$(B)/test_join ../streams && $(B)/test_stall ../streams,true)
-WORKER_BINS = $(if $(filter 1,$(WORKER)),$(B)/test_join $(B)/test_stall,)
+STARVE_RUN = $(if $(filter 1,$(PIPE)), && $(B)/test_starve ../streams,)
+WORKER_TESTS = $(if $(filter 1,$(WORKER)),$(B)/test_join ../streams && $(B)/test_stall ../streams$(STARVE_RUN),true)
+WORKER_BINS = $(if $(filter 1,$(WORKER)),$(B)/test_join $(B)/test_stall $(if $(filter 1,$(PIPE)),$(B)/test_starve,),)
 VJ := ../components/videojet
 DEC := ../components/videojet/h264bsd
 LIB_SRC := $(wildcard $(VJ)/src/*.c) $(wildcard $(DEC)/*.c)
@@ -57,6 +58,11 @@ $(B)/test_join: test_worker.c $(LIB_SRC) $(LIB_HDR) $(HASH) | $(B)
 
 $(B)/test_stall: test_worker.c $(LIB_SRC) $(LIB_HDR) $(HASH) | $(B)
 	$(CC) $(CFLAGS) $(VJF) -DVJ_WORKER_STALL_MS=120 $(INC) $(LIB_INC) -o $@ test_worker.c $(LIB_SRC)
+
+# The parse pipeline's worker never runs the parser (-DVJ_PIPE_NOSTEP): every slice is taken back by the decoding task after
+# 50 ms and parsed inline, the output equals the build with no worker at all.
+$(B)/test_starve: test_worker.c $(LIB_SRC) $(LIB_HDR) $(HASH) | $(B)
+	$(CC) $(CFLAGS) $(VJF) -DVJ_PIPE_NOSTEP $(INC) $(LIB_INC) -o $@ test_worker.c $(LIB_SRC)
 
 $(B)/vjhash_raw: vjhash_raw.c $(HASH) | $(B)
 	$(CC) $(CFLAGS) $(INC) -o $@ vjhash_raw.c

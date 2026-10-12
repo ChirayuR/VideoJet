@@ -13,6 +13,9 @@
 #include "vj_hash.h"
 #include "vj_worker.h"
 #include "h264bsd_storage.h"
+#ifdef VJ_PIPE_NOSTEP
+extern unsigned vjParseTestTakebacks;
+#endif
 
 static uint8_t *slurp(const char *path, size_t *len)
 {
@@ -30,7 +33,12 @@ static uint8_t *slurp(const char *path, size_t *len)
 static int busy(vj_decoder_t *d)
 {
     storage_t *s = (storage_t *)(void *)d;
-    return s->vjDbw && h264bsdDbwBusy(s->vjDbw);
+    int b = s->vjDbw && h264bsdDbwBusy(s->vjDbw);
+#ifdef VJ_PARSE_PIPELINE
+    /* the parser has been handed back: no worker step in flight on the NAL buffer the caller may free */
+    b |= __atomic_load_n(&s->vjParse->pstate, __ATOMIC_ACQUIRE) != VJ_PS_IDLE;
+#endif
+    return b;
 }
 
 /* Decode the first n AUs; hash of every returned frame in out[], status 0/1/2 (none / frame / error) in st[]. When
@@ -83,6 +91,9 @@ int main(int argc, char **argv)
 #ifdef VJ_WORKER_STALL_MS
     assert(vj_worker_test_takebacks > 0); /* the fallback really ran */
     printf("test_stall: ok (%u runs taken back)\n", vj_worker_test_takebacks);
+#elif defined(VJ_PIPE_NOSTEP)
+    assert(vjParseTestTakebacks > 0); /* the parser really was taken back */
+    printf("test_starve: ok (%u slices parsed by the decoding task)\n", vjParseTestTakebacks);
 #else
     puts("test_join: ok");
 #endif

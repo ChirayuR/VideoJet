@@ -36,15 +36,14 @@ void vj_worker_set_step(vj_worker_t *w, vj_worker_step_fn f, void *arg);
 void vj_worker_kick(vj_worker_t *w);
 /* The task runs on another core than the caller (always 1 on the host). */
 int vj_worker_parallel(vj_worker_t *w);
-/* A free-running 32-bit tick (wraps: compare with unsigned subtraction) and its rate, and a pause for spin loops. */
+/* A free-running 32-bit microsecond clock, the same on every core and under frequency scaling (esp_timer on ESP; wraps:
+ * compare with unsigned subtraction). The take-back timeout runs on it, because the decoding task may not be pinned. */
 uint32_t vj_ticks(void);
-#ifdef ESP_PLATFORM
-#include "sdkconfig.h"
-#define VJ_TICKS_PER_MS (CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ * 1000u) /* CPU cycles */
-#else
-#define VJ_TICKS_PER_MS 1000u /* microseconds */
-#endif
+#define VJ_TICKS_PER_MS 1000u
+/* A pause inside a short spin loop, and the pause once a wait has gone on too long to be a spin: the caller sleeps a tick
+ * (ESP) so that a worker task on the caller's own core, at a lower or equal priority, can run. */
 void vj_relax(void);
+void vj_yield_wait(void);
 /* One line on the log, the first time only (the worker is a best-effort speedup: what it cannot do it says once). */
 void vj_worker_warn(const char *msg);
 #ifndef ESP_PLATFORM

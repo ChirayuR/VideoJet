@@ -299,6 +299,13 @@ err:
 ------------------------------------------------------------------------------*/
 
 #define VJ_TAKEBACK_TICKS (50u * VJ_TICKS_PER_MS)
+/* A wait that has lasted this long is no longer a spin: the worker may share the waiting task's core (an unpinned
+ * decoding task that migrated, a priority change), so the waiter sleeps a tick and lets it run (vj_yield_wait) */
+#define VJ_SPIN_TICKS (500u * VJ_TICKS_PER_MS / 1000u)
+
+#ifndef ESP_PLATFORM
+unsigned vjParseTestTakebacks; /* host tests: slices whose parser the decoding task took back */
+#endif
 
 #ifdef VJ_PIPE_STATS /* test: slices armed, records fetched, fetches that found the ring empty, take-backs, worker steps that found it full */
 #include <stdio.h>
@@ -373,9 +380,14 @@ int vjParseStep(void *arg)
     return 1;
 }
 
-/* the decoding task owns the context again; no worker step is in flight */
+/* the decoding task owns the context again; no worker step is in flight. A step is one record (tens of us), so
+ * the wait for it is a spin; past VJ_SPIN_TICKS the worker was preempted inside the step (it shares our core and
+ * has a lower priority, or a task of its core's preempted it): sleep, never spin it out of the CPU. It always ends:
+ * the worker only needs to be scheduled for the rest of one record. */
 static void ParseDisarm(vjParse_t *p)
 {
+    u32 t0 = 0, spins = 0;
+
     for (;;)
     {
         u32 st = __atomic_load_n(&p->pstate, __ATOMIC_ACQUIRE);
@@ -384,6 +396,18 @@ static void ParseDisarm(vjParse_t *p)
             return;
         if (st == VJ_PS_PARSING)
         {
+#ifdef VJ_MUTANT_DISARM_NOWAIT
+            return;
+#endif
+            if (!(++spins & 63))
+            {
+                u32 now = vj_ticks();
+
+                if (!t0)
+                    t0 = now;
+                else if (now - t0 > VJ_SPIN_TICKS)
+                    vj_yield_wait();
+            }
             vj_relax();
             continue;
         }
@@ -414,34 +438,51 @@ static vjSlot_t *ParseFetch(vjParse_t *p)
 #ifdef VJ_PARSE_PIPELINE
     if (p->mode == VJ_MODE_PIPE)
     {
-        u32 spins = 0, t0 = 0;
+        u32 spins = 0, t0 = 0, started = 0;
 
         for (;;)
         {
             VJ_JITTER();
-#ifndef VJ_MUTANT_NOACQUIRE
-            if (__atomic_load_n(&p->head, __ATOMIC_ACQUIRE) != t)
-#else
+#if defined(VJ_MUTANT_NOACQUIRE)
             if (p->head != t)
+#elif defined(VJ_MUTANT_LAG0) /* take the slot the worker is still writing */
+            if (__atomic_load_n(&p->head, __ATOMIC_ACQUIRE) != t ||
+                __atomic_load_n(&p->pstate, __ATOMIC_RELAXED) == VJ_PS_PARSING)
+#else
+            if (__atomic_load_n(&p->head, __ATOMIC_ACQUIRE) != t)
+#endif
+            {
+#ifdef VJ_MUTANT_FREE_EARLY /* give the slot back before it is used */
+                __atomic_store_n(&p->tail, t + 1, __ATOMIC_RELEASE);
 #endif
                 return p->ring + t % VJ_RING_DEPTH;
+            }
             if (!spins)
                 VJ_STAT(2);
-            if (!(++spins & 255))
+            if (!(++spins & 63))
             {
                 u32 now = vj_ticks();
 
-                if (!t0)
-                    t0 = now | 1; /* 0 = not started */
+                if (!started)
+                {
+                    started = 1;
+                    t0 = now;
+                }
                 else if (now - t0 > VJ_TAKEBACK_TICKS)
                 {
-                    /* the worker is not producing: do it here, from the first record not made */
+                    /* no record for 50 ms: the worker is not running (starved, or never scheduled). Take the context
+                     * back and parse here, after the records already made */
                     ParseDisarm(p);
                     p->mode = VJ_MODE_INLINE;
                     VJ_STAT(3);
+#ifndef ESP_PLATFORM
+                    __atomic_fetch_add(&vjParseTestTakebacks, 1, __ATOMIC_RELAXED);
+#endif
                     vj_worker_warn("parse pipeline: the worker task did not run; the decoding task parsed");
                     break;
                 }
+                else if (now - t0 > VJ_SPIN_TICKS)
+                    vj_yield_wait();
             }
             vj_relax();
         }

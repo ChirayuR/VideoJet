@@ -13,9 +13,13 @@
 #include "freertos/semphr.h"
 
 #include "esp_cpu.h"
+#include "esp_timer.h"
 
-#define VJ_WORKER_STACK 3072 /* bytes; internal RAM (IDF allocates task stacks there) */
-#define VJ_SPIN_CYCLES (240 * 200) /* an armed worker with a full ring polls this long (200 us) before it sleeps a tick */
+#define VJ_WORKER_STACK 3072 /* bytes; internal RAM (IDF allocates task stacks there). The parser's call tree is deeper than the
+                              * deblock filter's (988 B measured): VJ_PROFILE builds log the high-water mark at destroy */
+/* An armed worker with nothing to do (the ring is full) polls this long before it sleeps a tick: the decoding task
+ * empties a full ring in well under a millisecond, and a sleeping worker would only wake at the next tick. */
+#define VJ_SPIN_CYCLES (240 * 3000)
 
 struct vj_worker {
     vj_worker_fn fn;
@@ -35,12 +39,17 @@ struct vj_worker {
 
 uint32_t vj_ticks(void)
 {
-    return esp_cpu_get_cycle_count();
+    return (uint32_t)esp_timer_get_time();
 }
 
 void vj_relax(void)
 {
     __asm__ __volatile__("nop");
+}
+
+void vj_yield_wait(void)
+{
+    vTaskDelay(1);
 }
 
 static void warn_once(const char *msg, int *flag)
@@ -52,7 +61,7 @@ static void warn_once(const char *msg, int *flag)
 }
 
 /* One cooperative loop: parse when the ring has room (never preempted by deblock), else a deblock segment of a claimed
- * run, else poll an armed parser for 200 us, else sleep. One task, so there is no kernel wake per macroblock. */
+ * run, else poll an armed parser (3 ms), else sleep. One task, so there is no kernel wake per macroblock. */
 static void worker_main(void *p)
 {
     struct vj_worker *w = p;
@@ -78,6 +87,15 @@ static void worker_main(void *p)
             continue;
         }
         int q, claimed;
+        /* armed, ring full, nothing posted or asked: poll without taking the lock (the owner takes it for every post) */
+        if (r == 2 && !__atomic_load_n(&w->quit, __ATOMIC_RELAXED) &&
+            __atomic_load_n(&w->seq, __ATOMIC_RELAXED) == __atomic_load_n(&w->hseq, __ATOMIC_RELAXED)) {
+            if (esp_cpu_get_cycle_count() - t0 >= VJ_SPIN_CYCLES) {
+                ulTaskNotifyTake(pdTRUE, 1);
+                t0 = esp_cpu_get_cycle_count();
+            }
+            continue;
+        }
         portENTER_CRITICAL(&w->lock);
         q = w->quit;
         claimed = !q && w->seq != w->hseq && !w->running;
@@ -95,11 +113,11 @@ static void worker_main(void *p)
             active = 1;
             continue;
         }
-        if (r == 2) {
-            if (esp_cpu_get_cycle_count() - t0 < VJ_SPIN_CYCLES)
-                continue;
-            ulTaskNotifyTake(pdTRUE, 1);
-            t0 = esp_cpu_get_cycle_count();
+        if (r == 2) { /* armed and blocked, but the run is the owner's (taken back): keep polling */
+            if (esp_cpu_get_cycle_count() - t0 >= VJ_SPIN_CYCLES) {
+                ulTaskNotifyTake(pdTRUE, 1);
+                t0 = esp_cpu_get_cycle_count();
+            }
             continue;
         }
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
@@ -213,6 +231,10 @@ void vj_worker_destroy(vj_worker_t *w)
     if (!w)
         return;
     vj_worker_wait(w);
+#ifdef CONFIG_VJ_PROFILE /* profiling builds: how much of the worker's stack the deblock filter and the parser used */
+    ESP_LOGI("vjdbw", "worker stack: %u of %u B used (high water)", (unsigned)(VJ_WORKER_STACK - uxTaskGetStackHighWaterMark(w->task)),
+        (unsigned)VJ_WORKER_STACK);
+#endif
     portENTER_CRITICAL(&w->lock);
     w->quit = 1;
     portEXIT_CRITICAL(&w->lock);
@@ -262,6 +284,11 @@ uint32_t vj_ticks(void)
 void vj_relax(void)
 {
     sched_yield();
+}
+
+void vj_yield_wait(void)
+{
+    usleep(50);
 }
 
 /* The same cooperative loop as the ESP task: parse step, deblock segment, poll, sleep. */
