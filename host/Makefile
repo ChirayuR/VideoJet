@@ -19,7 +19,7 @@ LIB_INC := -I$(VJ)/include -I$(VJ)/src -I$(DEC)
 INC := -I$(VJ)/include -I../components/vj_hash/include
 HASH := ../components/vj_hash/include/vj_hash.h
 
-all: $(B)/vjdec $(B)/vjhash_raw $(B)/test_api $(B)/test_mc $(B)/test_cavlc $(B)/test_write $(B)/test_idct $(B)/test_nbr $(B)/fz $(WORKER_BINS)
+all: $(B)/vjdec $(B)/vjhash_raw $(B)/test_api $(B)/test_mc $(B)/test_cavlc $(B)/test_nal $(B)/test_write $(B)/test_idct $(B)/test_nbr $(B)/fz $(WORKER_BINS)
 
 $(B):
 	mkdir -p $@
@@ -42,6 +42,13 @@ $(B)/test_mc: test_mc.c $(LIB_SRC) $(LIB_HDR) | $(B)
 # h264bsd_cavlc.c (its decoders are static), so it links only what that file calls.
 $(B)/test_cavlc: test_cavlc.c $(DEC)/h264bsd_cavlc.c $(DEC)/h264bsd_stream.c $(LIB_HDR) | $(B)
 	$(CC) $(CFLAGS) $(VJF) $(LIB_INC) -o $@ test_cavlc.c $(DEC)/h264bsd_stream.c
+
+# h264bsdExtractNalUnit against the original byte-at-a-time version (status, readBytes, strmData_t, the buffer after),
+# exhaustive on short buffers plus NAL_RANDOM random ones (default 10 M, 1 M under a sanitizer), each at 4 alignments.
+# It links only the two files it needs.
+NAL_RANDOM ?=
+$(B)/test_nal: test_nal.c $(DEC)/h264bsd_byte_stream.c $(DEC)/h264bsd_stream.c $(LIB_HDR) | $(B)
+	$(CC) $(CFLAGS) $(LIB_INC) -o $@ test_nal.c $(DEC)/h264bsd_byte_stream.c $(DEC)/h264bsd_stream.c
 
 # The write-out (h264bsd_image.c) against a plain clip(pred + residual) reference.
 $(B)/test_write: test_write.c $(LIB_SRC) $(LIB_HDR) | $(B)
@@ -89,6 +96,7 @@ check-one: all
 	@$(B)/test_api ../streams vectors
 	@$(B)/test_mc
 	@$(B)/test_cavlc
+	@$(B)/test_nal $(NAL_RANDOM)
 	@$(B)/test_nbr
 	@$(WORKER_TESTS)
 	@$(B)/test_write
