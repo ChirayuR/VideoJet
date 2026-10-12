@@ -88,7 +88,9 @@ static const u8 *SkipNonZero(const u8 *p, const u8 *end)
     {
         u32 w = *(const AliasU32 *)p;
 
-        if ((w - 0x01010101U) & ~w & 0x80808080U)
+        /* a zero byte in the word is the rare case: keep the fall-through
+         * path free of taken branches */
+        if (__builtin_expect(((w - 0x01010101U) & ~w & 0x80808080U) != 0, 0))
             break;
         p += 4;
     }
