@@ -29,3 +29,8 @@ endif()
 if(CONFIG_VJ_PARSE_PIPELINE)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE VJ_PARSE_PIPELINE)
 endif()
+# Test builds only: idf.py -DVJ_EXTRA_DEFS="VJ_PIPE_STALL_EVERY=100" adds private definitions (the decoding task stalls 1 ms every
+# 100th record, so the worker's sleep path runs; the counters appear in a VJ_PROFILE build's log, see host/pipe/README.md).
+if(VJ_EXTRA_DEFS)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE ${VJ_EXTRA_DEFS})
+endif()
