@@ -18,7 +18,7 @@ LIB_INC := -I$(VJ)/include -I$(VJ)/src -I$(DEC)
 INC := -I$(VJ)/include -I../components/vj_hash/include
 HASH := ../components/vj_hash/include/vj_hash.h
 
-all: $(B)/vjdec $(B)/vjhash_raw $(B)/test_api $(B)/test_mc $(B)/test_cavlc $(B)/test_write $(B)/test_idct $(B)/fz $(WORKER_BINS)
+all: $(B)/vjdec $(B)/vjhash_raw $(B)/test_api $(B)/test_mc $(B)/test_cavlc $(B)/test_write $(B)/test_idct $(B)/test_nbr $(B)/fz $(WORKER_BINS)
 
 $(B):
 	mkdir -p $@
@@ -28,7 +28,7 @@ $(B)/vjdec: vjdec.c $(LIB_SRC) $(LIB_HDR) $(HASH) | $(B)
 
 # Damaged-stream decoder (fz.c): per call status and frame hash, for diffing two builds.
 $(B)/fz: fz.c $(LIB_SRC) $(LIB_HDR) | $(B)
-	$(CC) $(CFLAGS) $(VJF) $(INC) $(LIB_INC) -o $@ fz.c $(LIB_SRC)
+	$(CC) $(CFLAGS) $(VJF) -DVJ_FZ_STORAGE $(INC) $(LIB_INC) -o $@ fz.c $(LIB_SRC)
 
 $(B)/test_api: test_api.c $(LIB_SRC) $(LIB_HDR) $(HASH) | $(B)
 	$(CC) $(CFLAGS) $(VJF) $(INC) $(LIB_INC) -o $@ test_api.c $(LIB_SRC)
@@ -64,6 +64,10 @@ $(B)/test_stall: test_worker.c $(LIB_SRC) $(LIB_HDR) $(HASH) | $(B)
 $(B)/test_starve: test_worker.c $(LIB_SRC) $(LIB_HDR) $(HASH) | $(B)
 	$(CC) $(CFLAGS) $(VJF) -DVJ_PIPE_NOSTEP $(INC) $(LIB_INC) -o $@ test_worker.c $(LIB_SRC)
 
+# The parser's shadow copies only the totalCoeff entries nC can read (VJ_COPY_TC): exactly the neighbour tables' MB_A / MB_B targets.
+$(B)/test_nbr: test_nbr.c $(LIB_SRC) $(LIB_HDR) | $(B)
+	$(CC) $(CFLAGS) $(VJF) $(INC) $(LIB_INC) -o $@ test_nbr.c $(LIB_SRC)
+
 $(B)/vjhash_raw: vjhash_raw.c $(HASH) | $(B)
 	$(CC) $(CFLAGS) $(INC) -o $@ vjhash_raw.c
 
@@ -72,6 +76,7 @@ check: all
 	@$(B)/test_api ../streams vectors
 	@$(B)/test_mc
 	@$(B)/test_cavlc
+	@$(B)/test_nbr
 	@$(WORKER_TESTS)
 	@$(B)/test_write
 	@$(B)/test_idct

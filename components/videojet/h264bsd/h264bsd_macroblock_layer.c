@@ -95,8 +95,8 @@ static u32 DecodeResidual(strmData_t *pStrmData, residual_t *pResidual,
 static u32 DetermineNc(mbStorage_t *pMb, u32 blockIndex, u8 *pTotalCoeff);
 #else
 static u32 DecodeResidual(strmData_t *pStrmData, residual_t *pResidual,
-    const u8 *tcA, const u8 *tcB, mbType_e mbType, u32 codedBlockPattern);
-static u32 DetermineNc(const u8 *tcA, const u8 *tcB, u32 blockIndex,
+    const vjTc_t *tcA, const vjTc_t *tcB, mbType_e mbType, u32 codedBlockPattern);
+static u32 DetermineNc(const vjTc_t *tcA, const vjTc_t *tcB, u32 blockIndex,
     const i16 *pTotalCoeff);
 #endif
 
@@ -137,8 +137,8 @@ static u32 ProcessResidual(mbStorage_t *pMb, i32 residualLevel[][16], u32 *);
 ------------------------------------------------------------------------------*/
 
 u32 h264bsdDecodeMacroblockLayer(strmData_t *pStrmData,
-    macroblockLayer_t *pMbLayer, const u8 *tcA, const u8 *tcB, u32 sliceType,
-    u32 numRefIdxActive)
+    macroblockLayer_t *pMbLayer, const vjTc_t *tcA, const vjTc_t *tcB,
+    u32 sliceType, u32 numRefIdxActive)
 {
 
 /* Variables */
@@ -718,7 +718,7 @@ u32 DecodeResidual(strmData_t *pStrmData, residual_t *pResidual,
 ------------------------------------------------------------------------------*/
 
 u32 DecodeResidual(strmData_t *pStrmData, residual_t *pResidual,
-    const u8 *tcA, const u8 *tcB, mbType_e mbType, u32 codedBlockPattern)
+    const vjTc_t *tcA, const vjTc_t *tcB, mbType_e mbType, u32 codedBlockPattern)
 {
 
 /* Variables */
@@ -889,9 +889,10 @@ u32 DetermineNc(mbStorage_t *pMb, u32 blockIndex, u8 *pTotalCoeff)
 /*lint +e702 */
 }
 #else
-/* VideoJet: the neighbours' totalCoeff come from the parser's own shadow (tcA / tcB, NULL = not available: outside
- * the picture or slice), not from mbStorage, which the reconstruction side writes. Same arithmetic. */
-u32 DetermineNc(const u8 *tcA, const u8 *tcB, u32 blockIndex,
+/* VideoJet: the neighbours' totalCoeff arrive as tcA / tcB (NULL = not available: outside the picture or slice): the
+ * parser's own shadow with the parse pipeline (the reconstruction side writes mbStorage), the storage's array without it.
+ * Same arithmetic as the original reading mbStorage. */
+u32 DetermineNc(const vjTc_t *tcA, const vjTc_t *tcB, u32 blockIndex,
     const i16 *pTotalCoeff)
 {
 /*lint -e702 */

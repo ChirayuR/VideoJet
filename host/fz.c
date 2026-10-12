@@ -7,6 +7,9 @@
 #include <string.h>
 #include <stdint.h>
 #include "videojet.h"
+#ifdef VJ_FZ_STORAGE
+#include "h264bsd_storage.h"
+#endif
 
 static uint64_t rs;
 static uint32_t rnd(void) { rs ^= rs << 13; rs ^= rs >> 7; rs ^= rs << 17; return (uint32_t)(rs >> 11); }
@@ -16,6 +19,46 @@ static uint64_t fnv(const uint8_t *p, size_t n, uint64_t h)
         h = (h ^ p[i]) * 0x100000001b3ULL;
     return h;
 }
+
+#ifdef VJ_FZ_STORAGE
+/* FNV-1a over every observable field of mb[] and the slice / picture counters, after every call: the differential then
+ * compares the decoder's whole storage state, not only what it outputs. It needs only the private headers, so it also
+ * builds against an older tree (the base decoder of a differential): copy this file there. */
+static uint64_t storage_hash(vj_decoder_t *dec)
+{
+    storage_t *st = (storage_t *)(void *)dec;
+    uint64_t h = 0xcbf29ce484222325ULL;
+    h = fnv((const uint8_t *)&st->slice->sliceId, 4, h);
+    h = fnv((const uint8_t *)&st->slice->numDecodedMbs, 4, h);
+    h = fnv((const uint8_t *)&st->slice->lastMbAddr, 4, h);
+    h = fnv((const uint8_t *)&st->picSliceBase, 4, h);
+    h = fnv((const uint8_t *)&st->numConcealedMbs, 4, h);
+    h = fnv((const uint8_t *)&st->picStarted, 4, h);
+    h = fnv((const uint8_t *)&st->vjRecNext, 4, h);
+    if (!st->mb)
+        return h;
+    for (unsigned i = 0; i < st->picSizeInMbs; i++) {
+        const mbStorage_t *m = st->mb + i;
+        h = fnv((const uint8_t *)&m->mbType, sizeof m->mbType, h);
+        h = fnv((const uint8_t *)&m->sliceId, 4, h);
+        h = fnv((const uint8_t *)&m->disableDeblockingFilterIdc, 4, h);
+        h = fnv((const uint8_t *)&m->filterOffsetA, 4, h);
+        h = fnv((const uint8_t *)&m->filterOffsetB, 4, h);
+        h = fnv((const uint8_t *)&m->qpY, 4, h);
+        h = fnv((const uint8_t *)&m->chromaQpIndexOffset, 4, h);
+        h = fnv((const uint8_t *)m->totalCoeff, sizeof m->totalCoeff, h);
+        h = fnv(m->intra4x4PredMode, 16, h);
+        h = fnv((const uint8_t *)m->refPic, sizeof m->refPic, h);
+        for (int k = 0; k < 4; k++) {
+            uint8_t z = m->refAddr[k] != NULL; /* the address itself differs between runs */
+            h = fnv(&z, 1, h);
+        }
+        h = fnv((const uint8_t *)m->mv, sizeof m->mv, h);
+        h = fnv((const uint8_t *)&m->decoded, 4, h);
+    }
+    return h;
+}
+#endif
 
 static vj_decoder_t *d;
 static uint8_t *prev;
@@ -30,6 +73,9 @@ static void feed(const uint8_t *src, size_t n)
     vj_frame_t f;
     vj_status_t r = vj_decode_au(d, au, n, &f);
     calls++;
+#ifdef VJ_FZ_STORAGE
+    printf("H %016llx\n", (unsigned long long)storage_hash(d));
+#endif
     if (r != VJ_FRAME) {
         printf("%c\n", r == VJ_NO_FRAME ? 'n' : 'E');
         errs += r != VJ_NO_FRAME;

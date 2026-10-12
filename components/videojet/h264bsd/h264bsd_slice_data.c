@@ -92,14 +92,79 @@ static void SetMbParams(mbStorage_t *pMb, sliceHeader_t *pSlice, u32 sliceId,
 
 ------------------------------------------------------------------------------*/
 
+#ifdef VJ_PARSE_PIPELINE
 static const u8 vjZero24[24];
 static const u8 vjSixteen24[24] =
     {16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16};
 
+#endif
+
+#ifdef VJ_POISON
+/* test hook (make check-poison): every slot starts as some other macroblock's bytes, here random "plausible" ones, so
+ * that a reader of stale slot contents changes pixels instead of passing by luck. vjPoisonSkip re-poisons a slot
+ * between the macroblocks of a skip run, leaving what the run's reconstruction may read (mbType, mbPred). */
+static __thread u32 vjp_seed = VJ_POISON;
+static u32 vjp_rnd(void)
+{
+    vjp_seed = vjp_seed * 1664525u + 1013904223u;
+    return vjp_seed >> 8;
+}
+static void vjPoisonX(vjSlot_t *s, u32 keepPred)
+{
+    macroblockLayer_t *m = &s->layer;
+    u32 i, j;
+
+    if (!keepPred)
+    {
+        m->mbType = (mbType_e)(vjp_rnd() % 32);
+        for (i = 0; i < 16; i++)
+        {
+            m->mbPred.prevIntra4x4PredModeFlag[i] = vjp_rnd() & 1;
+            m->mbPred.remIntra4x4PredMode[i] = vjp_rnd() & 7;
+        }
+        m->mbPred.intraChromaPredMode = vjp_rnd() & 3;
+        for (i = 0; i < 4; i++)
+        {
+            m->mbPred.refIdxL0[i] = vjp_rnd() & 1;
+            m->mbPred.mvdL0[i].hor = (i16)((i32)(vjp_rnd() % 9) - 4);
+            m->mbPred.mvdL0[i].ver = (i16)((i32)(vjp_rnd() % 9) - 4);
+        }
+    }
+    m->codedBlockPattern = vjp_rnd() % 48;
+    m->mbQpDelta = (i32)(vjp_rnd() % 7) - 3;
+    for (i = 0; i < 4; i++)
+    {
+        m->subMbPred.subMbType[i] = (subMbType_e)(vjp_rnd() & 3);
+        m->subMbPred.refIdxL0[i] = vjp_rnd() & 1;
+        for (j = 0; j < 4; j++)
+        {
+            m->subMbPred.mvdL0[i][j].hor = (i16)((i32)(vjp_rnd() % 9) - 4);
+            m->subMbPred.mvdL0[i][j].ver = (i16)((i32)(vjp_rnd() % 9) - 4);
+        }
+    }
+    for (i = 0; i < 27; i++)
+        m->residual.totalCoeff[i] = (i16)(vjp_rnd() % 17);
+    for (i = 0; i < 26; i++)
+        for (j = 0; j < 16; j++)
+            m->residual.level[i][j] = (i32)(vjp_rnd() % 5) - 2;
+    for (i = 0; i < 24; i++)
+        m->residual.coeffMap[i] = vjp_rnd() & 0xFFFF;
+    if (!keepPred)
+    {
+        s->kind = vjp_rnd() % 3;
+        s->count = vjp_rnd();
+        s->status = vjp_rnd();
+        s->last = vjp_rnd() & 1;
+    }
+}
+#define vjPoison(s) vjPoisonX((s), 0)
+#define vjPoisonSkip(s) vjPoisonX((s), 1)
+#endif
+
 void vjParseBegin(vjParse_t *p, storage_t *pStorage, const strmData_t *pStrm,
     const sliceHeader_t *pSliceHeader)
 {
-    u32 i, w;
+    u32 w;
 
     w = pStorage->activeSps->picWidthInMbs;
     p->strm = *pStrm;
@@ -110,25 +175,33 @@ void vjParseBegin(vjParse_t *p, storage_t *pStorage, const strmData_t *pStrm,
     p->addr = pSliceHeader->firstMbInSlice;
     p->prevSkipped = HANTRO_FALSE;
     p->fin = HANTRO_FALSE;
-    p->useStorage = pStorage->activePps->numSliceGroups != 1;
-#ifdef VJ_NBR_STORAGE /* test: the slice-group path for every slice */
-    p->useStorage = HANTRO_TRUE;
-#endif
+    p->singleGroup = pStorage->activePps->numSliceGroups == 1;
     p->mb = pStorage->mb;
     p->sliceGroupMap = pStorage->sliceGroupMap;
     p->sliceId = pStorage->slice->sliceId;
-    p->nbr = pStorage->vjNbr;
     p->ring = pStorage->vjRing;
-    /* atomic: the worker's lock-free hint loads of head / tail may still run */
-    __atomic_store_n(&p->head, 0, __ATOMIC_RELAXED);
-    __atomic_store_n(&p->tail, 0, __ATOMIC_RELAXED);
-    p->mode = VJ_MODE_INLINE;
-    p->col = p->addr % w;
-    p->idx = p->addr % (w + 1);
-    for (i = 0; i <= w; i++)
-        p->nbr[i].st = VJ_NBR_NONE;
+#ifdef VJ_PARSE_PIPELINE
+    {
+        u32 i;
+
+        p->useStorage = !p->singleGroup;
+#ifdef VJ_NBR_STORAGE /* test: the slice-group path (neighbours from the storage) for every slice */
+        p->useStorage = HANTRO_TRUE;
+#endif
+        p->nbr = pStorage->vjNbr;
+        /* atomic: the worker's lock-free hint loads of head / tail may still run */
+        __atomic_store_n(&p->head, 0, __ATOMIC_RELAXED);
+        __atomic_store_n(&p->tail, 0, __ATOMIC_RELAXED);
+        p->mode = VJ_MODE_INLINE;
+        p->col = p->addr % w;
+        p->idx = p->addr % (w + 1);
+        for (i = 0; i <= w; i++)
+            p->nbr[i].st = VJ_NBR_NONE;
+    }
+#endif
 }
 
+#ifdef VJ_PARSE_PIPELINE
 static const u8 *NbrTc(const vjNbr_t *n)
 {
     switch (n->st)
@@ -139,44 +212,25 @@ static const u8 *NbrTc(const vjNbr_t *n)
         default:          return NULL;
     }
 }
+#endif
 
 /* the next macroblock address of the slice group, 0 at its end */
 static u32 ParseNextAddr(const vjParse_t *p, u32 addr)
 {
-    if (p->useStorage)
+    if (!p->singleGroup)
         return h264bsdNextMbAddress(p->sliceGroupMap, p->picSizeInMbs, addr);
     return (addr + 1 == p->picSizeInMbs) ? 0 : addr + 1;
-}
-
-/* the macroblock at addr was parsed (or skipped): its shadow entry, and move on one macroblock */
-static void ParseAdvance(vjParse_t *p, u32 st, const i16 *tc)
-{
-    if (!p->useStorage)
-    {
-        vjNbr_t *n = p->nbr + p->idx;
-        u32 i;
-
-        n->st = (u8)st;
-        if (st == VJ_NBR_TC)
-            for (i = 0; i < 24; i++)
-                n->tc[i] = (u8)tc[i];
-        if (++p->idx > p->width)
-            p->idx = 0;
-        if (++p->col == p->width)
-            p->col = 0;
-    }
-    p->addr = ParseNextAddr(p, p->addr);
 }
 
 void vjParseNext(vjParse_t *p, vjSlot_t *s)
 {
     u32 tmp, skipRun, i;
-    const u8 *tcA, *tcB;
+    const vjTc_t *tcA, *tcB;
     macroblockLayer_t *mbLayer = &s->layer;
 
     ASSERT(!p->fin);
 
-#ifdef VJ_POISON /* test: every slot starts as the previous macroblock's bytes, here random ones */
+#ifdef VJ_POISON
     vjPoison(s);
 #endif
 
@@ -205,11 +259,42 @@ void vjParseNext(vjParse_t *p, vjSlot_t *s)
                 s->count = skipRun;
                 s->last = h264bsdMoreRbspData(&p->strm) ?
                     HANTRO_FALSE : HANTRO_TRUE;
-                for (i = skipRun; i--;)
+                if (p->singleGroup)
                 {
-                    ParseAdvance(p, VJ_NBR_ZERO, NULL);
-                    if (!p->addr)
-                        break;
+                    /* the run (skipRun <= picSize - addr, checked above) ends at addr + skipRun, or at the picture's
+                     * end, where the next address is 0 */
+#ifdef VJ_PARSE_PIPELINE
+                    if (!p->useStorage)
+                    {
+                        /* every skipped macroblock is "available, totalCoeff 0" to its neighbours, but only the last
+                         * width + 1 of them can be read again (nbr is a ring of that size): set those, move on */
+                        u32 w1 = p->width + 1;
+                        u32 m = skipRun < w1 ? skipRun : w1;
+                        u32 j = (p->idx + skipRun - m) % w1;
+
+                        for (i = 0; i < m; i++)
+                        {
+                            p->nbr[j].st = VJ_NBR_ZERO;
+                            if (++j == w1)
+                                j = 0;
+                        }
+                        p->idx = (p->idx + skipRun) % w1;
+                        p->col = (p->col + skipRun) % p->width;
+                    }
+#endif
+                    p->addr += skipRun;
+                    if (p->addr == p->picSizeInMbs)
+                        p->addr = 0;
+                }
+                else
+                {
+                    /* slice groups: the run follows the group's own order, and may leave it (the loop ends there) */
+                    for (i = skipRun; i--;)
+                    {
+                        p->addr = ParseNextAddr(p, p->addr);
+                        if (!p->addr)
+                            break;
+                    }
                 }
                 if (s->last || !p->addr)
                     p->fin = HANTRO_TRUE;
@@ -220,6 +305,7 @@ void vjParseNext(vjParse_t *p, vjSlot_t *s)
 
     p->prevSkipped = HANTRO_FALSE;
 
+#ifdef VJ_PARSE_PIPELINE
     if (p->useStorage)
     {
         mbStorage_t *pMb = p->mb + p->addr;
@@ -228,14 +314,12 @@ void vjParseNext(vjParse_t *p, vjSlot_t *s)
         tcA = tcB = NULL;
         if (mbA && mbA->sliceId == p->sliceId)
         {
-            for (i = 0; i < 24; i++)
-                p->tmpA[i] = (u8)mbA->totalCoeff[i];
+            VJ_COPY_TC(p->tmpA, mbA->totalCoeff);
             tcA = p->tmpA;
         }
         if (mbB && mbB->sliceId == p->sliceId)
         {
-            for (i = 0; i < 24; i++)
-                p->tmpB[i] = (u8)mbB->totalCoeff[i];
+            VJ_COPY_TC(p->tmpB, mbB->totalCoeff);
             tcB = p->tmpB;
         }
     }
@@ -244,6 +328,17 @@ void vjParseNext(vjParse_t *p, vjSlot_t *s)
         tcA = p->col ? NbrTc(p->nbr + (p->idx ? p->idx - 1 : p->width)) : NULL;
         tcB = NbrTc(p->nbr + (p->idx == p->width ? 0 : p->idx + 1));
     }
+#else
+    {
+        /* inline parse: the macroblocks before this one are reconstructed, their totalCoeff is in the storage */
+        mbStorage_t *pMb = p->mb + p->addr;
+
+        tcA = (pMb->mbA && pMb->mbA->sliceId == p->sliceId) ?
+            pMb->mbA->totalCoeff : NULL;
+        tcB = (pMb->mbB && pMb->mbB->sliceId == p->sliceId) ?
+            pMb->mbB->totalCoeff : NULL;
+    }
+#endif
 
     tmp = h264bsdDecodeMacroblockLayer(&p->strm, mbLayer, tcA, tcB,
         p->sliceType, p->numRefIdxActive);
@@ -257,14 +352,28 @@ void vjParseNext(vjParse_t *p, vjSlot_t *s)
     s->count = 1;
     /* skipRun is 0 here: more data is all that keeps the slice going */
     s->last = h264bsdMoreRbspData(&p->strm) ? HANTRO_FALSE : HANTRO_TRUE;
-    if (mbLayer->mbType == I_PCM)
-        i = VJ_NBR_PCM;
-    else if (!mbLayer->codedBlockPattern &&
-             h264bsdMbPartPredMode(mbLayer->mbType) != PRED_MODE_INTRA16x16)
-        i = VJ_NBR_ZERO; /* no residual: the lazy clear left totalCoeff 0 */
-    else
-        i = VJ_NBR_TC;
-    ParseAdvance(p, i, mbLayer->residual.totalCoeff);
+#ifdef VJ_PARSE_PIPELINE
+    if (!p->useStorage)
+    {
+        vjNbr_t *n = p->nbr + p->idx;
+
+        if (mbLayer->mbType == I_PCM)
+            n->st = VJ_NBR_PCM;
+        else if (!mbLayer->codedBlockPattern &&
+                 h264bsdMbPartPredMode(mbLayer->mbType) != PRED_MODE_INTRA16x16)
+            n->st = VJ_NBR_ZERO; /* no residual: the lazy clear left totalCoeff 0 */
+        else
+        {
+            n->st = VJ_NBR_TC;
+            VJ_COPY_TC(n->tc, mbLayer->residual.totalCoeff);
+        }
+        if (++p->idx > p->width)
+            p->idx = 0;
+        if (++p->col == p->width)
+            p->col = 0;
+    }
+#endif
+    p->addr = ParseNextAddr(p, p->addr);
     if (s->last || !p->addr)
         p->fin = HANTRO_TRUE;
     return;
@@ -304,20 +413,6 @@ err:
 unsigned vjParseTestTakebacks; /* host tests: slices whose parser the decoding task took back */
 #endif
 
-#ifdef VJ_PIPE_STATS /* test: slices armed, records fetched, fetches that found the ring empty, take-backs, worker steps that found it full */
-#include <stdio.h>
-#include <stdlib.h>
-unsigned long vjPipeStat[6];
-static void vjPipeStatPrint(void)
-{
-    fprintf(stderr, "pipe: armed=%lu fetched=%lu empty=%lu takeback=%lu full=%lu inline=%lu\n", vjPipeStat[0], vjPipeStat[1],
-        vjPipeStat[2], vjPipeStat[3], vjPipeStat[4], vjPipeStat[5]);
-}
-#define VJ_STAT(i) do { static int reg; if (!reg) { reg = 1; atexit(vjPipeStatPrint); } __atomic_fetch_add(&vjPipeStat[i], 1, __ATOMIC_RELAXED); } while (0)
-#else
-#define VJ_STAT(i) ((void)0)
-#endif
-
 #ifdef VJ_PIPE_JITTER_US
 static unsigned vjJitter(void)
 {
@@ -350,10 +445,7 @@ int vjParseStep(void *arg)
     h = __atomic_load_n(&p->head, __ATOMIC_RELAXED);
     t = __atomic_load_n(&p->tail, __ATOMIC_ACQUIRE);
     if (h - t >= VJ_RING_DEPTH)
-    {
-        VJ_STAT(4);
         return 2;
-    }
     if (!__atomic_compare_exchange_n(&p->pstate, &exp, VJ_PS_PARSING, 0,
             __ATOMIC_ACQUIRE, __ATOMIC_RELAXED))
         return 0;
@@ -367,11 +459,7 @@ int vjParseStep(void *arg)
     }
     VJ_JITTER();
     vjParseNext(p, p->ring + h % VJ_RING_DEPTH);
-#ifndef VJ_MUTANT_PUBLISH_FIRST
     __atomic_store_n(&p->head, h + 1, __ATOMIC_RELEASE);
-#else
-    p->head = h + 1;
-#endif
     __atomic_store_n(&p->pstate, p->fin ? VJ_PS_DONE : VJ_PS_ARMED,
         __ATOMIC_RELEASE);
     return 1;
@@ -393,9 +481,6 @@ static void ParseDisarm(vjParse_t *p)
             return;
         if (st == VJ_PS_PARSING)
         {
-#ifdef VJ_MUTANT_DISARM_NOWAIT
-            return;
-#endif
             if (!(++spins & 63))
             {
                 u32 now = vj_ticks();
@@ -417,22 +502,21 @@ static void ParseDisarm(vjParse_t *p)
 static void ParseArm(vjParse_t *p, dbw_t *dbw)
 {
     p->mode = VJ_MODE_PIPE;
-    VJ_STAT(0);
     __atomic_store_n(&p->pstate, VJ_PS_ARMED, __ATOMIC_RELEASE);
     h264bsdDbwKick(dbw);
 }
 #endif /* VJ_PARSE_PIPELINE */
 
-/* The next record, in the order the slice has them. The slot stays the caller's until vjParseConsume. */
+/* The next record, in the order the slice has them. The slot stays the caller's until ParseConsume. */
 static vjSlot_t *ParseFetch(vjParse_t *p)
 {
+#ifndef VJ_PARSE_PIPELINE
+    /* no pipeline: one slot, parsed here, used, and parsed over by the next macroblock */
+    vjParseNext(p, p->ring);
+    return p->ring;
+#else
     u32 t = __atomic_load_n(&p->tail, __ATOMIC_RELAXED);
 
-    VJ_STAT(1);
-    if (p->mode != VJ_MODE_PIPE)
-        VJ_STAT(5);
-
-#ifdef VJ_PARSE_PIPELINE
     if (p->mode == VJ_MODE_PIPE)
     {
         u32 spins = 0, t0 = 0, started = 0;
@@ -440,22 +524,8 @@ static vjSlot_t *ParseFetch(vjParse_t *p)
         for (;;)
         {
             VJ_JITTER();
-#if defined(VJ_MUTANT_NOACQUIRE)
-            if (p->head != t)
-#elif defined(VJ_MUTANT_LAG0) /* take the slot the worker is still writing */
-            if (__atomic_load_n(&p->head, __ATOMIC_ACQUIRE) != t ||
-                __atomic_load_n(&p->pstate, __ATOMIC_RELAXED) == VJ_PS_PARSING)
-#else
             if (__atomic_load_n(&p->head, __ATOMIC_ACQUIRE) != t)
-#endif
-            {
-#ifdef VJ_MUTANT_FREE_EARLY /* give the slot back before it is used */
-                __atomic_store_n(&p->tail, t + 1, __ATOMIC_RELEASE);
-#endif
                 return p->ring + t % VJ_RING_DEPTH;
-            }
-            if (!spins)
-                VJ_STAT(2);
             if (!(++spins & 63))
             {
                 u32 now = vj_ticks();
@@ -471,7 +541,6 @@ static vjSlot_t *ParseFetch(vjParse_t *p)
                      * back and parse here, after the records already made */
                     ParseDisarm(p);
                     p->mode = VJ_MODE_INLINE;
-                    VJ_STAT(3);
 #ifndef ESP_PLATFORM
                     __atomic_fetch_add(&vjParseTestTakebacks, 1, __ATOMIC_RELAXED);
 #endif
@@ -484,19 +553,24 @@ static vjSlot_t *ParseFetch(vjParse_t *p)
             vj_relax();
         }
     }
-#endif
+    /* inline (no worker, or taken back): the records the worker made first, then parse here */
     if (__atomic_load_n(&p->head, __ATOMIC_RELAXED) == t)
     {
         vjParseNext(p, p->ring + t % VJ_RING_DEPTH);
         __atomic_store_n(&p->head, t + 1, __ATOMIC_RELAXED);
     }
     return p->ring + t % VJ_RING_DEPTH;
+#endif
 }
 
 static void ParseConsume(vjParse_t *p)
 {
+#ifdef VJ_PARSE_PIPELINE
     __atomic_store_n(&p->tail, __atomic_load_n(&p->tail, __ATOMIC_RELAXED) + 1,
         __ATOMIC_RELEASE);
+#else
+    (void)p;
+#endif
 }
 
 /* the slice is over (any way): the worker has no step in flight, the context is the caller's */
@@ -504,8 +578,10 @@ static void ParseEnd(vjParse_t *p)
 {
 #ifdef VJ_PARSE_PIPELINE
     ParseDisarm(p);
-#endif
     p->mode = VJ_MODE_INLINE;
+#else
+    (void)p;
+#endif
 }
 
 /*------------------------------------------------------------------------------

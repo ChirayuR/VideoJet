@@ -189,9 +189,17 @@ typedef struct mbStorage
     4. Function prototypes
 ------------------------------------------------------------------------------*/
 
+/* Element type of a neighbour's totalCoeff as the parser gets it for nC: the parser's own u8 shadow when the parse
+ * pipeline is on (it may not read the storage the reconstruction writes), the storage's i16 array otherwise. */
+#ifdef VJ_PARSE_PIPELINE
+typedef u8 vjTc_t;
+#else
+typedef i16 vjTc_t;
+#endif
+
 u32 h264bsdDecodeMacroblockLayer(strmData_t *pStrmData,
-    macroblockLayer_t *pMbLayer, const u8 *tcA, const u8 *tcB, u32 sliceType,
-    u32 numRefIdxActive);
+    macroblockLayer_t *pMbLayer, const vjTc_t *tcA, const vjTc_t *tcB,
+    u32 sliceType, u32 numRefIdxActive);
 
 u32 h264bsdNumMbPart(mbType_e mbType);
 u32 h264bsdNumSubMbPart(subMbType_e subMbType);
