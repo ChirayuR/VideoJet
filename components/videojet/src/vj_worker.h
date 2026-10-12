@@ -36,8 +36,14 @@ void vj_worker_set_step(vj_worker_t *w, vj_worker_step_fn f, void *arg);
 void vj_worker_kick(vj_worker_t *w);
 /* The task runs on another core than the caller (always 1 on the host). */
 int vj_worker_parallel(vj_worker_t *w);
-/* Monotonic microseconds, and a pause for spin loops. */
-uint64_t vj_now_us(void);
+/* A free-running 32-bit tick (wraps: compare with unsigned subtraction) and its rate, and a pause for spin loops. */
+uint32_t vj_ticks(void);
+#ifdef ESP_PLATFORM
+#include "sdkconfig.h"
+#define VJ_TICKS_PER_MS (CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ * 1000u) /* CPU cycles */
+#else
+#define VJ_TICKS_PER_MS 1000u /* microseconds */
+#endif
 void vj_relax(void);
 /* One line on the log, the first time only (the worker is a best-effort speedup: what it cannot do it says once). */
 void vj_worker_warn(const char *msg);

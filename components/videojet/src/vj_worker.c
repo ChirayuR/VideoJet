@@ -13,7 +13,6 @@
 #include "freertos/semphr.h"
 
 #include "esp_cpu.h"
-#include "esp_timer.h"
 
 #define VJ_WORKER_STACK 3072 /* bytes; internal RAM (IDF allocates task stacks there) */
 #define VJ_SPIN_CYCLES (240 * 200) /* an armed worker with a full ring polls this long (200 us) before it sleeps a tick */
@@ -34,9 +33,9 @@ struct vj_worker {
     int core;
 };
 
-uint64_t vj_now_us(void)
+uint32_t vj_ticks(void)
 {
-    return (uint64_t)esp_timer_get_time();
+    return esp_cpu_get_cycle_count();
 }
 
 void vj_relax(void)
@@ -253,11 +252,11 @@ struct vj_worker {
     int kicked;
 };
 
-uint64_t vj_now_us(void)
+uint32_t vj_ticks(void)
 {
     struct timespec t;
     clock_gettime(CLOCK_MONOTONIC, &t);
-    return (uint64_t)t.tv_sec * 1000000u + (uint64_t)t.tv_nsec / 1000u;
+    return (uint32_t)((uint64_t)t.tv_sec * 1000000u + (uint64_t)t.tv_nsec / 1000u);
 }
 
 void vj_relax(void)

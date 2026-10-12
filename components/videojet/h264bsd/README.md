@@ -139,3 +139,12 @@ Every change made for VideoJet is listed here, newest last.
     writes nothing but its slot and state; nC (`DetermineNc`) reads a parser-private shadow of the neighbours' totalCoeff
     (`vjNbr`, width + 1 entries, cleared per slice) instead of `mbStorage` (with slice groups it still reads the storage).
     `mbLayer` became the ring (`vjRing`). The H264DEC_OMXDL branches are untouched (dead).
+  - Parse pipeline (`VJ_PARSE_PIPELINE`; `h264bsd_slice_data.c`, `h264bsd_parse.h`, `h264bsd_deblocking.c/h`,
+    `h264bsd_decoder.c`, `src/vj_worker.c/h`). The deblock worker's task also runs `vjParseStep`: one record per call into the
+    ring (depth 6), published with a release store of `head`; the decoding task polls `head`, reconstructs the slot in place
+    and frees it with `tail`. The parse context changes hands through `pstate` (IDLE -> ARMED by a release store, back by
+    compare-and-swap, spinning while a record is being parsed), and `h264bsdDecodeSliceData` hands it back on every exit,
+    so no worker step is in flight when the NAL buffer is released. Records are a pure function of the stream, so the
+    schedule cannot change output, status or storage. One slice group and primary slices only; the worker's core must
+    differ from the caller's; no record for 50 ms: the decoding task takes the context back and parses inline.
+    The worker's run is now `DbwRun` in segments of 10 MBs (`FilterMbRows` takes an MB range) so the task can parse between them.

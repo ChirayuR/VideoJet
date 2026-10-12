@@ -298,7 +298,7 @@ err:
 
 ------------------------------------------------------------------------------*/
 
-#define VJ_TAKEBACK_US 50000
+#define VJ_TAKEBACK_TICKS (50u * VJ_TICKS_PER_MS)
 
 #ifdef VJ_PIPE_STATS /* test: slices armed, records fetched, fetches that found the ring empty, take-backs, worker steps that found it full */
 #include <stdio.h>
@@ -338,6 +338,9 @@ int vjParseStep(void *arg)
     vjParse_t *p = (vjParse_t *)arg;
     u32 h, t, exp = VJ_PS_ARMED;
 
+#ifdef VJ_PIPE_NOSTEP /* test: a worker task that never runs the parser (starvation: the decoding task takes it back) */
+    return 0;
+#endif
     if (__atomic_load_n(&p->pstate, __ATOMIC_RELAXED) != VJ_PS_ARMED)
         return 0;
     h = __atomic_load_n(&p->head, __ATOMIC_RELAXED);
@@ -411,8 +414,7 @@ static vjSlot_t *ParseFetch(vjParse_t *p)
 #ifdef VJ_PARSE_PIPELINE
     if (p->mode == VJ_MODE_PIPE)
     {
-        u32 spins = 0;
-        uint64_t t0 = 0;
+        u32 spins = 0, t0 = 0;
 
         for (;;)
         {
@@ -427,11 +429,11 @@ static vjSlot_t *ParseFetch(vjParse_t *p)
                 VJ_STAT(2);
             if (!(++spins & 255))
             {
-                uint64_t now = vj_now_us();
+                u32 now = vj_ticks();
 
                 if (!t0)
-                    t0 = now;
-                else if (now - t0 > VJ_TAKEBACK_US)
+                    t0 = now | 1; /* 0 = not started */
+                else if (now - t0 > VJ_TAKEBACK_TICKS)
                 {
                     /* the worker is not producing: do it here, from the first record not made */
                     ParseDisarm(p);
