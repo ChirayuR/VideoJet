@@ -43,8 +43,8 @@ Every change made for VideoJet is listed here, newest last.
   - Deblock records (`h264bsd_deblocking.c/h`, `h264bsd_slice_data.c`, `h264bsd_storage.c/h`, `h264bsd_decoder.c`,
     `h264bsd_conceal.c`).
     - Each MB's bS (2 bits per edge segment) and threshold inputs go into a 12 B record when it is decoded
-      (`h264bsdDeblockRecord`), in internal RAM (`vj_alloc_internal`). The pass reads only records and skips MBs with
-      no edge.
+      (`h264bsdDeblockRecord`), in internal RAM (`vj_alloc_internal`; PSRAM-first, `vj_alloc_psram`, with
+      `VJ_PARSE_PIPELINE`, whose ring needs the room). The pass reads only records and skips MBs with no edge.
     - Records hold only while the picture's MBs are decoded once each in raster order. Otherwise (FMO or ASO decoded out of raster order, a redundant
       re-decode, a slice error, concealment) the pass remakes every record from storage.
     - `GetLumaEdgeThresholds` / `GetChromaEdgeThresholds` became `GetEdgeThresholds`, which works from qps.
@@ -136,8 +136,10 @@ Every change made for VideoJet is listed here, newest last.
     (`vjSlot_t`, a `macroblockLayer_t` plus kind) with a parsed MB, a whole skip run (SKIPRUN, count) or an error (ERR, the
     status the loop used to return), and `last` = no stream data follows. `h264bsdDecodeSliceData` fetches a record
     where it used to parse and runs the same checks, `SetMbParams`, recon and record code in the same order. The parser
-    writes nothing but its slot and state; nC (`DetermineNc`) reads a parser-private shadow of the neighbours' totalCoeff
-    (`vjNbr`, width + 1 entries, cleared per slice) instead of `mbStorage` (with slice groups it still reads the storage).
+    writes nothing but its slot and state. nC (`DetermineNc`) takes the neighbours' totalCoeff as `tcA` / `tcB` (`vjTc_t`):
+    without the pipeline the storage's own i16 array, as the original read it (one slot, no shadow, a skip run costs O(1));
+    with it a parser-private u8 shadow (`vjNbr`, width + 1 entries, cleared per slice, a skip run fills the last width + 1
+    entries, only the 13 entries nC can read are copied: `test_nbr`). With slice groups the storage is read in both builds.
     `mbLayer` became the ring (`vjRing`). The H264DEC_OMXDL branches are dead code and no longer compile consistently
     (`DecodeResidual` / `DetermineNc` take the neighbours' totalCoeff instead of `mbStorage_t *` in the non-OMXDL build only); left alone.
   - Parse pipeline (`VJ_PARSE_PIPELINE`; `h264bsd_slice_data.c`, `h264bsd_parse.h`, `h264bsd_deblocking.c/h`,
@@ -147,5 +149,9 @@ Every change made for VideoJet is listed here, newest last.
     compare-and-swap, spinning while a record is being parsed), and `h264bsdDecodeSliceData` hands it back on every exit,
     so no worker step is in flight when the NAL buffer is released. Records are a pure function of the stream, so the
     schedule cannot change output, status or storage. One slice group and primary slices only; the worker's core must
-    differ from the caller's; no record for 50 ms: the decoding task takes the context back and parses inline.
-    The worker's run is now `DbwRun` in segments of 10 MBs (`FilterMbRows` takes an MB range) so the task can parse between them.
+    differ from the caller's; no record for 50 ms: the decoding task takes the context back, parses inline, and parses the next
+    30 slices inline before it asks the worker again. A worker that finds the ring full for ~200 us announces a sleep (a flag, a
+    full fence, a re-check of `tail`) and blocks; the decoding task, after freeing a slot (release store of `tail`) and a full
+    fence, wakes it only if the flag is set. The worker's run is now `DbwRun` in segments of 10 MBs (`FilterMbRows` takes an MB
+    range) so the task can parse between them. Test hooks, each used by a committed test: `VJ_POISON`, `VJ_NBR_STORAGE`,
+    `VJ_PIPE_JITTER_US`, `VJ_PIPE_NOSTEP`, `VJ_PIPE_STALL_EVERY`, `VJ_RING_DEPTH` (see `host/Makefile`).

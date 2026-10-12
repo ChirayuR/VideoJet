@@ -43,22 +43,31 @@ vj_decoder_destroy(dec);
 ## 3. Requirements
 - PSRAM in the heap: `CONFIG_SPIRAM=y` with `CONFIG_SPIRAM_USE_MALLOC` (the default) or `CONFIG_SPIRAM_USE_CAPS_ALLOC`.
   `CONFIG_SPIRAM_USE_MEMMAP` leaves the library no PSRAM to allocate from, so the frames fail with `VJ_ERR_NOMEM`.
-- Memory at 800x480, heap, measured on the board: 1,507,340 B of PSRAM (`docs/bench-log.md`, M2 and M3 step 0, the same
-  on every run and boot) and 39,572 B of internal RAM (the M3 deblock-records score run, `m3-bsrec`). The PSRAM holds the frames (about
+- Memory at 800x480, measured on the board with the bench configuration (slow PSRAM class). Internal RAM is the library's
+  static part (`CONFIG_VJ_IRAM`, the default: hot code in IRAM, tables and the string literals that sit with them in DRAM,
+  from the linker map by `tools/ram_static.py`) plus the heap high-water mark of one decoder (`int_used` in the bench rows,
+  which includes the deblock worker task's stack), against the 100,000 B budget:
+
+  | configuration | static | heap | internal total | PSRAM |
+  |---|---|---|---|---|
+  | `CONFIG_VJ_DEBLOCK_WORKER` (the library default is off; pipeline off) | 57,483 B | 42,392 B | **99,875 B** | 1,625,620 B |
+  | + `CONFIG_VJ_PARSE_PIPELINE` | 59,206 B | 36,952 B | **96,158 B** | 1,644,056 B |
+
+  The worker off was not remeasured since the worker tip (93,488 B). The PSRAM holds the frames (about
   1.5 x width x height bytes each, refs + 1 of them, so 2 for a one-reference stream) and the per-macroblock state
   (1500 MBs x 216 B). Each extra reference frame adds 589,828 B. IDF's heap rounds every block up to its size class, so
-  the PSRAM figure is 2.1 % above the sum of the structure sizes. Internal RAM includes 17 B per macroblock:
+  the PSRAM figure is a little above the sum of the structure sizes. Internal RAM includes 17 B per macroblock:
   - 5 B for skip elision and `changed_mb` (7,500 B here; each of its two blocks moves to PSRAM above 16 KiB);
   - 12 B of deblock records (18,000 B here), which are internal first whatever their size, so they scale with resolution:
-    about 43 KB at 720p and 98 KB at 1080p.
-  On top of the heap, `CONFIG_VJ_IRAM` (the default) puts the decoder's hot code (44,423 B IRAM; concealment and parameter-set
-  parsing stay in flash) and tables (7,110 B DRAM, link map) in internal RAM: 39,572 + 51,533 = 91,105 B in all, excluding
-  the stack.
+    about 43 KB at 720p and 98 KB at 1080p. With `CONFIG_VJ_PARSE_PIPELINE` they are PSRAM first instead (the ring needs
+    their room; it costs the decoding task about 4 % on a static picture).
+  The decode task's stack is not counted.
 - Stack: decoding runs on the stack of the task that calls `vj_decode_au()`. The stack it needs has not been measured; only a
   16 KiB task stack (the bench's) has been tested.
 - The library places its own buffers, whatever your `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL`: above 16 KiB PSRAM first, below it
-  internal RAM first, each falling back to the other. The exception is the deblock records, which are internal RAM first at
-  any size. It asks for the same memory as IDF's `malloc`, so it never takes the
+  internal RAM first, each falling back to the other. The exceptions are the deblock records, which are internal RAM first at
+  any size (PSRAM first with the parse pipeline), and the deblock worker's marks and undo log, PSRAM first. It asks for the
+  same memory as IDF's `malloc`, so it never takes the
   internal DMA reserve (`CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL`).
 
 ## 4. Recommended config
@@ -72,11 +81,12 @@ off by default and came later.
   code in IRAM it gained +19 / +11 / +7 %.
 - **D-cache 64 KB** (`CONFIG_ESP32S3_DATA_CACHE_64KB=y`): another +8 / +6 / +7 % on top of the 64 B line, for 32 KB of
   internal RAM (31,996 B less heap, measured).
-- **Decoder code and tables in internal RAM** (`CONFIG_VJ_IRAM=y`, the default): 44,423 B IRAM + 7,110 B DRAM (default
-  config; `CONFIG_VJ_ERROR_PRINT=y` adds ~0.8 KB of strings). The code in IRAM gained +1 / +11 / +21 % over flash code with
+- **Decoder code and tables in internal RAM** (`CONFIG_VJ_IRAM=y`, the default): 49,780 B IRAM + 7,695 B DRAM (the bench
+  config with the deblock worker and the PIE kernels, without the pipeline; the string literals that sit in DRAM are in the
+  DRAM figure; `CONFIG_VJ_ERROR_PRINT=y` adds ~0.8 KB of strings). The code in IRAM gained +1 / +11 / +21 % over flash code with
   the default 16 KB I-cache (step 0), and with it moving the code changed fps by at most 0.11 %. The tables in DRAM gained
   another +0.7 / +1.4 / +2.0 % on top of that (in flash they cost up to ~2,350 cache misses per frame).
-- The small-RAM alternative, 16 KB of internal RAM instead of 51,533 B: `CONFIG_VJ_IRAM=n` with
+- The small-RAM alternative, 16 KB of internal RAM instead of 57,475 B: `CONFIG_VJ_IRAM=n` with
   `CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y`. At step 0 it stayed within 1 % of code-in-IRAM (22.17 / 12.60 / 7.63; flash code
   has no layout pin), but it keeps the tables in flash too, so expect it about 1 / 2 / 3 % below the default (estimate).
 - With 64 B lines, a PSRAM buffer that DMA reads or writes needs 64 B alignment in address and size
@@ -159,18 +169,19 @@ What to know before enabling it:
   including slice errors and concealment (undo log of the rows the failed slice touched; `h264bsd/h264bsd_deblocking.c` has
   the argument; the host gate runs it threaded, `make -C host check-tsan` under ThreadSanitizer).
   - **Core and priority:** `vj_decoder_create()` creates a FreeRTOS task "vjdbw" pinned to `CONFIG_VJ_WORKER_CORE`, at the
-    creating task's own priority, with a 2 KB internal stack (about 1 KB used). `vj_decoder_destroy()` stops it.
+    creating task's own priority, with a 2 KB internal stack (3 KB with the parse pipeline; 988 B / 1,132 B used).
+    `vj_decoder_destroy()` stops it.
   - **Rules:** create, decode and destroy from one task pinned to one core (the worker takes the other core); never delete that
     task while a `vj_decode_au()` is in flight. `vj_decode_au()` returns with the worker idle on every path.
   - **Starvation:** if a task on the worker's core at or above its priority keeps it from starting a run, `vj_decode_au()`
     takes the run back after 50 ms and filters on the decoding task (bit-identical, no overlap; one warning in the log).
     A run the worker has started is waited for however long it takes, so a task that preempts the worker mid-run can
     still stall the call while it runs: keep higher-priority work off the worker's core.
-  - **Profiling:** with `CONFIG_VJ_PROFILE` the deblock bucket measures only the decoding task's wait for the worker.
-  - **Budget** (bench config, 800x480, measured): libvideojet static 56,528 B (IRAM 49,034 + DRAM 7,486 + 8 bss; 53,916 off)
-    + heap `int_used` 42,300 B (39,572 off) = **98,828 B** of the 100,000 B (93,488 off). The worker adds 2.7 KB of heap
-    (2 KB stack, control blocks), 2.6 KB of IRAM, and 118,280 B of PSRAM (1,625,620 vs 1,507,340: the 4-row undo log,
-    115,200 B at 50 MBs per row, and the 1,530 B of marks, both PSRAM-first).
+  - **Profiling:** with `CONFIG_VJ_PROFILE` the deblock bucket measures only the decoding task's wait for the worker (with the
+    pipeline the parse bucket measures only the decoding task's fetch, i.e. its wait for a record), and the worker's log line
+    at destroy gives its stack high water and, with the pipeline, its slice arms, ring-full sleeps and wakes.
+  - **Budget:** the table in section 3. The worker adds about 2.7 KB of heap (2 KB stack, control blocks), 2.6 KB of IRAM, and
+    118,280 B of PSRAM (the 4-row undo log, 115,200 B at 50 MBs per row, and the 1,530 B of marks, both PSRAM-first).
   - Gain on the bench (slow PSRAM class, same tree, worker off to on): aux_card / aux_map / full_map 95.30 / 21.89 / 11.65
     to 100.95 / 26.03 / 13.96 fps. Both cores share one D-cache and PSRAM bus, so the decode core slows a little while the
     worker runs.
@@ -190,20 +201,27 @@ What to know before enabling it:
     worker core.
   - **Rules:** as for the worker (create, decode, destroy from one task; keep the decoding task off the worker's core). The take-back
     uses the esp_timer clock, so an unpinned decoding task is safe: if the worker produces no record for 50 ms the decoding task takes
-    the parser back and parses inline (one warning in the log); a waiter that lands on the worker's core sleeps a tick instead of
-    spinning (note that with `CONFIG_VJ_PIE` a task that calls `vj_decode_au` is pinned at its first PIE instruction anyway).
-  - **Budget** (bench config, 800x480, measured): libvideojet static 58,423 B (IRAM 50,881 + DRAM 7,534 + 8 bss) + heap `int_used`
-    36,876 B = **95,299 B** of the 100,000 B, with the deblock records in PSRAM. Against the same tree without the pipeline the heap
-    is +13.0 KB (the ring 6 x 2,104 B, the neighbour shadow 1.3 KB, a 3 KB worker stack against 2 KB). The worker's stack high
-    water with the parser is 1,152 B on every bench stream.
-  - Gain on the bench (slow PSRAM class, tuning 5, same base without the pipeline to with it): aux_card / aux_map / full_map
-    97.61 / 25.72 / 13.83 to 100.10 / 31.81 / 16.61 fps (+2.5 / +23.7 / +20.1 %).
+    the parser back and parses inline (one warning in the log), then parses the next 30 slices inline before asking again; a
+    waiter that lands on the worker's core sleeps a tick instead of spinning (1 ms at `CONFIG_FREERTOS_HZ=1000`, the bench's;
+    10 ms at IDF's default 100; with `CONFIG_VJ_PIE` a task that calls `vj_decode_au` is pinned at its first PIE
+    instruction anyway).
+  - **Budget:** **96,158 B** internal, against 99,875 B without the pipeline (section 3): the heap is 5.4 KB lower because the
+    18,000 B of deblock records move to PSRAM, even though the ring (6 x 2,112 B), the neighbour shadow (1,275 B) and a 3 KB
+    worker stack (against 2 KB) are added; the code is 1.7 KB of IRAM larger. The worker's stack high water with the parser
+    is 1,132 B on every bench stream (and 4 KB are reserved with `CONFIG_VJ_ERROR_PRINT`, which prints from the worker).
+  - **Gain** on the bench (slow PSRAM class, tuning 5, the same tree without the pipeline, then with it): aux_card / aux_map /
+    full_map 101.93 / 26.04 / 13.94 to 100.28 / 31.85 / 16.61 fps (-1.6 / +22.3 / +19.1 %). A near-static picture pays for the
+    hand-off and the PSRAM-resident records.
+  - **Sleeps:** the worker sleeps when a long record (a skip run of a hundred macroblocks) keeps the ring full for 200 us:
+    on the bench 0.1 to 3 times per frame (9 on test_640x360), each with one wake and no effect on the frame rate.
 - `CONFIG_VJ_WORKER_CORE` (-1, 0 or 1; default -1 = the core other than the creating task's): the worker's core.
-- `CONFIG_VJ_IRAM` (default y): run the decoder from internal RAM, 51,533 B (hot code + tables, section 4).
+- `CONFIG_VJ_IRAM` (default y): run the decoder from internal RAM (hot code + tables: 49,780 + 7,695 B without the pipeline,
+  section 4).
 - `CONFIG_VJ_PIE` (default y, ESP32-S3 only): motion compensation, residual write-out and the 4x4 inverse transform in PIE SIMD assembly (MC for 8 and 16 wide partitions),
   bit-exact with the C kernels (which every other case and the host build use). About 3 KB of IRAM.
   Note: IDF pins a task to its current core at its first PIE instruction (portasm.S _frxt_coproc_exc_hook), so an unpinned decode task (any task that calls vj_decode_au) is pinned permanently, normally at its first I-frame (the first block with AC coefficients). PIE destinations must be aligned to the store width (16 B for luma w 16, 8 B for w 8, 4 B for chroma w 4); the library checks per partition and otherwise uses C.
-- `CONFIG_VJ_ERROR_PRINT` (default n): print the decoder's bitstream errors to stderr (about 60 messages, from the decoding task).
+- `CONFIG_VJ_ERROR_PRINT` (default n): print the decoder's bitstream errors to stderr (about 60 messages, from the decoding task;
+  with `CONFIG_VJ_PARSE_PIPELINE` the parse errors print from the worker task).
 - `CONFIG_VJ_DCACHE_AUTOLOAD` (default n; needs `CONFIG_SPIRAM`): D-cache autoload over the decoder's PSRAM blocks, armed by every
   `vj_decode_au()` (section 4, "D-cache autoload": numbers, hazards and traps).
 - `CONFIG_VJ_DCACHE_AUTOLOAD_SIZE` (0 to 3, default 1): lines fetched after a miss, minus one.

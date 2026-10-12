@@ -7,11 +7,13 @@
 #include <stddef.h>
 #define VJ_INTERNAL_MAX 16384
 void *vj_alloc(size_t n);
-/* Internal first whatever the size, PSRAM if that fails: per-MB state the decoder reads for every MB of every picture
- * (the deblock records). It counts against the library's internal-RAM budget. */
+/* Internal first whatever the size, PSRAM if that fails: per-MB state the decoder reads for every MB of every picture (the
+ * deblock records without CONFIG_VJ_PARSE_PIPELINE; the parser's neighbour shadow with it). It counts against the library's
+ * internal-RAM budget. */
 void *vj_alloc_internal(size_t n);
-/* PSRAM first whatever the size, internal if that fails: state only the deblock worker touches (its marks and undo log),
- * which must not use the library's internal-RAM budget. Released with free(). */
+/* PSRAM first whatever the size, internal if that fails: state only the deblock worker touches (its marks and undo log) and,
+ * with CONFIG_VJ_PARSE_PIPELINE, the deblock records (the ring needs their room), which must not use the library's
+ * internal-RAM budget. Released with free(). */
 void *vj_alloc_psram(size_t n);
 /* As vj_alloc for a small buffer (internal first), 16-byte aligned: the macroblock layer, whose residual blocks the PIE
  * inverse transform stores with ee.vst.128. Released with free(). */
