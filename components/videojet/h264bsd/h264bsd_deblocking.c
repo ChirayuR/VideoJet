@@ -1020,9 +1020,10 @@ struct dbw
 };
 
 /* Filter macroblocks per call of the worker's run, so the worker can parse
- * between the pieces (~80 us on the S3) */
+ * between the pieces (~30 us on the S3). 10 left the parse ring empty at
+ * 7.7 % of aux_map's fetches (measure4); 4 refills it sooner, 2 is no better */
 #ifndef VJ_DBW_SEG_MBS
-#define VJ_DBW_SEG_MBS 10
+#define VJ_DBW_SEG_MBS 4
 #endif
 
 /* the worker: filter the rows posted since the last call, a segment at a time.
