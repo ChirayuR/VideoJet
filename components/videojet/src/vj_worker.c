@@ -15,8 +15,15 @@
 #include "esp_cpu.h"
 #include "esp_timer.h"
 
-#define VJ_WORKER_STACK 3072 /* bytes; internal RAM (IDF allocates task stacks there). The parser's call tree is deeper than the
-                              * deblock filter's (988 B measured): VJ_PROFILE builds log the high-water mark at destroy */
+/* Stack bytes (internal RAM; IDF allocates task stacks there). Measured high water, deblock filter alone 988 B, with
+ * the parser on the same task 1,152 B on every bench stream (VJ_PROFILE builds log it at destroy). 3 KB leaves the
+ * margin for an interrupt frame and the paths the streams do not reach. With VJ_ERROR_PRINT the parser prints from this
+ * task (printf needs about 1.5 KB more; not measured), hence 4 KB. */
+#ifdef CONFIG_VJ_ERROR_PRINT
+#define VJ_WORKER_STACK 4096
+#else
+#define VJ_WORKER_STACK 3072
+#endif
 /* An armed worker with nothing to do (the ring is full) polls this long before it sleeps a tick: the decoding task
  * empties a full ring in well under a millisecond, and a sleeping worker would only wake at the next tick. */
 #define VJ_SPIN_CYCLES (240 * 3000)

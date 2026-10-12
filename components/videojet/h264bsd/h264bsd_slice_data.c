@@ -42,16 +42,6 @@
 #include "h264bsd_vlc.h"
 #include "vj_prof.h"
 
-/* A slice with fewer stream bytes than this is parsed inline (the hand-off costs more than it hides). 0: every slice. */
-#ifndef VJ_PIPE_MIN_BYTES
-#define VJ_PIPE_MIN_BYTES 0
-#endif
-#if VJ_PIPE_MIN_BYTES > 0
-#define VJ_PIPE_WORTH(strm) \
-    (((strm)->strmBuffSize - ((strm)->strmBuffReadBits >> 3)) >= VJ_PIPE_MIN_BYTES)
-#else
-#define VJ_PIPE_WORTH(strm) 1
-#endif
 #if defined(VJ_PARSE_PIPELINE) && !defined(VJ_DEBLOCK_WORKER)
 #error "VJ_PARSE_PIPELINE needs VJ_DEBLOCK_WORKER (one core-1 task)"
 #endif
@@ -588,12 +578,12 @@ static u32 DecodeSliceLoop(strmData_t *pStrmData, storage_t *pStorage,
     pStorage->slice->sliceId++;
     vjParseBegin(parse, pStorage, pStrmData, pSliceHeader);
 #ifdef VJ_PARSE_PIPELINE
-    /* the worker task parses ahead when: it exists and runs on another core, one slice group, a primary slice, and the
-     * slice has enough data to be worth the hand-off. Otherwise the same records are made here, one at a time. */
+    /* the worker task parses ahead when it exists and runs on another core, with one slice group and a primary slice.
+     * Otherwise the same records are made here, one at a time. No size gate: handing over every slice measured best,
+     * even the near-empty P slices of a static card (aux_card; see docs/bench-log.md). */
     if (pStorage->vjDbw && !parse->useStorage &&
         pStorage->activePps->numSliceGroups == 1 &&
-        !pSliceHeader->redundantPicCnt && h264bsdDbwParallel(pStorage->vjDbw) &&
-        VJ_PIPE_WORTH(pStrmData))
+        !pSliceHeader->redundantPicCnt && h264bsdDbwParallel(pStorage->vjDbw))
         ParseArm(parse, pStorage->vjDbw);
 #endif
 
