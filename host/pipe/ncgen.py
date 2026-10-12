@@ -4,6 +4,7 @@ usage: ncgen.py SEED W H FRAMES > out.h264   (the generator replicates the stand
 neighbour model changes the parse, so a decoder that differs from the standard cannot decode this cleanly)."""
 import sys, random
 seed, W, H, NF = (int(x) for x in sys.argv[1:5])
+MODE = sys.argv[5] if len(sys.argv) > 5 else 'plain'   # plain | aso (slices of a picture in random order) | fmo0 (interleaved groups) | fmo1 (dispersed groups)
 R = random.Random(seed)
 N = W * H
 class BW:
@@ -28,8 +29,23 @@ def nal(ref_idc, typ, rbsp):
 def sps():
     b = BW(); b.u(8, 66); b.u(8, 0); b.u(8, 30); b.ue(0); b.ue(0); b.ue(2); b.ue(1); b.u(1, 0)
     b.ue(W - 1); b.ue(H - 1); b.u(1, 1); b.u(1, 1); b.u(1, 0); b.u(1, 0); b.trailing(); return nal(3, 7, b.bytes())
+RUNS = [R.randint(1, 4), R.randint(1, 4)]
+def gmap():
+    if MODE == 'fmo1': return [((i % W) + (i // W)) % 2 for i in range(N)]
+    m = []; i = 0
+    while i < N:
+        for g in range(2):
+            for j in range(RUNS[g]):
+                if i < N: m.append(g); i += 1
+    return m
 def pps():
-    b = BW(); b.ue(0); b.ue(0); b.u(1, 0); b.u(1, 0); b.ue(0); b.ue(0); b.ue(0); b.u(1, 0); b.u(2, 0)
+    b = BW(); b.ue(0); b.ue(0); b.u(1, 0); b.u(1, 0)
+    if MODE.startswith('fmo'):
+        b.ue(1); b.ue(0 if MODE == 'fmo0' else 1)
+        if MODE == 'fmo0':
+            for g in range(2): b.ue(RUNS[g] - 1)
+    else: b.ue(0)
+    b.ue(0); b.ue(0); b.u(1, 0); b.u(2, 0)
     b.se(4); b.se(0); b.se(0); b.u(1, 1); b.u(1, 0); b.u(1, 0); b.trailing(); return nal(3, 8, b.bytes())
 BLK = [(0,0),(1,0),(0,1),(1,1),(2,0),(3,0),(2,1),(3,1),(0,2),(1,2),(0,3),(1,3),(2,2),(3,2),(2,3),(3,3)]
 POS = {p: i for i, p in enumerate(BLK)}
@@ -86,15 +102,28 @@ def mb_data(b, mb, cursl, ptype, pdens):
         if cbp: b.se(0); luma_cbp15(b, mb, cur, cursl, pdens)
     return cur
 def partition():
+    """list of slices, each the list of its MB addresses in decoding order"""
+    if MODE.startswith('fmo'):
+        gm = gmap(); out = []
+        for g in range(2):
+            mbs = [i for i in range(N) if gm[i] == g]
+            if not mbs: continue
+            k = min(len(mbs) - 1, R.randint(0, 2))
+            cuts = [0] + sorted(R.sample(range(1, len(mbs)), k)) if k else [0]
+            for i in range(len(cuts)):
+                out.append(mbs[cuts[i]:(cuts[i+1] if i + 1 < len(cuts) else len(mbs))])
+        return out
     cuts = sorted(R.sample(range(1, N), R.randint(0, min(5, N-1))))
     cuts = [0] + cuts
-    return [(cuts[i], (cuts[i+1] if i+1 < len(cuts) else N)) for i in range(len(cuts))]
+    return [list(range(cuts[i], (cuts[i+1] if i+1 < len(cuts) else N))) for i in range(len(cuts))]
 out = sps() + pps()
 for f in range(NF):
     idr = f == 0
     for s in range(N): sl[s] = -1
     pdens = R.choice([0.1, 0.5, 0.9])
-    for si, (a, e) in enumerate(partition()):
+    slices = []
+    for si, mbs in enumerate(partition()):
+        a = mbs[0]
         b = BW()
         b.ue(a); b.ue(2 if idr else 0); b.ue(0); b.u(4, f % 16)
         if idr: b.ue(0)
@@ -104,7 +133,7 @@ for f in range(NF):
         b.se(R.randint(-2, 2)); idc = R.choice([0, 1, 2]); b.ue(idc)
         if idc != 1: b.se(0); b.se(0)
         skip = 0
-        for mb in range(a, e):
+        for mb in mbs:
             sl[mb] = si
             if not idr and R.random() < (0.5 if R.random() < 0.5 else 0.15):
                 skip += 1; tc[mb] = [0]*16; continue
@@ -112,5 +141,8 @@ for f in range(NF):
             tc[mb] = mb_data(b, mb, si, not idr, pdens)
         if not idr and skip: b.ue(skip)
         b.trailing()
-        out += nal(3, 5 if idr else 1, b.bytes())
+        slices.append(nal(3, 5 if idr else 1, b.bytes()))
+    if MODE == 'aso':   # the slice holding MB 0 stays first (vj_au_length starts an AU at first_mb 0); the others in random order
+        rest = slices[1:]; R.shuffle(rest); slices = slices[:1] + rest
+    out += b''.join(slices)
 sys.stdout.buffer.write(out)

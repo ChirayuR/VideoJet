@@ -174,6 +174,23 @@ What to know before enabling it:
   - Gain on the bench (slow PSRAM class, same tree, worker off to on): aux_card / aux_map / full_map 95.30 / 21.89 / 11.65
     to 100.95 / 26.03 / 13.96 fps. Both cores share one D-cache and PSRAM bus, so the decode core slows a little while the
     worker runs.
+- `CONFIG_VJ_PARSE_PIPELINE` (default n; the bench turns it on; needs `CONFIG_VJ_DEBLOCK_WORKER`): the same worker task also parses the
+  slice's macroblocks (skip runs, macroblock_layer, CAVLC) into a ring of 6 records, ahead of the decoding task, which
+  reconstructs them in place. The parser reads nothing the decoding task writes, so the output (pixels, `changed_mb`, status,
+  concealment, every error path) is bit-identical to the sequential decoder: a parse error is a record the decoding task reaches in
+  order (`h264bsd/h264bsd_slice_data.c` has the protocol). Between records the task filters in segments of 10 macroblocks.
+  - **When it runs:** one slice group, a primary (not redundant) slice, a worker on another core than the caller. Otherwise the same
+    records are made on the decoding task, as without the option (single-core builds, FMO, redundant slices).
+  - **Rules:** as for the worker (create, decode, destroy from one task; keep the decoding task off the worker's core). The take-back
+    uses the esp_timer clock, so an unpinned decoding task is safe: if the worker produces no record for 50 ms the decoding task takes
+    the parser back and parses inline (one warning in the log); a waiter that lands on the worker's core sleeps a tick instead of
+    spinning (note that with `CONFIG_VJ_PIE` a task that calls `vj_decode_au` is pinned at its first PIE instruction anyway).
+  - **Budget** (bench config, 800x480, measured): libvideojet static 58,423 B (IRAM 50,881 + DRAM 7,534 + 8 bss) + heap `int_used`
+    36,876 B = **95,299 B** of the 100,000 B, with the deblock records in PSRAM. Against the same tree without the pipeline the heap
+    is +13.0 KB (the ring 6 x 2,104 B, the neighbour shadow 1.3 KB, a 3 KB worker stack against 2 KB). The worker's stack high
+    water with the parser is 1,152 B on every bench stream.
+  - Gain on the bench (slow PSRAM class, tuning 5, same base without the pipeline to with it): aux_card / aux_map / full_map
+    97.61 / 25.72 / 13.83 to 100.10 / 31.81 / 16.61 fps (+2.5 / +23.7 / +20.1 %).
 - `CONFIG_VJ_WORKER_CORE` (-1, 0 or 1; default -1 = the core other than the creating task's): the worker's core.
 - `CONFIG_VJ_IRAM` (default y): run the decoder from internal RAM, 51,533 B (hot code + tables, section 4).
 - `CONFIG_VJ_PIE` (default y, ESP32-S3 only): motion compensation, residual write-out and the 4x4 inverse transform in PIE SIMD assembly (MC for 8 and 16 wide partitions),
