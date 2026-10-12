@@ -453,10 +453,13 @@ static u32 DecodeNal(storage_t *pStorage, u8 *byteStrm, u32 len, u32 picId,
                     pStorage->currImage->data =
                         h264bsdAllocateDpbImage(pStorage->dpb);
 #ifdef VJ_DEBLOCK_WORKER
+                    /* the records start at the first slot of the ring */
+                    pStorage->vjRecCur = pStorage->vjRec;
                     if (pStorage->vjDbw)
                         pStorage->vjDbwRowEnd = h264bsdDbwBegin(
                             pStorage->vjDbw, pStorage->currImage,
-                            pStorage->vjRec, pStorage->dpb->vjChanged,
+                            pStorage->vjRec, pStorage->vjRecRows,
+                            pStorage->dpb->vjChanged,
                             pStorage->activePps->numSliceGroups,
                             pStorage->activePps->redundantPicCntPresentFlag);
 #endif
@@ -530,28 +533,36 @@ static u32 DecodeNal(storage_t *pStorage, u8 *byteStrm, u32 len, u32 picId,
     {
         { VJP_BEGIN(VJP_DEBLOCK);
 #ifdef VJ_DEBLOCK_WORKER
-        if (h264bsdDbwActive(pStorage->vjDbw) &&
+        if (h264bsdDbwFinishable(pStorage->vjDbw) &&
             pStorage->vjRecNext == pStorage->picSizeInMbs)
         {
-            /* decoded once each in raster order, records valid: the worker
-             * has filtered the rows behind the decoder, it does the rest */
+            /* decoded once each in raster order, records valid and the ring
+             * still holds the rows the worker has not filtered: it does the
+             * rest, the decoder waits */
             h264bsdDbwFinish(pStorage->vjDbw);
         }
         else
-#endif
+        {
+            /* the rows the worker filtered stay filtered (a picture that left
+             * raster order, concealment, or an error that rewrote the rest).
+             * The records of the rest are used only if the ring holds them
+             * all, else every record is remade from the storage */
+            u32 from = h264bsdDbwResume(pStorage->vjDbw);
+
+            h264bsdFilterPicture(pStorage->currImage, pStorage->mb,
+                pStorage->picSliceBase, pStorage->dpb->vjChanged,
+                pStorage->vjRec, pStorage->vjRecRows,
+                pStorage->vjRecNext == pStorage->picSizeInMbs &&
+                h264bsdDbwRecCovers(pStorage->vjDbw,
+                    pStorage->currImage->height, from),
+                from);
+        }
+        pStorage->vjDbwRowEnd = 0;
+#else
         h264bsdFilterPicture(pStorage->currImage, pStorage->mb,
             pStorage->picSliceBase, pStorage->dpb->vjChanged, pStorage->vjRec,
-            pStorage->vjRecNext == pStorage->picSizeInMbs,
-#ifdef VJ_DEBLOCK_WORKER
-            /* the rows the worker filtered stay filtered (a picture that left
-             * raster order, concealment, or an error that rewrote the rest) */
-            h264bsdDbwResume(pStorage->vjDbw)
-#else
-            0
-#endif
-            );
-#ifdef VJ_DEBLOCK_WORKER
-        pStorage->vjDbwRowEnd = 0;
+            pStorage->vjRecRows,
+            pStorage->vjRecNext == pStorage->picSizeInMbs, 0);
 #endif
         VJP_END(VJP_DEBLOCK); }
         h264bsdRecordChanges(pStorage->dpb, pStorage->numConcealedMbs);

@@ -352,13 +352,21 @@ u32 h264bsdActivateParamSets(storage_t *pStorage, u32 ppsId, u32 isIdr)
         /* the parser's shadow of the neighbours' totalCoeff, one entry per MB of a row and one more */
         pStorage->vjNbr = vj_alloc_internal(
             (pStorage->activeSps->picWidthInMbs + 1) * sizeof(vjNbr_t));
-        /* read for every MB by each deblock pass. T10 had them internal (18 KB at 800x480); the parse pipeline's ring
-         * needs that room, so with it they are PSRAM-first, which costs the decoding task ~4 % on a static picture */
-        pStorage->vjRec = vj_alloc_psram(
-            pStorage->picSizeInMbs * sizeof(deblockRec_t));
-#else
-        pStorage->vjRec = vj_alloc_internal(
-            pStorage->picSizeInMbs * sizeof(deblockRec_t));
+#endif
+        /* The deblock records, always internal: the decoding task writes one per MB and the pass reads them back. With
+         * the worker they are a ring of VJ_REC_ROWS rows (2.4 KB at 800x480), without it (or when its thread could not
+         * be created) one per MB of the picture (18 KB). */
+        pStorage->vjRecRows = pStorage->activeSps->picHeightInMbs;
+#ifdef VJ_DEBLOCK_WORKER
+        if (pStorage->vjDbw && pStorage->vjRecRows > VJ_REC_ROWS)
+            pStorage->vjRecRows = VJ_REC_ROWS;
+#endif
+        pStorage->vjRec = vj_alloc_internal(pStorage->vjRecRows *
+            pStorage->activeSps->picWidthInMbs * sizeof(deblockRec_t));
+#ifdef VJ_DEBLOCK_WORKER
+        pStorage->vjRecCur = pStorage->vjRec;
+        pStorage->vjRecEnd = pStorage->vjRec ? pStorage->vjRec +
+            pStorage->vjRecRows * pStorage->activeSps->picWidthInMbs : NULL;
 #endif
         ALLOCATE(pStorage->sliceGroupMap, pStorage->picSizeInMbs, u32);
         if (pStorage->mb == NULL || pStorage->vjRec == NULL ||

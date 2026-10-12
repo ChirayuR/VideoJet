@@ -124,9 +124,18 @@ typedef struct storage
      * records hold for the deblock pass only if the picture's macroblocks
      * were decoded once each in raster order, with no slice error and no
      * concealment: vjRecNext == picSizeInMbs. VJ_REC_OFF once anything else
-     * happened in the picture */
+     * happened in the picture.
+     * vjRec is vjRecRows rows of picWidthInMbs records: the whole picture
+     * (vjRecRows == the picture's height) without the deblock worker, a ring
+     * of VJ_REC_ROWS rows with it (macroblock n is in slot n % (vjRecRows *
+     * width); the rows the ring no longer holds are remade from the storage
+     * by the pass, see h264bsd_deblocking.c). vjRecCur is the slot of
+     * vjRecNext, vjRecEnd the end of the ring (VJ_DEBLOCK_WORKER only) */
     deblockRec_t *vjRec;
     u32 vjRecNext;
+    u32 vjRecRows;
+    deblockRec_t *vjRecCur;
+    deblockRec_t *vjRecEnd;
 
     /* deblock worker (VJ_DEBLOCK_WORKER; NULL when off): vjDbwRowEnd is the
      * vjRecNext at which it is told that another row is complete, 0 when it

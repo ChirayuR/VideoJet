@@ -63,6 +63,19 @@ typedef struct
 /* the deblock worker's state (h264bsd_deblocking.c, VJ_DEBLOCK_WORKER) */
 typedef struct dbw dbw_t;
 
+#ifdef VJ_DEBLOCK_WORKER
+/* With the worker, a picture's deblock records live in a ring of VJ_REC_ROWS macroblock rows, not in a picture-sized
+ * array: the records are read only by the worker, a row or two behind the decoding task, and by the final pass. Rows the
+ * ring no longer holds are remade from the storage by that pass. At least 4: row r is filtered once row r + 1 is decoded,
+ * and the decoding task may write row r + VJ_REC_ROWS only after the worker is done with row r + 1. */
+#ifndef VJ_REC_ROWS
+#define VJ_REC_ROWS 4
+#endif
+#if VJ_REC_ROWS < 4
+#error "VJ_REC_ROWS must be at least 4"
+#endif
+#endif
+
 /*------------------------------------------------------------------------------
     4. Function prototypes
 ------------------------------------------------------------------------------*/
@@ -73,7 +86,7 @@ void h264bsdDeblockRecord(mbStorage_t *mb, deblockRec_t *rec,
 void h264bsdFilterPicture(
   image_t *image,
   mbStorage_t *mb, u32 picSliceBase,
-  u8 *changed, deblockRec_t *rec, u32 recValid, u32 rowFrom);
+  u8 *changed, deblockRec_t *rec, u32 recRows, u32 recValid, u32 rowFrom);
 
 #ifdef VJ_DEBLOCK_WORKER
 dbw_t *h264bsdDbwCreate(void);
@@ -83,8 +96,8 @@ void h264bsdDbwKick(dbw_t *d);
 void h264bsdDbwWake(dbw_t *d);
 void h264bsdDbwStats(dbw_t *d, unsigned *kicks, unsigned *sleeps, unsigned *wakes);
 u32 h264bsdDbwParallel(dbw_t *d);
-u32 h264bsdDbwBegin(dbw_t *d, image_t *image, deblockRec_t *rec, u8 *changed,
-  u32 numSliceGroups, u32 redundantPicCntPresent);
+u32 h264bsdDbwBegin(dbw_t *d, image_t *image, deblockRec_t *rec, u32 recRows,
+  u8 *changed, u32 numSliceGroups, u32 redundantPicCntPresent);
 void h264bsdDbwSliceStart(dbw_t *d, u32 firstMb, u32 isP, u32 recNext);
 u32 h264bsdDbwRowEnd(dbw_t *d);
 u32 h264bsdDbwActive(const dbw_t *d);
@@ -92,8 +105,12 @@ u32 h264bsdDbwBusy(dbw_t *d);
 void h264bsdDbwAbortError(dbw_t *d);
 void h264bsdDbwAbortKeep(dbw_t *d);
 u32 h264bsdDbwResume(dbw_t *d);
+u32 h264bsdDbwFinishable(dbw_t *d);
+u32 h264bsdDbwRecCovers(dbw_t *d, u32 height, u32 from);
 void h264bsdDbwJoin(dbw_t *d);
 void h264bsdDbwFinish(dbw_t *d);
+void h264bsdDbwRingStats(dbw_t *d, unsigned *waits, unsigned *lost,
+  unsigned *remade);
 #endif
 
 #endif /* #ifdef H264SWDEC_DEBLOCKING_H */

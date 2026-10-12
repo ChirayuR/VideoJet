@@ -104,7 +104,13 @@ config VJ_DEBLOCK_WORKER
         VJ_WORKER_CORE, at the creating task's priority, with a 2 KB internal stack (about 1 KB used);
         vj_decoder_destroy() deletes it. vj_decode_au() returns with the worker idle. Costs per decoder at
         800x480: about 2.7 KB of internal RAM (2 KB stack, control blocks) and 118 KB of PSRAM (the undo log, 4 rows of
-        576 B per macroblock, which scales with the picture width, and 1.5 KB of marks). Code: 2.6 KB of IRAM.
+        576 B per macroblock, which scales with the picture width, and 1.5 KB of marks). Code: 3.4 KB of IRAM.
+        The deblock records (12 B per macroblock) are then a ring of 4 macroblock rows in internal RAM (2.4 KB at
+        800x480; VJ_REC_ROWS overrides it, e.g. -DVJ_EXTRA_DEFS=VJ_REC_ROWS=6) in place of the picture-sized array
+        (18 KB internal without the worker): the decoding task writes the records one row ahead of the worker and waits
+        at the end of a row if the worker still needs the row it would overwrite. The pass at the end of a picture makes
+        the records the ring no longer holds from the storage, which is what I pictures cost (their rows are never
+        handed to the worker).
         The VJP_DEBLOCK profile bucket (VJ_PROFILE) measures only the decoding task's wait for the worker when this is on.
 
         Rules for the consumer: call vj_decoder_create(), vj_decode_au() and vj_decoder_destroy() from one task,

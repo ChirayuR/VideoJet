@@ -784,13 +784,26 @@ static u32 DecodeSliceLoop(strmData_t *pStrmData, storage_t *pStorage,
          * out of that order turns the picture's records off */
         if (currMbAddr == pStorage->vjRecNext)
         {
+#ifdef VJ_DEBLOCK_WORKER
+            /* the records are a ring (macroblock n in slot n % ring size):
+             * the next slot is the one after this */
+            deblockRec_t *rec = pStorage->vjRecCur;
+
+            h264bsdDeblockRecord(pStorage->mb + currMbAddr, rec,
+                pStorage->picSliceBase, 1);
+            pStorage->vjRecCur = rec + 1 == pStorage->vjRecEnd ?
+                pStorage->vjRec : rec + 1;
+            pStorage->vjRecNext++;
+            /* a row is complete: the deblock worker may filter those behind
+             * it, and the ring is made ready for the next row (the decoding
+             * task waits here for the worker to be done with the row it
+             * would overwrite) */
+            if (pStorage->vjRecNext == pStorage->vjDbwRowEnd)
+                pStorage->vjDbwRowEnd = h264bsdDbwRowEnd(pStorage->vjDbw);
+#else
             h264bsdDeblockRecord(pStorage->mb + currMbAddr,
                 pStorage->vjRec + currMbAddr, pStorage->picSliceBase, 1);
             pStorage->vjRecNext++;
-#ifdef VJ_DEBLOCK_WORKER
-            /* a row is complete: the deblock worker may filter those behind it */
-            if (pStorage->vjRecNext == pStorage->vjDbwRowEnd)
-                pStorage->vjDbwRowEnd = h264bsdDbwRowEnd(pStorage->vjDbw);
 #endif
         }
         else

@@ -155,3 +155,23 @@ Every change made for VideoJet is listed here, newest last.
     fence, wakes it only if the flag is set. The worker's run is now `DbwRun` in segments of 10 MBs (`FilterMbRows` takes an MB
     range) so the task can parse between them. Test hooks, each used by a committed test: `VJ_POISON`, `VJ_NBR_STORAGE`,
     `VJ_PIPE_JITTER_US`, `VJ_PIPE_NOSTEP`, `VJ_PIPE_STALL_EVERY`, `VJ_RING_DEPTH` (see `host/Makefile`).
+  - Record ring (`VJ_DEBLOCK_WORKER`; `h264bsd_deblocking.c/h`, `h264bsd_slice_data.c`, `h264bsd_storage.c/h`, `h264bsd_decoder.c`,
+    `src/vj_worker.c/h`). With the worker the deblock records (`deblockRec_t`, 12 B) are a ring of `VJ_REC_ROWS` macroblock rows
+    (default 4: 2.4 KB at 800x480) in internal RAM instead of an array of the whole picture (18 KB, internal without the pipeline,
+    PSRAM with it): the record of MB n is slot n % (rows x width), `vjRecCur` is the slot of `vjRecNext`. Without the worker, or
+    when its thread cannot be created, the array stays (`vjRecRows` = the picture's height).
+    - The decoding task starts row r over row r - K, so `h264bsdDbwRowEnd` (end of each row) posts what became postable, then waits
+      (`DbwWaitRows`, `vj_worker_wait_progress`: spin, a tick's sleep per check, the 50 ms take-back) until the worker's published
+      position (`dbw.fmb`, a release store after every segment) is past the rows that still read row r - K, and tags ring row r
+      with (picture id, row). Only posted rows are waited for. A row whose ring rows are gone can no longer be posted ("lost"): the
+      worker leaves the picture and the final pass does the rest. The progress argument is at the top of the worker section of
+      `h264bsd_deblocking.c`.
+    - The final pass (`h264bsdFilterPicture`, `FilterMbRows`) reads ring records only if every ring row it needs carries its tag
+      (`RingHolds`); otherwise it makes every record from the storage (`h264bsdDeblockRecord(..., 0)`, with the neighbours' qps from
+      the storage: a record's qp is the storage's qpY), as it always did when the records were stale. That is what an I picture
+      (its rows are never posted) costs now: one extra record per MB at the end of the picture, instead of the worker's pass.
+    - The worker's skip-elision map keeps three marks (own, left, top; `DBW_MARK_*`), so the undo of a slice error and the rebuild
+      after it need no records: the own mark says a footprint was logged, the top mark of the row below the kept rows is dropped.
+      `changed` itself still only holds 0 and 1.
+    - Test hook (host): `VJ_DBW_SEG_DELAY_US` (a slow worker, `test_ringwait`); `VJ_REC_ROWS=n` overrides the ring size
+      (`-DVJ_EXTRA_DEFS=VJ_REC_ROWS=6` on the board build).

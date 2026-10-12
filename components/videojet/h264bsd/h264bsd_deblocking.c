@@ -764,37 +764,56 @@ static void RestoreFootprint(const u32 *s, image_t *image, u32 mbRow,
 
 #endif /* VJ_DEBLOCK_WORKER */
 
+/* How FilterMbRows marks the MBs it changes (skip elision). The picture's own
+ * map takes 1 for every mark. The worker's map keeps the three kinds apart, so
+ * that what a rolled-back row marked can be told from the rest:
+ * DBW_MARK_OWN the MB was filtered with edges (and has a logged footprint if
+ * its row has a log bank), DBW_MARK_LEFT its right neighbour filtered across
+ * their edge, DBW_MARK_TOP the MB below did. */
+#define DBW_MARK_OWN  1
+#define DBW_MARK_LEFT 2
+#define DBW_MARK_TOP  4
+
 /*------------------------------------------------------------------------------
 
     Function: FilterMbRows
 
         Functional description:
-          Filter macroblock rows rowFrom .. rowTo - 1 of a picture, in raster
-          order (the body of h264bsdFilterPicture, which filters them all).
-          When log is not NULL every macroblock that gets filtered first saves
-          the pixels its filtering can modify (SaveFootprint), so that
+          Filter macroblocks mbFrom .. mbTo - 1 of a picture, in raster order
+          (the body of h264bsdFilterPicture, which filters them all). When
+          log is not NULL every macroblock that gets filtered first saves the
+          pixels its filtering can modify (SaveFootprint), so that
           UndoRows can put them back.
 
-          The marks of skip elision go to changed. Filtering row r reads and
-          modifies only rows r - 1 and r of the picture, the records of rows
-          r - 1 and r, and (recValid false only) the storage of rows r - 1
-          and r.
+          The marks of skip elision go to changed (bitMarks: the worker's
+          kinds of marks, else 1). Filtering row r reads and modifies only
+          rows r - 1 and r of the picture, the records of rows r - 1 and r,
+          and (recValid false only) the storage of rows r - 1 and r.
+
+          The records: recValid true reads them from rec, recRows rows of
+          picWidthInMbs in a ring (row r in slot row r % recRows); false
+          makes each from the storage as the pass always did, with the
+          neighbours' qps from the storage too (the record's qp is the
+          storage's qpY).
 
 ------------------------------------------------------------------------------*/
 static inline __attribute__((always_inline)) void FilterMbRows(
   image_t *image,
   mbStorage_t *mb, u32 picSliceBase,
-  u8 *changed, deblockRec_t *rec, u32 recValid,
+  u8 *changed, u32 bitMarks,
+  const deblockRec_t *rec, u32 recRows, u32 recValid,
   u32 mbFrom, u32 mbTo, const u8 *rowBank, u32 *log)
 {
 
 /* Variables */
 
-    u32 i, top, left, qpTop, qpLeft;
+    u32 i, n, top, left, qpTop, qpLeft;
     u32 picSizeInMbs, mbRow, mbCol;
     u32 picWidthInMbs;
     u8 *data;
-    deblockRec_t *r;
+    const deblockRec_t *r;
+    const deblockRec_t *rowRec = NULL, *upRec = NULL;
+    deblockRec_t made;
     bS_t bS[16];
     edgeThreshold_t thresholds[3];
 
@@ -807,14 +826,28 @@ static inline __attribute__((always_inline)) void FilterMbRows(
      * worker can filter a few at a time and parse in between */
     mbRow = mbFrom / picWidthInMbs;
     mbCol = mbFrom % picWidthInMbs;
-    for (r = rec + mbFrom; r < rec + mbTo; r++)
+    for (n = mbFrom; n < mbTo; n++)
     {
         /* records made at decode time hold only if the picture's MBs were
-         * decoded once each in raster order (h264bsdDecodeSliceData).
-         * Otherwise make each from the storage now, as the pass always
-         * did: the raster walk has remade its left and top neighbours' */
-        if (!recValid)
-            h264bsdDeblockRecord(mb + (r - rec), r, picSliceBase, 0);
+         * decoded once each in raster order (h264bsdDecodeSliceData) and the
+         * ring still holds them. Otherwise make each from the storage now,
+         * as the pass always did */
+        if (recValid)
+        {
+            if (mbCol == 0 || n == mbFrom)
+            {
+                rowRec = rec + (size_t)(mbRow % recRows) * picWidthInMbs;
+                upRec = mbRow ?
+                    rec + (size_t)((mbRow - 1) % recRows) * picWidthInMbs :
+                    rowRec;
+            }
+            r = rowRec + mbCol;
+        }
+        else
+        {
+            h264bsdDeblockRecord(mb + n, &made, picSliceBase, 0);
+            r = &made;
+        }
 
         top = r->bs[0];
         left = r->bs[1];
@@ -825,7 +858,7 @@ static inline __attribute__((always_inline)) void FilterMbRows(
             /* skip elision: mark every MB this filtering may modify,
              * itself and, across an MB edge with bS > 0, its left or
              * top neighbour. Chroma edges use these luma bS */
-            u8 *c = changed + (r - rec);
+            u8 *c = changed + n;
 
             for (i = 0; i < 16; i++, top >>= 2, left >>= 2)
             {
@@ -840,16 +873,36 @@ static inline __attribute__((always_inline)) void FilterMbRows(
                     bS[4*i].left = 4;
             }
 
+            /* the worker's map is clear when its own mark is made: the
+             * neighbours' come later in raster order */
             c[0] = 1;
             if (bS[0].left | bS[4].left | bS[8].left | bS[12].left)
-                c[-1] = 1;
+            {
+                if (bitMarks)
+                    c[-1] |= DBW_MARK_LEFT;
+                else
+                    c[-1] = 1;
+            }
             if (bS[0].top | bS[1].top | bS[2].top | bS[3].top)
-                c[-(i32)picWidthInMbs] = 1;
+            {
+                if (bitMarks)
+                    c[-(i32)picWidthInMbs] |= DBW_MARK_TOP;
+                else
+                    c[-(i32)picWidthInMbs] = 1;
+            }
 
             /* at the picture border the neighbour's qp is never used, as
              * that edge is not filtered */
-            qpTop = mbRow ? r[-(i32)picWidthInMbs].qp : r->qp;
-            qpLeft = mbCol ? r[-1].qp : r->qp;
+            if (recValid)
+            {
+                qpTop = upRec[mbCol].qp;
+                qpLeft = mbCol ? r[-1].qp : r->qp;
+            }
+            else
+            {
+                qpTop = mbRow ? (u8)mb[n - picWidthInMbs].qpY : r->qp;
+                qpLeft = mbCol ? (u8)mb[n - 1].qpY : r->qp;
+            }
 
 #ifdef VJ_DEBLOCK_WORKER
             if (log && rowBank[mbRow] != DBW_NOBANK)
@@ -902,9 +955,12 @@ static inline __attribute__((always_inline)) void FilterMbRows(
           picSliceBase  slice id base of the picture (IsSliceBoundaryOnLeft)
           changed       per-MB change flags (skip elision), set for every MB
                         filtering may modify
-          rec           deblock records of the picture's macroblocks
+          rec           deblock records of the picture's macroblocks: recRows
+                        rows of picWidthInMbs, row r in slot r % recRows (all
+                        rows of the picture, or the ring of VJ_DEBLOCK_WORKER)
           recValid      HANTRO_TRUE if the records were made at decode time
-                        and still hold, otherwise they are made here
+                        and the rows from rowFrom - 1 on are still in rec,
+                        otherwise they are made here
           rowFrom       first macroblock row to filter: the rows before it
                         were filtered already (deblock worker)
 
@@ -918,7 +974,7 @@ static inline __attribute__((always_inline)) void FilterMbRows(
 void h264bsdFilterPicture(
   image_t *image,
   mbStorage_t *mb, u32 picSliceBase,
-  u8 *changed, deblockRec_t *rec, u32 recValid, u32 rowFrom)
+  u8 *changed, deblockRec_t *rec, u32 recRows, u32 recValid, u32 rowFrom)
 {
 
 /* Code */
@@ -926,11 +982,12 @@ void h264bsdFilterPicture(
     ASSERT(image);
     ASSERT(mb);
     ASSERT(rec);
+    ASSERT(recRows);
     ASSERT(image->data);
     ASSERT(image->width);
     ASSERT(image->height);
 
-    FilterMbRows(image, mb, picSliceBase, changed, rec, recValid,
+    FilterMbRows(image, mb, picSliceBase, changed, 0, rec, recRows, recValid,
         rowFrom * image->width, image->width * image->height, NULL, NULL);
 
 }
@@ -942,7 +999,7 @@ void h264bsdFilterPicture(
 
     The decoding thread decodes the picture; a worker thread filters macroblock
     row r once rows 0 .. r + 1 are decoded, in raster order, with the records
-    made at decode time.
+    made at decode time (kept in a ring of rows, see 4.).
 
     1. Bit-exact while nothing goes wrong. Intra prediction reads only
        unfiltered pixels of its own slice: the rows above (their bottom line,
@@ -976,7 +1033,9 @@ void h264bsdFilterPicture(
        back the logged rows posted since B opened (r0 of them are older: their
        footprints are before s, as the rows posted are at most row(s) - 1
        when B opens, and those MBs stay as they are), and the final pass
-       resumes at row r0. Marks are rebuilt from the records of rows below r0.
+       resumes at row r0. The marks of the rows below r0 are kept, those the
+       undone rows made are dropped (the worker's map keeps own, left and top
+       marks apart for that, see DBW_MARK_*).
        Other slices of the picture cannot disturb filtered rows: a primary
        slice that starts on an MB already decoded fails before it writes.
        Slices that are not P slices (I: concealment of an I slice reads the
@@ -985,6 +1044,43 @@ void h264bsdFilterPicture(
        only touches MBs at or after vjRecNext, rows after those posted.
     3. No worker at all for pictures with slice groups or redundant slices
        (h264bsdDbwBegin): they re-decode MBs that have already been filtered.
+    4. The records are a ring of K = VJ_REC_ROWS rows (recRows, fewer for a
+       small picture): the record of MB n is slot n % (K * width), ring row
+       r % K holds row r. The decoding thread writes them in raster order
+       (vjRecNext); the worker, filtering row j, reads the records of rows j
+       and j - 1 (the qp of the MB above) and nobody reads them otherwise
+       except the final pass.
+       Records stay a pure function of the storage as the MB was decoded, so
+       what is not in the ring can be made again from the storage: the final
+       pass does that for every row from the first it filters on, unless the
+       ring still holds all of them (RingHolds: every ring row carries the
+       row and the picture id it was filled for).
+       - The decoding thread starts row r (end of row r - 1, h264bsdDbwRowEnd)
+         by writing over row r - K, so the worker must be done with it: it
+         reads row r - K while filtering rows r - K and r - K + 1. After
+         posting what became postable the decoding thread waits until the
+         worker's published position (fmb, a store-release after every
+         segment) is in row r - K + 2 or later (DbwWaitRows), then tags ring
+         row r % K. Only posted rows are waited for: the target is
+         min(posted, r - K + 2) rows done. Posting a row needs its two ring
+         rows to survive the row about to start: otherwise the worker is out
+         of the picture for good ("lost": the rows already posted are
+         filtered, the final pass remakes the rest). It happens when rows go
+         unposted for K - 3 rows: the rows of I slices, a slice that needs
+         more than DBW_BANKS log banks.
+       - Progress. The decoding thread waits only for posted rows, and the
+         worker's task does deblock work whenever its parser has nothing to
+         do: while the decoding thread waits it frees no parse slot, so the
+         parse ring is full after VJ_RING_DEPTH records and the task runs
+         deblock segments; a task asleep on a full parse ring is woken by the
+         post that precedes the wait. The worker never waits for the
+         decoding thread (DbwRun has no wait, the parser only yields to it),
+         so there is no cycle. A worker that is not scheduled at all ends the
+         wait like any other: after VJ_WORKER_WAIT_MS the decoding thread
+         takes the posted run back and filters the rows itself.
+       - Marks. The map of the worker has three marks (DBW_MARK_*), so that
+         neither the undo of a slice error nor the rebuild after it needs
+         the records of rows the ring no longer holds.
 
 ------------------------------------------------------------------------------*/
 
@@ -995,9 +1091,10 @@ struct dbw
 {
     vj_worker_t *w;
     image_t img;        /* the picture being filtered */
-    deblockRec_t *rec;
+    deblockRec_t *rec;  /* the record ring: recRows rows of picture width */
+    u32 recRows;
     u8 *changed;        /* the picture's skip elision flags */
-    u8 *marks;          /* the worker's marks, joined into changed */
+    u8 *marks;          /* the worker's marks (DBW_MARK_*), joined into changed */
     u8 *rowBank;        /* per row: log bank, DBW_NOBANK for none */
     u32 *log;           /* DBW_BANKS * picture width footprints */
     u32 capMbs, capW;   /* what marks, rowBank and log have room for */
@@ -1011,11 +1108,18 @@ struct dbw
     u32 postOk;         /* that slice may post rows (P, in raster order) */
     u32 r0;             /* rows posted when it opened */
     u32 banksUsed;
+    u32 lost;           /* a row could not be posted before the ring moved on: no more posts */
+    u32 pic;            /* picture id (every Begin): what the ring tags mean */
+    struct { u32 pic, row; } tag[VJ_REC_ROWS]; /* what each ring row was filled for */
     /* the worker's while it runs, the decoding thread's when it is idle */
     u32 filtered;       /* rows filtered */
-    u32 fmb;            /* next macroblock to filter (a run in progress) */
+    u32 fmb;            /* next macroblock to filter (a run in progress); the decoding
+                           thread reads it (acquire) to see which ring rows are free */
+    /* counters (tests, stats builds): row waits of the decoding thread, pictures the worker
+     * got out of, final passes that remade records the ring did not hold */
+    unsigned nRecWait, nLost, nRemade;
 #ifdef VJ_DBW_STATS
-    unsigned nBegin, nFinish, nErr, nErrUndo, nKeep;
+    unsigned nBegin, nFinish, nErr, nErrUndo, nKeep, nWaitUs;
 #endif
 };
 
@@ -1025,28 +1129,93 @@ struct dbw
 #define VJ_DBW_SEG_MBS 10
 #endif
 
+#ifdef VJ_DBW_SEG_DELAY_US /* host test: a slow worker, so the decoding thread runs ahead and waits for ring room */
+#include <unistd.h>
+static unsigned DbwDelay(void)
+{
+    static __thread unsigned x = 0x2545F491u;
+
+    x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+    return x;
+}
+#endif
+
 /* the worker: filter the rows posted since the last call, a segment at a time.
  * Returns 1 when the run is complete (filtered == upto), 0 when it wants to be
  * called again with the same upto. fmb is the next macroblock to filter; it is
- * filtered * width whenever no run is in progress. */
+ * filtered * width whenever no run is in progress. It is published after every
+ * segment (release): the decoding thread reads it to know which rows of the
+ * record ring the worker is done with. */
 static int DbwRun(void *arg, uint32_t upto)
 {
     dbw_t *d = (dbw_t*)arg;
-    u32 W = d->img.width, end, to;
+    u32 W = d->img.width, end, to, fmb;
 
     if (upto <= d->filtered)
         return 1;
+    fmb = __atomic_load_n(&d->fmb, __ATOMIC_RELAXED);
     to = upto * W;
-    end = d->fmb + VJ_DBW_SEG_MBS;
+    end = fmb + VJ_DBW_SEG_MBS;
     if (end > to)
         end = to;
-    FilterMbRows(&d->img, NULL, 0, d->marks, d->rec, HANTRO_TRUE,
-        d->fmb, end, d->rowBank, d->log);
-    d->fmb = end;
+#ifdef VJ_DBW_SEG_DELAY_US
+    if (DbwDelay() % 4 == 0)
+        usleep(DbwDelay() % VJ_DBW_SEG_DELAY_US);
+#endif
+    FilterMbRows(&d->img, NULL, 0, d->marks, 1, d->rec, d->recRows,
+        HANTRO_TRUE, fmb, end, d->rowBank, d->log);
+    __atomic_store_n(&d->fmb, end, __ATOMIC_RELEASE);
     if (end < to)
         return 0;
     d->filtered = upto;
     return 1;
+}
+
+/* ring row of row r is filled for this picture, from now on (its first record
+ * is written next) */
+static void TagRow(dbw_t *d, u32 row)
+{
+    d->tag[row % d->recRows].pic = d->pic;
+    d->tag[row % d->recRows].row = row;
+}
+
+/* The ring holds the records of rows from .. height - 1 of this picture: more
+ * than the ring has rows are not, and each ring row must be the one filled for
+ * the row (and this picture) */
+static u32 RingHolds(const dbw_t *d, u32 height, u32 from)
+{
+    u32 r;
+
+    if (from >= height)
+        return HANTRO_TRUE;
+    if (height - from > d->recRows)
+        return HANTRO_FALSE;
+    for (r = from; r < height; r++)
+        if (d->tag[r % d->recRows].pic != d->pic ||
+            d->tag[r % d->recRows].row != r)
+            return HANTRO_FALSE;
+    return HANTRO_TRUE;
+}
+
+/* The decoding thread waits until the worker has filtered rows 0 .. rows - 1
+ * (its published position is in row rows or later) */
+static void DbwWaitRows(dbw_t *d, u32 rows)
+{
+    u32 need = rows * d->img.width;
+
+    if (__atomic_load_n(&d->fmb, __ATOMIC_ACQUIRE) >= need)
+        return;
+    d->nRecWait++;
+#ifdef VJ_DBW_STATS
+    {
+        uint32_t t0 = vj_ticks();
+
+        vj_worker_wait_progress(d->w, &d->fmb, need);
+        d->nWaitUs += (unsigned)(vj_ticks() - t0);
+    }
+#else
+    vj_worker_wait_progress(d->w, &d->fmb, need);
+#endif
 }
 
 dbw_t *h264bsdDbwCreate(void)
@@ -1105,8 +1274,10 @@ void h264bsdDbwDestroy(dbw_t *d)
 #ifdef VJ_DBW_STATS
         fprintf(stderr, "dbw: %u pictures armed, %u finished by the worker, "
             "%u slice errors (%u with logged rows to undo), %u kept at a "
-            "concealment\n", d->nBegin, d->nFinish, d->nErr, d->nErrUndo,
-            d->nKeep);
+            "concealment; ring: %u waits (%u us), %u pictures the worker "
+            "left, %u final passes remade records\n", d->nBegin, d->nFinish,
+            d->nErr, d->nErrUndo, d->nKeep, d->nRecWait, d->nWaitUs,
+            d->nLost, d->nRemade);
 #endif
         vj_worker_destroy(d->w);
         free(d->marks);
@@ -1118,15 +1289,21 @@ void h264bsdDbwDestroy(dbw_t *d)
 /* Start of a picture: decide whether the worker takes part and arm it. The
  * worker is idle here. Returns the vjRecNext value at which the first row is
  * complete, 0 when the worker is not taking part */
-u32 h264bsdDbwBegin(dbw_t *d, image_t *image, deblockRec_t *rec, u8 *changed,
-    u32 numSliceGroups, u32 redundantPicCntPresent)
+u32 h264bsdDbwBegin(dbw_t *d, image_t *image, deblockRec_t *rec, u32 recRows,
+    u8 *changed, u32 numSliceGroups, u32 redundantPicCntPresent)
 {
     u32 n = image->width * image->height;
 
     h264bsdDbwAbortKeep(d);
     d->resume = 0;
-    d->filtered = d->fmb = 0;
+    d->filtered = 0;
+    __atomic_store_n(&d->fmb, 0, __ATOMIC_RELAXED);
     d->posted = 0;
+    /* a new id: no ring row is tagged for this picture yet (also when the
+     * worker takes no part, so its tags never pass for this picture's) */
+    d->pic++;
+    d->lost = 0;
+    d->recRows = recRows;
     if (numSliceGroups != 1 || redundantPicCntPresent ||
         image->height < 3 || ((uintptr_t)image->data & 3))
         return 0;
@@ -1156,6 +1333,7 @@ u32 h264bsdDbwBegin(dbw_t *d, image_t *image, deblockRec_t *rec, u8 *changed,
     d->rec = rec;
     d->changed = changed;
     d->active = HANTRO_TRUE;
+    TagRow(d, 0);
     d->rowsComplete = 0;
     d->nextRowEnd = image->width;
     d->sOpen = 0;
@@ -1185,19 +1363,29 @@ void h264bsdDbwSliceStart(dbw_t *d, u32 firstMb, u32 isP, u32 recNext)
  * last complete one are now safe to filter. Returns the next such value */
 u32 h264bsdDbwRowEnd(dbw_t *d)
 {
-    u32 W = d->img.width, before = d->posted;
+    u32 W = d->img.width, H = d->img.height, K = d->recRows;
+    u32 before = d->posted, next, held, lowRow;
 
-    d->rowsComplete++;
+    /* rows 0 .. next - 1 are complete; row next is the next to be written
+     * (none after the last), over ring row next - K */
+    next = ++d->rowsComplete;
     d->nextRowEnd += W;
-    if (d->postOk)
+    /* the lowest row the ring will hold once row next is started */
+    held = next < H ? next + 1 : H;
+    lowRow = held > K ? held - K : 0;
+
+    if (d->postOk && !d->lost)
     {
-        while (d->posted + 1 < d->rowsComplete)
+        while (d->posted + 1 < next)
         {
             u32 r = d->posted;
             /* lowest MB the filtering of row r modifies: the first of the
              * row above */
             u32 lowest = r ? (r - 1) * W : 0;
 
+            /* row r needs records of rows r - 1 and r */
+            if ((r ? r - 1 : 0) < lowRow)
+                break;
             if (lowest < d->sOpen)
             {
                 if (d->banksUsed == DBW_BANKS)
@@ -1210,6 +1398,22 @@ u32 h264bsdDbwRowEnd(dbw_t *d)
         }
         if (d->posted != before)
             vj_worker_post(d->w, d->posted);
+    }
+    /* the row that is next to be posted is gone from the ring, so every later
+     * one is too: the worker is out of this picture */
+    if (!d->lost && (d->posted ? d->posted - 1 : 0) < lowRow)
+    {
+        d->lost = 1;
+        d->nLost++;
+    }
+    if (next < H)
+    {
+        /* row next is about to overwrite row next - K: the worker must be done
+         * with it, which it reads while filtering rows next - K and next - K
+         * + 1; wait for those that are posted */
+        if (next >= K && d->posted > next - K)
+            DbwWaitRows(d, d->posted < next - K + 2 ? d->posted : next - K + 2);
+        TagRow(d, next);
     }
     return d->nextRowEnd;
 }
@@ -1226,28 +1430,27 @@ u32 h264bsdDbwActive(const dbw_t *d)
 }
 
 /* The worker is idle and filtered rows [0, keep) stay filtered: the marks of
- * the rest are dropped, those of the kept rows made from their records, and
- * the final pass resumes at keep */
+ * the rest are dropped, those the kept rows made go to the picture's, and the
+ * final pass resumes at keep. Filtering row r marks MBs of row r (own, left)
+ * and of row r - 1 (top), so the kept marks are the own and left ones of rows
+ * below keep and the top ones of rows below keep - 1 (those of row keep - 1
+ * come from filtering row keep). */
 static void DbwSettle(dbw_t *d, u32 keep)
 {
     u32 W = d->img.width, n;
 
-    memset(d->marks, 0, d->img.height * W);
     for (n = 0; n < keep * W; n++)
     {
-        const deblockRec_t *r = d->rec + n;
+        u8 m = d->marks[n];
 
-        if (r->bs[0] | r->bs[1])
-        {
+        if ((m & (DBW_MARK_OWN | DBW_MARK_LEFT)) ||
+            ((m & DBW_MARK_TOP) && n < (keep - 1) * W))
             d->changed[n] = 1;
-            if (r->bs[1] & 0x03030303U)
-                d->changed[n - 1] = 1;
-            if (r->bs[0] & 0xFFU)
-                d->changed[n - W] = 1;
-        }
     }
+    memset(d->marks, 0, d->img.height * W);
     d->resume = keep;
-    d->filtered = d->fmb = 0;
+    d->filtered = 0;
+    __atomic_store_n(&d->fmb, 0, __ATOMIC_RELAXED);
     d->posted = 0;
     d->active = HANTRO_FALSE;
 }
@@ -1281,9 +1484,9 @@ void h264bsdDbwAbortError(dbw_t *d)
             continue;
         for (c = W; c--;)
         {
-            const deblockRec_t *rec = d->rec + r * W + c;
-
-            if (rec->bs[0] | rec->bs[1])
+            /* a footprint was logged for every MB filtered with edges, and
+             * only for those: they carry their own mark */
+            if (d->marks[r * W + c] & DBW_MARK_OWN)
                 RestoreFootprint(d->log +
                     ((size_t)d->rowBank[r] * W + c) * DBW_SLOT_WORDS,
                     &d->img, r, c);
@@ -1339,12 +1542,45 @@ void h264bsdDbwFinish(dbw_t *d)
     vj_worker_post(d->w, d->img.height);
     vj_worker_wait(d->w);
     for (i = 0; i < n; i++)
-        d->changed[i] |= d->marks[i];
+        if (d->marks[i])
+            d->changed[i] = 1;
     memset(d->marks, 0, n);
     d->resume = d->img.height;
-    d->filtered = d->fmb = 0;
+    d->filtered = 0;
+    __atomic_store_n(&d->fmb, 0, __ATOMIC_RELAXED);
     d->posted = 0;
     d->active = HANTRO_FALSE;
+}
+
+/* The worker can finish the picture: it is active, and the ring holds the
+ * records of the rows it has not been posted (and of the one above the first
+ * of them, whose qp it reads) */
+u32 h264bsdDbwFinishable(dbw_t *d)
+{
+    return d && d->active &&
+        RingHolds(d, d->img.height, d->posted ? d->posted - 1 : 0);
+}
+
+/* The final pass from row `from` of a picture of `height` rows decoded in
+ * raster order may read its records from the ring: it holds them all (without
+ * a worker the ring is the whole picture). Otherwise the pass makes them. */
+u32 h264bsdDbwRecCovers(dbw_t *d, u32 height, u32 from)
+{
+    u32 covers = !d || RingHolds(d, height, from ? from - 1 : 0);
+
+    if (d && !covers)
+        d->nRemade++;
+    return covers;
+}
+
+/* tests and stats builds: waits of the decoding thread for ring room, pictures
+ * the worker got out of, final passes that made records the ring did not hold */
+void h264bsdDbwRingStats(dbw_t *d, unsigned *waits, unsigned *lost,
+    unsigned *remade)
+{
+    *waits = d->nRecWait;
+    *lost = d->nLost;
+    *remade = d->nRemade;
 }
 #endif /* VJ_DEBLOCK_WORKER */
 

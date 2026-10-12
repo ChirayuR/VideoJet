@@ -8,6 +8,10 @@
  *             slice); the output is the same as with no worker at all.
  *  test_sleep (PIPE=1, -DVJ_PIPE_STALL_EVERY: the decoding task stalls now and then): the ring stays full, the worker sleeps
  *             and is woken by the decoding task freeing a slot; the output is the same as with no worker at all.
+ *  test_ringwait (-DVJ_DBW_SEG_DELAY_US: the worker is slow per segment): the decoding task runs past the record ring and
+ *             waits for room, over and over; the output is the same as with no worker at all.
+ * Every build also checks that the ring paths ran: pictures the worker had to leave (the I pictures: their rows are never
+ * posted) and final passes that made the records the ring did not hold.
  * All also run the thread-creation-failure path (no worker: the decoder filters in the pass). */
 #include <assert.h>
 #include <stdint.h>
@@ -22,6 +26,7 @@
 extern unsigned vjParseTestSlices, vjParseTestArmed, vjParseTestTakebacks;
 static unsigned g_sleeps, g_wakes; /* of every decoder's worker, summed */
 #endif
+static unsigned g_rwaits, g_lost, g_remade; /* record ring: waits for room, pictures the worker left, remade final passes */
 
 static uint8_t *slurp(const char *path, size_t *len)
 {
@@ -70,18 +75,23 @@ static unsigned run(const char *path, int n, int check, int cut, uint32_t *out)
         frames += r == VJ_FRAME;
         o += l;
     }
-#ifdef VJ_PARSE_PIPELINE
     {
         storage_t *st = (storage_t *)(void *)d;
-        unsigned k, sl, wk;
+        unsigned rw, lo, rm;
 
         if (st->vjDbw) {
+            h264bsdDbwRingStats(st->vjDbw, &rw, &lo, &rm);
+            g_rwaits += rw;
+            g_lost += lo;
+            g_remade += rm;
+#ifdef VJ_PARSE_PIPELINE
+            unsigned k, sl, wk;
             h264bsdDbwStats(st->vjDbw, &k, &sl, &wk);
             g_sleeps += sl;
             g_wakes += wk;
+#endif
         }
     }
-#endif
     vj_decoder_destroy(d);
     free(au);
     free(s);
@@ -106,7 +116,11 @@ int main(int argc, char **argv)
             assert(a && a == b);
             assert(!memcmp(with, without, sizeof with));
         }
-#ifdef VJ_WORKER_STALL_MS
+    assert(g_lost > 0 && g_remade > 0); /* the I pictures: the worker left them, the pass made their records */
+#ifdef VJ_DBW_SEG_DELAY_US
+    assert(g_rwaits > 0); /* the decoding thread really waited for ring room */
+    printf("test_ringwait: ok (%u waits for ring room, %u pictures left, %u remade passes)\n", g_rwaits, g_lost, g_remade);
+#elif defined(VJ_WORKER_STALL_MS)
     assert(vj_worker_test_takebacks > 0); /* the fallback really ran */
     printf("test_stall: ok (%u runs taken back)\n", vj_worker_test_takebacks);
 #elif defined(VJ_PIPE_NOSTEP)

@@ -9,8 +9,8 @@ PIPE ?= 1
 VJF := $(if $(filter 1,$(WORKER)),-DVJ_DEBLOCK_WORKER -pthread,) $(if $(filter 1,$(PIPE)),-DVJ_PARSE_PIPELINE,) $(PIPEF)
 B := ../build-host
 STARVE_RUN = $(if $(filter 1,$(PIPE)), && $(B)/test_starve ../streams && $(B)/test_sleep ../streams,)
-WORKER_TESTS = $(if $(filter 1,$(WORKER)),$(B)/test_join ../streams && $(B)/test_stall ../streams$(STARVE_RUN),true)
-WORKER_BINS = $(if $(filter 1,$(WORKER)),$(B)/test_join $(B)/test_stall $(if $(filter 1,$(PIPE)),$(B)/test_starve $(B)/test_sleep,),)
+WORKER_TESTS = $(if $(filter 1,$(WORKER)),$(B)/test_join ../streams && $(B)/test_stall ../streams && $(B)/test_ringwait ../streams$(STARVE_RUN),true)
+WORKER_BINS = $(if $(filter 1,$(WORKER)),$(B)/test_join $(B)/test_stall $(B)/test_ringwait $(if $(filter 1,$(PIPE)),$(B)/test_starve $(B)/test_sleep,),)
 VJ := ../components/videojet
 DEC := ../components/videojet/h264bsd
 LIB_SRC := $(wildcard $(VJ)/src/*.c) $(wildcard $(DEC)/*.c)
@@ -59,6 +59,11 @@ $(B)/test_join: test_worker.c $(LIB_SRC) $(LIB_HDR) $(HASH) | $(B)
 
 $(B)/test_stall: test_worker.c $(LIB_SRC) $(LIB_HDR) $(HASH) | $(B)
 	$(CC) $(CFLAGS) $(VJF) -DVJ_WORKER_STALL_MS=120 $(INC) $(LIB_INC) -o $@ test_worker.c $(LIB_SRC)
+
+# A slow worker (-DVJ_DBW_SEG_DELAY_US: it sleeps up to 300 us before one segment in four): the decoding task gets ahead of the
+# record ring again and again and waits for room; the output is the same as with no worker at all.
+$(B)/test_ringwait: test_worker.c $(LIB_SRC) $(LIB_HDR) $(HASH) | $(B)
+	$(CC) $(CFLAGS) $(VJF) -DVJ_DBW_SEG_DELAY_US=300 $(INC) $(LIB_INC) -o $@ test_worker.c $(LIB_SRC)
 
 # The parse pipeline's worker never runs the parser (-DVJ_PIPE_NOSTEP): every slice is taken back by the decoding task after
 # 50 ms and parsed inline, the output equals the build with no worker at all.

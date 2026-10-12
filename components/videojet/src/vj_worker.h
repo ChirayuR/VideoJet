@@ -53,6 +53,11 @@ uint32_t vj_ticks(void);
  * (ESP) so that a worker task on the caller's own core, at a lower or equal priority, can run. */
 void vj_relax(void);
 void vj_yield_wait(void);
+/* The owner waits until *progress >= need, a counter that the worker's fn publishes (store-release) as it goes: a short
+ * spin, then a tick's sleep per check. After VJ_WORKER_WAIT_MS it takes the posted run back as vj_worker_wait does (the
+ * worker is not scheduled), so it returns when the worker has done everything posted. The owner must have posted the work
+ * that makes the counter reach need. */
+void vj_worker_wait_progress(vj_worker_t *w, const unsigned *progress, unsigned need);
 /* One line on the log, the first time only (the worker is a best-effort speedup: what it cannot do it says once). */
 void vj_worker_warn(const char *msg);
 #ifndef ESP_PLATFORM
