@@ -22,7 +22,8 @@ Use this file as an ongoing file, and optimise your usage.
 - Agents: Haiku 5.5 / Sonnet 5.5 for search, research, mechanical work. Opus 5.5 max effort for planning.
   Escalate to an **Opus agent when capability is the bottleneck**: BLOCKED, a fix loop past round 3, or deep-judgment
   work (PIE asm, decoder internals, meta-harness proposers). **No an external consult agents** (user, 2026-10-11: "stop an external consult usage"):
-  if Opus is blocked, stop and ask the user.
+  if Opus is blocked, stop and ask the user. The exception is a consult the user asks for in so many words
+  (2026-10-12: "consult an external model for brainstorming", `brainstorm2.md`).
 - Meta-harness drives optimisation (M3). The scorer is the board bench (fps). Hard floor: every frame hash matches the golden.
 - Deferred work and every M1 decision live in `docs/superpowers/m1-carryover.md`. Read it before planning M3 (its M2 items
   are closed).
@@ -157,11 +158,11 @@ h264bsd: Android's Hantro baseline decoder, Apache-2.0, plain C (github.com/onea
 - `$WORK/the consumer project` (CLAUDE.md, docs/) + its memory dir.
 
 ## Status
-- 2026-10-11: **M3 speed sprint in progress.** The full resume procedure is the "RESUME HERE" block at the end of the ledger
+- 2026-10-12: **M3 speed sprint in progress.** The full resume procedure is the "RESUME HERE" block at the end of the ledger
   `.superpowers/sdd/2026-10-10-videojet-m3-speed/progress.md` (gitignored, on disk). The plan is
   `docs/superpowers/plans/2026-10-10-videojet-m3-speed.md` (queue revision R5). Every score is in the `docs/bench-log.md`
   "M3 frontier" table.
-  - Branch `m3-speed` (checked out in the main repo dir) holds the kept candidates, every frame bit-exact:
+  - `main` holds the kept candidates (`m3-speed` was merged and deleted), every frame bit-exact:
     - step 0: code in IRAM, tables in DRAM, D-cache 64 KB / 64 B;
     - 5a: direct skip copy;
     - T9: no per-picture mbStorage clear;
@@ -174,10 +175,17 @@ h264bsd: Android's Hantro baseline decoder, Apache-2.0, plain C (github.com/onea
     - T6d: table-driven CAVLC.
   - Also merged (2026-10-11): T11 D-cache autoload (`VJ_DCACHE_AUTOLOAD`, opt-in, bench on) and the PIE motion-compensation
     kernels (`VJ_PIE`, with the on-board oracle `test/mc_pie`: re-run it after any change to `vj_mc_pie.S`).
-  - **Tip fps (slow class): 100.9494 / 26.0280 / 13.9552** (aux_card / aux_map / full_map). Library internal RAM = 98,828 B of the
-    100 KB budget (heap 42,300 + static 56,528 with the worker; cold code in flash).
+  - **Tip fps (slow class): 100.2799 / 31.8626 / 16.6124** (aux_card / aux_map / full_map, main 2f93fb6): aux_map clears the
+    head-unit software 30 fps gate.
+  - Library internal RAM, as `tools/ram_static.py` section sums plus heap `int_used`, which includes the worker stack:
+    - pipeline on: 96,158 B;
+    - pipeline off with the worker: 99,875 B, about 100,091 B counting alignment padding. That is about 91 B over until task R
+      drops the 18 KB internal records array from worker builds.
   - Also merged: PIE write-out, PIE inverse transform, cheap skip-MB deblock record, and the deblock worker on the other core (`VJ_DEBLOCK_WORKER`, bench on; ruling: a 50 ms take-back, a started run is waited for).
-  - Nothing is in flight. Model rule: Haiku 5.5 and Sonnet 5.5 only (the account is usage-limited; no Opus, no an external consult).
+  - Also merged: the **parse pipeline** (`VJ_PARSE_PIPELINE`, bench on). The parser runs in the core-1 worker task and feeds a
+    ring of MB records; core 0 reconstructs. Deblock records are PSRAM-first with it. Ruling R11 keeps it even though aux_card
+    is −0.66 %.
+  - Model rule: agents are Sonnet 5.5 and Haiku 5.5. an external consult only when the user asks, see Working conventions.
   - Method:
     - `tools/score.sh LABEL [BASELINE]`, slow class pinned with `--tuning 5`. KEEP = every stream ≥ −0.3 % and one ≥ +0.3 %,
       or less internal RAM at equal fps (ruling R10).
@@ -187,10 +195,15 @@ h264bsd: Android's Hantro baseline decoder, Apache-2.0, plain C (github.com/onea
   - Board facts (measure-report): a PSRAM line fill costs 172 cycles (0.72 µs), and a dirtied line ~307. The two cores share
     one fill engine. `EXTMEM_DBUS_ACS_SPIRAM_MISS_CNT` counts D-cache misses. Autoload traps: a region ending at 0x3E000000
     panics, and IDF flash operations clear the enable bit.
-  - Next after T11/PIE: MC write-out (10 ms on full_map; revisit 5b/5c), `mbStorage_t` compaction, PIE deblock/IDCT, 10b
-    (alpha == 0, QP-dependent), then the T4 deblock worker (last: the shared fill engine limits it). aux_map ≥ 30 fps (the
-    head-unit software bar) is the gate.
-  - Pending user decisions: merge M2 (`m2-library-api`) and M3 into `main`. The AA bar firmware
+  - The user wants the maximum fps, not just the 30 fps gate (2026-10-12). Queue (ledger, measure4-report.md, brainstorm2.md):
+    1. N, the word-at-a-time NAL scan (`m3/unescape`, reviewed; R12 maps `h264bsd_byte_stream` to flash for the budget);
+    2. R, the deblock records in a rolling internal ring (task-R-brief.md);
+    3. deblock segment 10 → 4 MBs;
+    4. skip the deblock of alpha/beta-0 MBs: exact, but the gain is a low-QP corpus effect;
+    5. PIE deblock;
+    6. mvpred + records on the parser. Get a real AA capture first: at real QP core 1 has no slack.
+    Core 0 binds. Core 1's deblock PSRAM traffic slows core 0 through the shared fill engine.
+  - The AA bar firmware
     (`the consumer project/bar firmware`) is parked until VideoJet is done (memory `project-barohu-firmware`).
 
 - 2026-10-10: **M2 complete** on branch `m2-library-api` (`19c1a23..89bd8c9`, then the docs commit `d7e3516` and its fix

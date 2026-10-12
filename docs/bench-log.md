@@ -384,6 +384,19 @@ are copied into `.superpowers/sdd/2026-10-10-videojet-m3-speed/baseline-t{3,6c}.
 | PIE residual-add/write-out (896bf08; test/wr_pie, host/test_write.c) | `m3-piewrite` | 5 | 198ddf43f | 94.9629 / 21.4728 / 11.4429 | -0.01 / +1.21 / +1.23 | 39,572 |
 | PIE 4x4 inverse transform + aligned mbLayer (154fe8a; host/test_idct.c, test/idct_pie) | `m3-pieidct` | 5 | 4eca3af74 | 95.3020 / 21.8882 / 11.6485 | +0.36 / +1.93 / +1.80 | 39,580 |
 | row-lagged deblock worker on the other core, `VJ_DEBLOCK_WORKER` (c872deb..f046f02; check-tsan, test_worker) | `m3-dbworker2` | 5 | 8d6a31c15 | 100.9494 / 26.0280 / 13.9552 | +5.93 / +18.91 / +19.80 | 42,300 |
+| parse pipeline: the parser on the other core, in the worker task, through a ring of MB records, `VJ_PARSE_PIPELINE`; deblock records PSRAM-first with it (8e75095..2f93fb6; check-tsan/asan/diff/poison/storage/depth, test_starve, test_nbr) | `m3-pipeline2` | 5 | d5c425753 | 100.2799 / 31.8626 / 16.6124 | -0.66 / +22.42 / +19.04 | 36,952 |
+
+The parse pipeline (2026-10-12):
+- **Records in PSRAM, as a standalone step:** `m3-recpsram`, 8e75095, scored DROP at −3.31 / −1.18 / −0.92 %. It only frees the 18 KB of internal RAM that the ring needs, so it was never merged on its own.
+- **The pipeline lifted aux_map past the 30 fps gate:** 31.86 fps, +22.4 %. aux_card lost 0.66 %, below R10's −0.3 % floor. Ruling R11 keeps it anyway: the loss is the PSRAM records, not the pipeline, and the deblock-records ring (task R) is the planned recovery.
+- **Internal RAM** (`tools/ram_static.py` section sums plus heap `int_used`, which includes the worker stack):
+  - pipeline on: 96,158 B;
+  - pipeline off with the worker: 99,875 B, about 100,091 B counting alignment padding (re-review N3), so about 91 B over budget until task R drops the 18 KB internal records array from worker configurations.
+- **Per-core profile at 2be40dc** (`measure4-report.md`):
+  - core 0 binds on every stream: 32.0 ms per aux_map frame, 1.73 ms of it waiting on core 1;
+  - core 1 is busy 74 % on aux_map;
+  - core 1's deblock pixel traffic slows core 0 by 3.4 ms (aux_map) and 11.4 ms (full_map), because the cores share one PSRAM fill engine;
+  - deblock records made by the worker from `mbStorage_t` measured −12.9 %, so that idea is dropped.
 
 Cumulative since M2 (slow class 17.11 / 9.67 / 5.58), at the T10 tip: **+327 % / +75 % / +45 %**. Skip elision elides 1,438 / 797 / 8.4 MBs
 per frame (aux_card / aux_map / full_map), against the 1,437 / 800 / 6 that the earlier cost model predicted. aux_card is at the
