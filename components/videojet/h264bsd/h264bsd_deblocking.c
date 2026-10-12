@@ -147,6 +147,17 @@ typedef struct {
 } bS_t;
 
 enum { TOP = 0, LEFT = 1, INNER = 2 };
+
+/* An edge filters a line of samples only if |p0 - q0| < alpha, |p1 - p0| < beta and |q1 - q0| < beta, the bS 4 filter
+ * included, so with alpha or beta 0 it changes no pixel. When that holds for all three thresholds of a macroblock (top,
+ * left, inner) none of its edges can change one: the filter would only read its pixels. host/test_alpha0.c checks this
+ * against the edge filters */
+static inline u32 EdgesInert(const edgeThreshold_t *t)
+{
+    return (!t[TOP].alpha || !t[TOP].beta) &&
+        (!t[LEFT].alpha || !t[LEFT].beta) &&
+        (!t[INNER].alpha || !t[INNER].beta);
+}
 #endif /* H264DEC_OMXDL */
 
 #define FILTER_LEFT_EDGE    0x04
@@ -862,15 +873,19 @@ static inline __attribute__((always_inline)) void FilterMbRows(
             GetEdgeThresholds(thresholds, r, qpTop, qpLeft, 0);
             data = image->data + mbRow * picWidthInMbs * 256 + mbCol * 16;
 
-            FilterLuma((u8*)data, bS, thresholds, picWidthInMbs*16);
+            /* inert edges are not filtered; the marks and the undo log above
+             * follow the boundary strengths, so they are the same either way */
+            if (!EdgesInert(thresholds))
+                FilterLuma((u8*)data, bS, thresholds, picWidthInMbs*16);
 
             /* chroma */
             GetEdgeThresholds(thresholds, r, qpTop, qpLeft, 1);
             data = image->data + picSizeInMbs * 256 +
                 mbRow * picWidthInMbs * 64 + mbCol * 8;
 
-            FilterChroma((u8*)data, data + 64*picSizeInMbs, bS,
-                    thresholds, picWidthInMbs*8);
+            if (!EdgesInert(thresholds))
+                FilterChroma((u8*)data, data + 64*picSizeInMbs, bS,
+                        thresholds, picWidthInMbs*8);
         }
 
         mbCol++;

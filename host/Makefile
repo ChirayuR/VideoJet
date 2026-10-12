@@ -52,6 +52,13 @@ $(B)/test_write: test_write.c $(LIB_SRC) $(LIB_HDR) | $(B)
 $(B)/test_idct: test_idct.c $(DEC)/h264bsd_transform.c $(LIB_HDR) | $(B)
 	$(CC) $(CFLAGS) -fwrapv $(LIB_INC) -o $@ test_idct.c $(DEC)/h264bsd_transform.c
 
+# Why the deblock may skip a macroblock whose three thresholds all have alpha or beta 0: no edge filter changes a byte then
+# (every (indexA, indexB) pair, every bS), and EdgesInert is exactly that test. It includes h264bsd_deblocking.c (the filters are
+# static), so that file is left out of the link.
+all: $(B)/test_alpha0
+$(B)/test_alpha0: test_alpha0.c $(LIB_SRC) $(LIB_HDR) | $(B)
+	$(CC) $(CFLAGS) $(VJF) $(LIB_INC) -o $@ test_alpha0.c $(filter-out $(DEC)/h264bsd_deblocking.c,$(LIB_SRC))
+
 # The worker's contracts: join on every return (worker delayed after its claim) and the owner taking a run back (worker
 # not scheduled), plus thread-creation failure. Host shim hooks only, see test_worker.c.
 $(B)/test_join: test_worker.c $(LIB_SRC) $(LIB_HDR) $(HASH) | $(B)
@@ -93,6 +100,7 @@ check-one: all
 	@$(WORKER_TESTS)
 	@$(B)/test_write
 	@$(B)/test_idct
+	@$(B)/test_alpha0
 	@./check.sh $(B)/vjdec ../streams
 
 # The same gate under ThreadSanitizer (worker on): any data race between the decoding thread and the worker fails it.
@@ -128,11 +136,15 @@ check-depth:
 	done
 
 # Crafted streams (ncgen.py: I_PCM, nC across slices, skip runs, mid-row slices, ASO, FMO 0 / 1), generated into $(B)/crafted.
+# The lowqp ones (QP 14, random mb_qp_delta, filter offsets and chroma qp offset) put the deblocking thresholds on both sides of
+# alpha / beta 0, so the alpha-0 skip is taken for some macroblocks and not for others.
 CRAFTED := $(B)/crafted
 $(CRAFTED)/.stamp: pipe/ncgen.py | $(B)
 	mkdir -p $(CRAFTED)
 	for m in plain aso fmo0 fmo1; do for i in 1 2 3 4 5 6; do \
 	  python3 pipe/ncgen.py $$i $$((5 + i % 4 * 3)) $$((3 + i % 3 * 2)) 12 $$m > $(CRAFTED)/$$m$$i.h264; done; done
+	for m in plain aso fmo0 fmo1; do for i in 1 2 3 4 5 6; do \
+	  python3 pipe/ncgen.py $$i $$((5 + i % 4 * 3)) $$((3 + i % 3 * 2)) 12 $$m 14 > $(CRAFTED)/lowqp-$$m$$i.h264; done; done
 	touch $@
 
 # Each configuration against the sequential decoder of the same tree, damaged streams included (fzdiff.sh): per call status, frame

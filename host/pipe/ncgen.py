@@ -1,12 +1,18 @@
 """Crafted CAVLC stream whose parse depends on the neighbours' totalCoeff (nC), with I_PCM (nC 16), skip runs (nC 0),
 I4x4/I16x16/P16x16 with random 0/1-coefficient blocks, random slice partitions (mid-row starts), several slices per picture.
-usage: ncgen.py SEED W H FRAMES [plain|aso|fmo0|fmo1] > out.h264   (aso: the slices of a picture after the first in random order;
+usage: ncgen.py SEED W H FRAMES [plain|aso|fmo0|fmo1] [QP] > out.h264   (QP: low-QP mode, see below; aso: the slices of a picture after the first in random order;
 fmo0 / fmo1: two slice groups, interleaved runs / dispersed; the generator replicates the standard's nC rule: a desync in a decoder's
-neighbour model changes the parse, so a decoder that differs from the standard cannot decode this cleanly)."""
+neighbour model changes the parse, so a decoder that differs from the standard cannot decode this cleanly).
+QP (default: off, the streams are unchanged): the pictures' QP starts at QP, with a random mb_qp_delta (-4..4) on every macroblock that
+carries one, random slice alpha / beta offsets (-6..6 div 2) and a random chroma_qp_index_offset (-12..12), so that the deblocking
+thresholds sit on both sides of alpha = 0 / beta = 0 (QP + offset < 16), as the alpha-0 skip needs (try QP 14)."""
 import sys, random
 seed, W, H, NF = (int(x) for x in sys.argv[1:5])
 MODE = sys.argv[5] if len(sys.argv) > 5 else 'plain'   # plain | aso (slices of a picture in random order) | fmo0 (interleaved groups) | fmo1 (dispersed groups)
+QP = int(sys.argv[6]) if len(sys.argv) > 6 else None   # None: pic_init_qp 30, no mb_qp_delta, offsets 0 (the streams of before)
 R = random.Random(seed)
+def dqp(): return 0 if QP is None else R.randint(-4, 4)       # mb_qp_delta
+def offs(): return 0 if QP is None else R.randint(-6, 6)       # slice_alpha_c0_offset_div2 / slice_beta_offset_div2
 N = W * H
 class BW:
     def __init__(s): s.bits = []
@@ -47,7 +53,7 @@ def pps():
             for g in range(2): b.ue(RUNS[g] - 1)
     else: b.ue(0)
     b.ue(0); b.ue(0); b.u(1, 0); b.u(2, 0)
-    b.se(4); b.se(0); b.se(0); b.u(1, 1); b.u(1, 0); b.u(1, 0); b.trailing(); return nal(3, 8, b.bytes())
+    b.se(4 if QP is None else QP - 26); b.se(0); b.se(0 if QP is None else R.randint(-12, 12)); b.u(1, 1); b.u(1, 0); b.u(1, 0); b.trailing(); return nal(3, 8, b.bytes())
 BLK = [(0,0),(1,0),(0,1),(1,1),(2,0),(3,0),(2,1),(3,1),(0,2),(1,2),(0,3),(1,3),(2,2),(3,2),(2,3),(3,3)]
 POS = {p: i for i, p in enumerate(BLK)}
 TOK = {  # (T1,TC) -> codes for nC classes 0..3
@@ -85,7 +91,7 @@ def mb_data(b, mb, cursl, ptype, pdens):
         cur = [16]*16
     elif k == 'i16':
         luma = R.randint(0, 1)
-        b.ue(pi + 1 + 2 + 12*luma); b.ue(0); b.se(0)      # pred DC, chroma cbp 0; intra_chroma_pred_mode DC; qp delta 0
+        b.ue(pi + 1 + 2 + 12*luma); b.ue(0); b.se(dqp())  # pred DC, chroma cbp 0; intra_chroma_pred_mode DC; qp delta
         dc = [0]
         block(b, mb, 0, dc, cursl, 16, pdens)             # Intra16x16DCLevel: nC of block 0 (its tc is not stored)
         if luma: luma_cbp15(b, mb, cur, cursl, pdens)
@@ -95,12 +101,12 @@ def mb_data(b, mb, cursl, ptype, pdens):
         b.ue(0)                                           # intra_chroma_pred_mode DC
         cbp = R.randint(0, 1)
         b.ue(2 if cbp else 3)                             # coded_block_pattern me(v), intra: 15 -> 2, 0 -> 3
-        if cbp: b.se(0); luma_cbp15(b, mb, cur, cursl, pdens)
+        if cbp: b.se(dqp()); luma_cbp15(b, mb, cur, cursl, pdens)
     else:
         b.ue(0); b.se(R.randint(-3, 3)); b.se(R.randint(-3, 3))   # P_L0_16x16, one ref: no ref_idx
         cbp = R.randint(0, 1)
         b.ue(11 if cbp else 0)                            # inter cbp 15 -> 11, 0 -> 0
-        if cbp: b.se(0); luma_cbp15(b, mb, cur, cursl, pdens)
+        if cbp: b.se(dqp()); luma_cbp15(b, mb, cur, cursl, pdens)
     return cur
 def partition():
     """list of slices, each the list of its MB addresses in decoding order"""
@@ -132,7 +138,7 @@ for f in range(NF):
         if idr: b.u(1, 0); b.u(1, 0)
         else: b.u(1, 0)
         b.se(R.randint(-2, 2)); idc = R.choice([0, 1, 2]); b.ue(idc)
-        if idc != 1: b.se(0); b.se(0)
+        if idc != 1: b.se(offs()); b.se(offs())
         skip = 0
         for mb in mbs:
             sl[mb] = si

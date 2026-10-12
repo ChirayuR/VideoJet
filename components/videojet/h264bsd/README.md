@@ -155,3 +155,17 @@ Every change made for VideoJet is listed here, newest last.
     fence, wakes it only if the flag is set. The worker's run is now `DbwRun` in segments of 10 MBs (`FilterMbRows` takes an MB
     range) so the task can parse between them. Test hooks, each used by a committed test: `VJ_POISON`, `VJ_NBR_STORAGE`,
     `VJ_PIPE_JITTER_US`, `VJ_PIPE_NOSTEP`, `VJ_PIPE_STALL_EVERY`, `VJ_RING_DEPTH` (see `host/Makefile`).
+  - Alpha/beta-0 skip (`h264bsd_deblocking.c`, in `FilterMbRows`, so the sequential pass, the worker's segments and the take-back all
+    have it; `host/test_alpha0.c`). An edge changes a sample only if |p0 - q0| < alpha, |p1 - p0| < beta and |q1 - q0| < beta (the
+    bS 4 filter too), so alpha or beta 0 changes none. `FilterLuma` is skipped when all three luma thresholds (top, left, inner) are
+    so, `FilterChroma` when all three chroma ones are (`EdgesInert`; the chroma thresholds come from the chroma qp, so the two
+    decisions differ). The pixels are untouched, which also spares the PSRAM traffic that slowed the other core. Everything else stays as
+    it was: the skip-elision marks and the worker's marks are set from the boundary strengths before the thresholds are computed
+    (a macroblock is marked whenever it has a bS > 0 edge, whether or not a pixel moves), `DbwSettle` rebuilds them from the
+    records, and the undo log (`SaveFootprint`) is saved before the skip. `host/test_alpha0.c` runs the six edge filters and
+    `FilterLuma` / `FilterChroma` on random samples for every (indexA, indexB) pair with alpha or beta 0 and every bS, and checks
+    that no byte changes (and that the other pairs do change bytes, so it is not blind). A corpus effect: an edge is inert
+    only when indexA < 16 or indexB < 16 (QP plus the filter offset), and a macroblock needs that of all three: 92 % of
+    aux_map's filtering macroblocks, hardly any at real QPs.
+    `host/pipe/ncgen.py ... QP` makes crafted low-QP streams (random mb_qp_delta, filter offsets, chroma qp offset) for the
+    differential.
