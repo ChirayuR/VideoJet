@@ -50,10 +50,12 @@ vj_decoder_destroy(dec);
 
   | configuration | static | heap | internal total | PSRAM |
   |---|---|---|---|---|
-  | `CONFIG_VJ_DEBLOCK_WORKER` (the library default is off; pipeline off) | 57,483 B | 42,392 B | **99,875 B** | 1,625,620 B |
-  | + `CONFIG_VJ_PARSE_PIPELINE` | 59,206 B | 36,952 B | **96,158 B** | 1,644,056 B |
+  | `CONFIG_VJ_DEBLOCK_WORKER` (the library default is off; pipeline off) | 57,158 B | 42,392 B | **99,550 B** | 1,625,620 B |
+  | + `CONFIG_VJ_PARSE_PIPELINE` | 58,881 B | 36,952 B | **95,833 B** | 1,644,056 B |
 
-  The worker off was not remeasured since the worker tip (93,488 B). The PSRAM holds the frames (about
+  The NAL extraction (`h264bsd_byte_stream`: one call per NAL, 645 B of code that runs from the I-cache) is mapped to flash
+  with the other once-per-NAL-or-less code (`linker.lf`), which took 325 B off both static figures (328 B in the image, alignment
+  included); the heap figures did not change. The worker off was not remeasured since the worker tip (93,488 B). The PSRAM holds the frames (about
   1.5 x width x height bytes each, refs + 1 of them, so 2 for a one-reference stream) and the per-macroblock state
   (1500 MBs x 216 B). Each extra reference frame adds 589,828 B. IDF's heap rounds every block up to its size class, so
   the PSRAM figure is a little above the sum of the structure sizes. Internal RAM includes 17 B per macroblock:
@@ -81,12 +83,12 @@ off by default and came later.
   code in IRAM it gained +19 / +11 / +7 %.
 - **D-cache 64 KB** (`CONFIG_ESP32S3_DATA_CACHE_64KB=y`): another +8 / +6 / +7 % on top of the 64 B line, for 32 KB of
   internal RAM (31,996 B less heap, measured).
-- **Decoder code and tables in internal RAM** (`CONFIG_VJ_IRAM=y`, the default): 49,780 B IRAM + 7,695 B DRAM (the bench
+- **Decoder code and tables in internal RAM** (`CONFIG_VJ_IRAM=y`, the default): 49,455 B IRAM + 7,695 B DRAM (the bench
   config with the deblock worker and the PIE kernels, without the pipeline; the string literals that sit in DRAM are in the
   DRAM figure; `CONFIG_VJ_ERROR_PRINT=y` adds ~0.8 KB of strings). The code in IRAM gained +1 / +11 / +21 % over flash code with
   the default 16 KB I-cache (step 0), and with it moving the code changed fps by at most 0.11 %. The tables in DRAM gained
   another +0.7 / +1.4 / +2.0 % on top of that (in flash they cost up to ~2,350 cache misses per frame).
-- The small-RAM alternative, 16 KB of internal RAM instead of 57,475 B: `CONFIG_VJ_IRAM=n` with
+- The small-RAM alternative, 16 KB of internal RAM instead of 57,150 B: `CONFIG_VJ_IRAM=n` with
   `CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y`. At step 0 it stayed within 1 % of code-in-IRAM (22.17 / 12.60 / 7.63; flash code
   has no layout pin), but it keeps the tables in flash too, so expect it about 1 / 2 / 3 % below the default (estimate).
 - With 64 B lines, a PSRAM buffer that DMA reads or writes needs 64 B alignment in address and size
@@ -205,7 +207,7 @@ What to know before enabling it:
     waiter that lands on the worker's core sleeps a tick instead of spinning (1 ms at `CONFIG_FREERTOS_HZ=1000`, the bench's;
     10 ms at IDF's default 100; with `CONFIG_VJ_PIE` a task that calls `vj_decode_au` is pinned at its first PIE
     instruction anyway).
-  - **Budget:** **96,158 B** internal, against 99,875 B without the pipeline (section 3): the heap is 5.4 KB lower because the
+  - **Budget:** **95,833 B** internal, against 99,550 B without the pipeline (section 3): the heap is 5.4 KB lower because the
     18,000 B of deblock records move to PSRAM, even though the ring (6 x 2,112 B), the neighbour shadow (1,275 B) and a 3 KB
     worker stack (against 2 KB) are added; the code is 1.7 KB of IRAM larger. The worker's stack high water with the parser
     is 1,132 B on every bench stream (and 4 KB are reserved with `CONFIG_VJ_ERROR_PRINT`, which prints from the worker).
@@ -215,7 +217,7 @@ What to know before enabling it:
   - **Sleeps:** the worker sleeps when a long record (a skip run of a hundred macroblocks) keeps the ring full for 200 us:
     on the bench 0.1 to 3 times per frame (9 on test_640x360), each with one wake and no effect on the frame rate.
 - `CONFIG_VJ_WORKER_CORE` (-1, 0 or 1; default -1 = the core other than the creating task's): the worker's core.
-- `CONFIG_VJ_IRAM` (default y): run the decoder from internal RAM (hot code + tables: 49,780 + 7,695 B without the pipeline,
+- `CONFIG_VJ_IRAM` (default y): run the decoder from internal RAM (hot code + tables: 49,455 + 7,695 B without the pipeline,
   section 4).
 - `CONFIG_VJ_PIE` (default y, ESP32-S3 only): motion compensation, residual write-out and the 4x4 inverse transform in PIE SIMD assembly (MC for 8 and 16 wide partitions),
   bit-exact with the C kernels (which every other case and the host build use). About 3 KB of IRAM.

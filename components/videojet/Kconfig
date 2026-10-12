@@ -18,8 +18,8 @@ config VJ_IRAM
     bool "Run the decoder from internal RAM (code and tables)"
     default y
     help
-        Puts libvideojet's hot code (49,780 B, IRAM) and its tables (7,695 B, DRAM) in internal RAM;
-        concealment and parameter-set parsing (once per error or SPS/PPS) stay in flash. On the
+        Puts libvideojet's hot code (49,455 B, IRAM) and its tables (7,695 B, DRAM) in internal RAM;
+        concealment, parameter-set parsing and NAL extraction (once per error, SPS/PPS or NAL) stay in flash. On the
         bench the code gained +1 / +11 / +21 % fps (aux_card / aux_map / full_map) over flash code with the
         default 16 KB I-cache, and moving it changed fps by at most 0.11 %; the tables in DRAM gained another
         +0.7 / +1.4 / +2.0 % on top. Off: code and tables stay in flash; with a 32 KB I-cache that was within
@@ -146,8 +146,8 @@ config VJ_PARSE_PIPELINE
         that must run on that core during a decode needs a higher priority than the worker; it then preempts the worker
         and stalls the decode for as long as it runs (after 50 ms without a record the decoding task takes the parser
         back). One decoder per worker core.
-        Internal RAM at 800x480, measured on the bench: 96,158 B with the pipeline (static 59,206 + heap 36,952) against
-        99,875 B without it (57,483 + 42,392): the pipeline needs a ring of 6 records (2,112 B each, less the one the
+        Internal RAM at 800x480, measured on the bench: 95,833 B with the pipeline (static 58,881 + heap 36,952) against
+        99,550 B without it (57,158 + 42,392): the pipeline needs a ring of 6 records (2,112 B each, less the one the
         decoder always had), a neighbour shadow (1.3 KB) and a 3 KB worker stack (1,132 B used), and in return the 18,000 B
         of deblock records live in PSRAM (which costs the decoding task about 4 % on a static picture). The worker's task
         needs the esp_timer clock for the 50 ms take-back (a core-independent clock: the decoding task may not be pinned).
