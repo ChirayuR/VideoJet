@@ -542,7 +542,7 @@ void vj_worker_warn(const char *msg)
 /* A spin of this long (500 us) is a wait for a piece of work, any longer the worker may share the waiting task's core */
 #define VJ_PROGRESS_SPIN_TICKS (500u * VJ_TICKS_PER_MS / 1000u)
 
-void vj_worker_wait_progress(vj_worker_t *w, const unsigned *progress, unsigned need)
+int vj_worker_wait_progress(vj_worker_t *w, const unsigned *progress, unsigned need)
 {
     uint32_t t0 = 0;
     unsigned spins = 0;
@@ -559,13 +559,14 @@ void vj_worker_wait_progress(vj_worker_t *w, const unsigned *progress, unsigned 
                 /* no luck for VJ_WORKER_WAIT_MS: the worker is not running. Take the posted run back (a run the worker
                  * has started is waited for) */
                 vj_worker_wait(w);
-                return;
+                return 1;
             } else if (now - t0 > VJ_PROGRESS_SPIN_TICKS) {
                 vj_yield_wait();
             }
         }
         vj_relax();
     }
+    return 0;
 }
 
 #endif /* VJ_DEBLOCK_WORKER */

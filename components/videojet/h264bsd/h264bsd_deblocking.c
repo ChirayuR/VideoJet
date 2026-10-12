@@ -61,6 +61,7 @@
 #include <stdio.h>
 #endif
 #include "vj_alloc.h"
+#include "vj_prof.h"
 #ifdef VJ_DEBLOCK_WORKER
 #include "vj_worker.h"
 #endif
@@ -787,20 +788,23 @@ static void RestoreFootprint(const u32 *s, image_t *image, u32 mbRow,
 
           The marks of skip elision go to changed (bitMarks: the worker's
           kinds of marks, else 1). Filtering row r reads and modifies only
-          rows r - 1 and r of the picture, the records of rows r - 1 and r,
-          and (recValid false only) the storage of rows r - 1 and r.
+          rows r - 1 and r of the picture, the records of row r (and the qps
+          of row r - 1), and (recValid false only) the storage of rows r - 1
+          and r.
 
           The records: recValid true reads them from rec, recRows rows of
           picWidthInMbs in a ring (row r in slot row r % recRows); false
           makes each from the storage as the pass always did, with the
           neighbours' qps from the storage too (the record's qp is the
-          storage's qpY).
+          storage's qpY). The qps of the row above: from qpUp, one per
+          column, which the worker's run keeps as it filters (so row r - 1 is
+          not read again), else from the records of row r - 1 or the storage.
 
 ------------------------------------------------------------------------------*/
 static inline __attribute__((always_inline)) void FilterMbRows(
   image_t *image,
   mbStorage_t *mb, u32 picSliceBase,
-  u8 *changed, u32 bitMarks,
+  u8 *changed, u32 bitMarks, u8 *qpUp,
   const deblockRec_t *rec, u32 recRows, u32 recValid,
   u32 mbFrom, u32 mbTo, const u8 *rowBank, u32 *log)
 {
@@ -837,9 +841,10 @@ static inline __attribute__((always_inline)) void FilterMbRows(
             if (mbCol == 0 || n == mbFrom)
             {
                 rowRec = rec + (size_t)(mbRow % recRows) * picWidthInMbs;
-                upRec = mbRow ?
-                    rec + (size_t)((mbRow - 1) % recRows) * picWidthInMbs :
-                    rowRec;
+                if (!qpUp)
+                    upRec = mbRow ?
+                        rec + (size_t)((mbRow - 1) % recRows) * picWidthInMbs :
+                        rowRec;
             }
             r = rowRec + mbCol;
         }
@@ -893,7 +898,12 @@ static inline __attribute__((always_inline)) void FilterMbRows(
 
             /* at the picture border the neighbour's qp is never used, as
              * that edge is not filtered */
-            if (recValid)
+            if (qpUp)
+            {
+                qpTop = mbRow ? qpUp[mbCol] : r->qp;
+                qpLeft = mbCol ? r[-1].qp : r->qp;
+            }
+            else if (recValid)
             {
                 qpTop = upRec[mbCol].qp;
                 qpLeft = mbCol ? r[-1].qp : r->qp;
@@ -925,6 +935,10 @@ static inline __attribute__((always_inline)) void FilterMbRows(
             FilterChroma((u8*)data, data + 64*picSizeInMbs, bS,
                     thresholds, picWidthInMbs*8);
         }
+
+        /* the qp of this MB is the one above for the MB below it */
+        if (qpUp)
+            qpUp[mbCol] = r->qp;
 
         mbCol++;
         if (mbCol == picWidthInMbs)
@@ -987,8 +1001,9 @@ void h264bsdFilterPicture(
     ASSERT(image->width);
     ASSERT(image->height);
 
-    FilterMbRows(image, mb, picSliceBase, changed, 0, rec, recRows, recValid,
-        rowFrom * image->width, image->width * image->height, NULL, NULL);
+    FilterMbRows(image, mb, picSliceBase, changed, 0, NULL, rec, recRows,
+        recValid, rowFrom * image->width, image->width * image->height, NULL,
+        NULL);
 
 }
 
@@ -1047,27 +1062,27 @@ void h264bsdFilterPicture(
     4. The records are a ring of K = VJ_REC_ROWS rows (recRows, fewer for a
        small picture): the record of MB n is slot n % (K * width), ring row
        r % K holds row r. The decoding thread writes them in raster order
-       (vjRecNext); the worker, filtering row j, reads the records of rows j
-       and j - 1 (the qp of the MB above) and nobody reads them otherwise
-       except the final pass.
+       (vjRecNext); the worker, filtering row j, reads the records of row j
+       only (the qps of row j - 1 it keeps itself, qpUp), and nobody reads
+       them otherwise except the final pass.
        Records stay a pure function of the storage as the MB was decoded, so
        what is not in the ring can be made again from the storage: the final
        pass does that for every row from the first it filters on, unless the
        ring still holds all of them (RingHolds: every ring row carries the
        row and the picture id it was filled for).
        - The decoding thread starts row r (end of row r - 1, h264bsdDbwRowEnd)
-         by writing over row r - K, so the worker must be done with it: it
-         reads row r - K while filtering rows r - K and r - K + 1. After
+         by writing over row r - K, so the worker must be done with it. After
          posting what became postable the decoding thread waits until the
          worker's published position (fmb, a store-release after every
-         segment) is in row r - K + 2 or later (DbwWaitRows), then tags ring
-         row r % K. Only posted rows are waited for: the target is
-         min(posted, r - K + 2) rows done. Posting a row needs its two ring
-         rows to survive the row about to start: otherwise the worker is out
+         segment) is in row r - K + 1 or later (DbwWaitRows), then tags ring
+         row r % K. Only posted rows are waited for. Posting a row needs its
+         ring row to survive the row about to start; a row that can no longer
+         be posted never can be, as the ring only moves on: the worker is out
          of the picture for good ("lost": the rows already posted are
          filtered, the final pass remakes the rest). It happens when rows go
-         unposted for K - 3 rows: the rows of I slices, a slice that needs
-         more than DBW_BANKS log banks.
+         unposted for K - 2 rows: the rows of I slices, a slice that needs
+         more than DBW_BANKS log banks, a worker that did not run for
+         VJ_WORKER_WAIT_MS.
        - Progress. The decoding thread waits only for posted rows, and the
          worker's task does deblock work whenever its parser has nothing to
          do: while the decoding thread waits it frees no parse slot, so the
@@ -1096,6 +1111,7 @@ struct dbw
     u8 *changed;        /* the picture's skip elision flags */
     u8 *marks;          /* the worker's marks (DBW_MARK_*), joined into changed */
     u8 *rowBank;        /* per row: log bank, DBW_NOBANK for none */
+    u8 *qpUp;           /* per column: the qp of the last MB the worker filtered there */
     u32 *log;           /* DBW_BANKS * picture width footprints */
     u32 capMbs, capW;   /* what marks, rowBank and log have room for */
     u32 active;         /* the worker takes part in this picture */
@@ -1162,7 +1178,7 @@ static int DbwRun(void *arg, uint32_t upto)
     if (DbwDelay() % 4 == 0)
         usleep(DbwDelay() % VJ_DBW_SEG_DELAY_US);
 #endif
-    FilterMbRows(&d->img, NULL, 0, d->marks, 1, d->rec, d->recRows,
+    FilterMbRows(&d->img, NULL, 0, d->marks, 1, d->qpUp, d->rec, d->recRows,
         HANTRO_TRUE, fmb, end, d->rowBank, d->log);
     __atomic_store_n(&d->fmb, end, __ATOMIC_RELEASE);
     if (end < to)
@@ -1182,7 +1198,8 @@ static void TagRow(dbw_t *d, u32 row)
 /* The ring holds the records of rows from .. height - 1 of this picture: more
  * than the ring has rows are not, and each ring row must be the one filled for
  * the row (and this picture) */
-static u32 RingHolds(const dbw_t *d, u32 height, u32 from)
+static __attribute__((noinline)) u32 RingHolds(const dbw_t *d, u32 height,
+    u32 from)
 {
     u32 r;
 
@@ -1197,8 +1214,20 @@ static u32 RingHolds(const dbw_t *d, u32 height, u32 from)
     return HANTRO_TRUE;
 }
 
+/* The worker takes no more rows of this picture */
+static void Lose(dbw_t *d)
+{
+    if (!d->lost)
+    {
+        d->lost = 1;
+        d->nLost++;
+    }
+}
+
 /* The decoding thread waits until the worker has filtered rows 0 .. rows - 1
- * (its published position is in row rows or later) */
+ * (its published position is in row rows or later). A worker that does not
+ * run is taken over by the decoding thread (vj_worker_wait_progress) and
+ * dropped from the picture */
 static void DbwWaitRows(dbw_t *d, u32 rows)
 {
     u32 need = rows * d->img.width;
@@ -1210,11 +1239,13 @@ static void DbwWaitRows(dbw_t *d, u32 rows)
     {
         uint32_t t0 = vj_ticks();
 
-        vj_worker_wait_progress(d->w, &d->fmb, need);
+        if (vj_worker_wait_progress(d->w, &d->fmb, need))
+            Lose(d);
         d->nWaitUs += (unsigned)(vj_ticks() - t0);
     }
 #else
-    vj_worker_wait_progress(d->w, &d->fmb, need);
+    if (vj_worker_wait_progress(d->w, &d->fmb, need))
+        Lose(d);
 #endif
 }
 
@@ -1303,6 +1334,9 @@ u32 h264bsdDbwBegin(dbw_t *d, image_t *image, deblockRec_t *rec, u32 recRows,
      * worker takes no part, so its tags never pass for this picture's) */
     d->pic++;
     d->lost = 0;
+#ifdef VJ_REC_REMAKE /* test: the worker takes no rows, so the final pass makes every record from the storage */
+    d->lost = 1;
+#endif
     d->recRows = recRows;
     if (numSliceGroups != 1 || redundantPicCntPresent ||
         image->height < 3 || ((uintptr_t)image->data & 3))
@@ -1312,7 +1346,7 @@ u32 h264bsdDbwBegin(dbw_t *d, image_t *image, deblockRec_t *rec, u32 recRows,
         free(d->marks);
         free(d->log);
         d->capMbs = d->capW = 0;
-        d->marks = (u8*)vj_alloc_psram(n + image->height);
+        d->marks = (u8*)vj_alloc_psram(n + image->height + image->width);
         d->log = (u32*)vj_alloc_psram((size_t)DBW_BANKS * image->width *
             DBW_SLOT_WORDS * 4);
         if (!d->marks || !d->log)
@@ -1329,6 +1363,7 @@ u32 h264bsdDbwBegin(dbw_t *d, image_t *image, deblockRec_t *rec, u32 recRows,
         memset(d->marks, 0, n);
     }
     d->rowBank = d->marks + n;
+    d->qpUp = d->rowBank + image->height;
     d->img = *image;
     d->rec = rec;
     d->changed = changed;
@@ -1383,8 +1418,8 @@ u32 h264bsdDbwRowEnd(dbw_t *d)
              * row above */
             u32 lowest = r ? (r - 1) * W : 0;
 
-            /* row r needs records of rows r - 1 and r */
-            if ((r ? r - 1 : 0) < lowRow)
+            /* row r needs its records */
+            if (r < lowRow)
                 break;
             if (lowest < d->sOpen)
             {
@@ -1401,18 +1436,18 @@ u32 h264bsdDbwRowEnd(dbw_t *d)
     }
     /* the row that is next to be posted is gone from the ring, so every later
      * one is too: the worker is out of this picture */
-    if (!d->lost && (d->posted ? d->posted - 1 : 0) < lowRow)
-    {
-        d->lost = 1;
-        d->nLost++;
-    }
+    if (d->posted < lowRow)
+        Lose(d);
     if (next < H)
     {
-        /* row next is about to overwrite row next - K: the worker must be done
-         * with it, which it reads while filtering rows next - K and next - K
-         * + 1; wait for those that are posted */
+        /* row next is about to overwrite row next - K, which the worker reads
+         * while it filters it, if it was posted: wait for that */
         if (next >= K && d->posted > next - K)
-            DbwWaitRows(d, d->posted < next - K + 2 ? d->posted : next - K + 2);
+        {
+            VJP_BEGIN(VJP_DEBLOCK);
+            DbwWaitRows(d, next - K + 1);
+            VJP_END(VJP_DEBLOCK);
+        }
         TagRow(d, next);
     }
     return d->nextRowEnd;
@@ -1553,12 +1588,11 @@ void h264bsdDbwFinish(dbw_t *d)
 }
 
 /* The worker can finish the picture: it is active, and the ring holds the
- * records of the rows it has not been posted (and of the one above the first
- * of them, whose qp it reads) */
+ * records of the rows it has not been posted (the qps of the row above the
+ * first of them it has, from filtering it) */
 u32 h264bsdDbwFinishable(dbw_t *d)
 {
-    return d && d->active &&
-        RingHolds(d, d->img.height, d->posted ? d->posted - 1 : 0);
+    return d && d->active && RingHolds(d, d->img.height, d->posted);
 }
 
 /* The final pass from row `from` of a picture of `height` rows decoded in

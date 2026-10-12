@@ -132,6 +132,12 @@ check-depth:
 	  ./check.sh ../build-host-depth$$d/vjdec ../streams || exit 1; \
 	done
 
+# The record ring at its smallest (VJ_REC_ROWS=3), as large as a picture (64: nothing is ever remade, as with the picture-sized
+# array) and with the worker taking no rows at all (VJ_REC_REMAKE: the final pass makes every record of every picture from the
+# storage): the three must give the same frames, so every stream still matches its golden. Both PIPE values.
+check-ring:
+	n=0; for f in -DVJ_REC_ROWS=3 -DVJ_REC_ROWS=64 -DVJ_REC_REMAKE; do for p in 0 1; do 	  n=$$((n + 1)); 	  $(MAKE) B=../build-host-ring$$n WORKER=1 PIPE=$$p CFLAGS="-std=gnu99 -O2 -g $$f" ../build-host-ring$$n/vjdec && 	  ./check.sh ../build-host-ring$$n/vjdec ../streams || exit 1; 	done; done
+
 # Crafted streams (ncgen.py: I_PCM, nC across slices, skip runs, mid-row slices, ASO, FMO 0 / 1), generated into $(B)/crafted.
 CRAFTED := $(B)/crafted
 $(CRAFTED)/.stamp: pipe/ncgen.py | $(B)
@@ -151,4 +157,4 @@ check-diff:
 	  REPS=3 SEEDS=4 ./fzdiff.sh ../build-host-pipe$$pipe/fz ../build-host-seq/fz ../build-host-pipe$$pipe/crafted || exit 1; \
 	done
 
-.PHONY: all check check-one check-tsan check-asan check-poison check-storage check-depth check-diff
+.PHONY: all check check-one check-tsan check-asan check-poison check-storage check-depth check-ring check-diff

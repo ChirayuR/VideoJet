@@ -66,13 +66,15 @@ typedef struct dbw dbw_t;
 #ifdef VJ_DEBLOCK_WORKER
 /* With the worker, a picture's deblock records live in a ring of VJ_REC_ROWS macroblock rows, not in a picture-sized
  * array: the records are read only by the worker, a row or two behind the decoding task, and by the final pass. Rows the
- * ring no longer holds are remade from the storage by that pass. At least 4: row r is filtered once row r + 1 is decoded,
- * and the decoding task may write row r + VJ_REC_ROWS only after the worker is done with row r + 1. */
+ * ring no longer holds are remade from the storage by that pass. At least 3: row r is filtered once row r + 1 is decoded,
+ * and the decoding task may write row r + VJ_REC_ROWS only after the worker is done with row r. The more rows, the more
+ * the worker may lag (VJ_REC_ROWS - 2 rows) before the decoding task has to wait for it; 600 B of internal RAM per row at
+ * 800x480. */
 #ifndef VJ_REC_ROWS
 #define VJ_REC_ROWS 4
 #endif
-#if VJ_REC_ROWS < 4
-#error "VJ_REC_ROWS must be at least 4"
+#if VJ_REC_ROWS < 3
+#error "VJ_REC_ROWS must be at least 3"
 #endif
 #endif
 
