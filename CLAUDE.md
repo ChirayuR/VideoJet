@@ -175,7 +175,7 @@ h264bsd: Android's Hantro baseline decoder, Apache-2.0, plain C (github.com/onea
     - T6d: table-driven CAVLC.
   - Also merged (2026-10-11): T11 D-cache autoload (`VJ_DCACHE_AUTOLOAD`, opt-in, bench on) and the PIE motion-compensation
     kernels (`VJ_PIE`, with the on-board oracle `test/mc_pie`: re-run it after any change to `vj_mc_pie.S`).
-  - **Tip fps (slow class): 100.2799 / 31.8626 / 16.6124** (aux_card / aux_map / full_map, main 2f93fb6): aux_map clears the
+  - **Tip fps (slow class): 100.3418 / 32.7286 / 16.9640** (aux_card / aux_map / full_map, main c4db5d5): aux_map clears the
     head-unit software 30 fps gate.
   - Library internal RAM, as `tools/ram_static.py` section sums plus heap `int_used`, which includes the worker stack:
     - pipeline on: 96,158 B;
@@ -198,7 +198,7 @@ h264bsd: Android's Hantro baseline decoder, Apache-2.0, plain C (github.com/onea
   - The user wants the maximum fps, not just the 30 fps gate (2026-10-12). Queue (ledger, measure4-report.md, brainstorm2.md):
     1. N, the word-at-a-time NAL scan (`m3/unescape`, reviewed; R12 maps `h264bsd_byte_stream` to flash for the budget);
     2. R, the deblock records in a rolling internal ring (task-R-brief.md);
-    3. deblock segment 10 → 4 MBs;
+    3. deblock segment 10 → 4 MBs: done, `m3-seg4`, +2.72 % aux_map;
     4. skip the deblock of alpha/beta-0 MBs: exact, but the gain is a low-QP corpus effect;
     5. PIE deblock;
     6. mvpred + records on the parser. Get a real AA capture first: at real QP core 1 has no slack.
