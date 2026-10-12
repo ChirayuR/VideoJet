@@ -42,8 +42,15 @@
 #include "h264bsd_vlc.h"
 #include "vj_prof.h"
 
+/* A slice with fewer stream bytes than this is parsed inline (the hand-off costs more than it hides). 0: every slice. */
 #ifndef VJ_PIPE_MIN_BYTES
 #define VJ_PIPE_MIN_BYTES 0
+#endif
+#if VJ_PIPE_MIN_BYTES > 0
+#define VJ_PIPE_WORTH(strm) \
+    (((strm)->strmBuffSize - ((strm)->strmBuffReadBits >> 3)) >= VJ_PIPE_MIN_BYTES)
+#else
+#define VJ_PIPE_WORTH(strm) 1
 #endif
 #if defined(VJ_PARSE_PIPELINE) && !defined(VJ_DEBLOCK_WORKER)
 #error "VJ_PARSE_PIPELINE needs VJ_DEBLOCK_WORKER (one core-1 task)"
@@ -586,8 +593,7 @@ static u32 DecodeSliceLoop(strmData_t *pStrmData, storage_t *pStorage,
     if (pStorage->vjDbw && !parse->useStorage &&
         pStorage->activePps->numSliceGroups == 1 &&
         !pSliceHeader->redundantPicCnt && h264bsdDbwParallel(pStorage->vjDbw) &&
-        (pStrmData->strmBuffSize - (pStrmData->strmBuffReadBits >> 3)) >=
-            VJ_PIPE_MIN_BYTES)
+        VJ_PIPE_WORTH(pStrmData))
         ParseArm(parse, pStorage->vjDbw);
 #endif
 

@@ -141,4 +141,14 @@ config VJ_PARSE_PIPELINE
         Cost: about 12.7 KB of internal RAM for the ring (6 x 2.1 KB minus the one record the decoder always had) and
         1.3 KB for the neighbour shadow; the worker's stack grows to 3 KB.
 
+config VJ_PARSE_PIPELINE_MIN_BYTES
+    int "Smallest slice (stream bytes) handed to the parse pipeline"
+    depends on VJ_PARSE_PIPELINE
+    range 0 65535
+    default 0
+    help
+        A slice with fewer stream bytes than this is parsed on the decoding task, as without the pipeline: handing a
+        near-empty slice (a static card: a skip run and a few macroblocks) to the other core costs more than the parse
+        it hides. The choice depends only on the slice, so the output cannot change. 0 hands over every slice.
+
 endmenu

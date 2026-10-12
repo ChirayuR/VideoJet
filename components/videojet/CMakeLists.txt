@@ -13,7 +13,7 @@ endif()
 idf_component_register(SRCS ${vj_srcs} ${dec_srcs}
                        INCLUDE_DIRS "include"
                        PRIV_INCLUDE_DIRS "src" "h264bsd"
-                       PRIV_REQUIRES heap
+                       PRIV_REQUIRES heap esp_timer
                        LDFRAGMENTS "linker.lf")
 # IDF's -Werror=all beats a bare -Wno-error, so this is a point fix for a known GCC false positive in
 # h264bsd_pic_order_cnt.c (both variables are set and read under the same absFrameNum > 0 test). Other tags may
@@ -27,5 +27,5 @@ if(CONFIG_VJ_DEBLOCK_WORKER)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE VJ_DEBLOCK_WORKER)
 endif()
 if(CONFIG_VJ_PARSE_PIPELINE)
-    target_compile_definitions(${COMPONENT_LIB} PRIVATE VJ_PARSE_PIPELINE)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE VJ_PARSE_PIPELINE VJ_PIPE_MIN_BYTES=${CONFIG_VJ_PARSE_PIPELINE_MIN_BYTES})
 endif()

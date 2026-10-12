@@ -54,7 +54,7 @@ $(B)/test_idct: test_idct.c $(DEC)/h264bsd_transform.c $(LIB_HDR) | $(B)
 # The worker's contracts: join on every return (worker delayed after its claim) and the owner taking a run back (worker
 # not scheduled), plus thread-creation failure. Host shim hooks only, see test_worker.c.
 $(B)/test_join: test_worker.c $(LIB_SRC) $(LIB_HDR) $(HASH) | $(B)
-	$(CC) $(CFLAGS) $(VJF) -DVJ_WORKER_JITTER_US=3000 $(INC) $(LIB_INC) -o $@ test_worker.c $(LIB_SRC)
+	$(CC) $(CFLAGS) $(VJF) -DVJ_WORKER_JITTER_US=3000 $(if $(filter 1,$(PIPE)),-DVJ_PIPE_JITTER_US=400,) $(INC) $(LIB_INC) -o $@ test_worker.c $(LIB_SRC)
 
 $(B)/test_stall: test_worker.c $(LIB_SRC) $(LIB_HDR) $(HASH) | $(B)
 	$(CC) $(CFLAGS) $(VJF) -DVJ_WORKER_STALL_MS=120 $(INC) $(LIB_INC) -o $@ test_worker.c $(LIB_SRC)
