@@ -165,6 +165,24 @@ What to know before enabling it:
   `error_mbs` > 0 on a returned frame is also a keyframe cue: the frame is damaged, so request one and show nothing
   until the next IDR.
 
+### Rows as they become final (optional)
+`vj_decoder_set_rows_callback(dec, fn, ctx)` hands each macroblock row of the picture being decoded to `fn` as soon as
+nothing later in the picture changes it. With `CONFIG_VJ_DEBLOCK_WORKER` that is about two rows behind the decode, on the
+worker's task, so a display can convert and send a strip of the picture while the rest of it decodes. That avoids
+re-reading the finished picture from PSRAM and overlaps the panel transfer with the decode.
+- **Arguments:** the picture so far (`f->changed_mb` is NULL; the row's flags are the `changed` argument, exactly what
+  `f->changed_mb` will hold for that row), and the row.
+- **Order:** increasing within a pass. A slice error or concealment makes the picture's final pass hand every row over
+  again in the same call, and the last delivery wins.
+- **When to show:** every row of a returned `VJ_FRAME` is delivered before the call returns. Rows delivered in a call
+  that returns anything else are not a picture to show.
+- **Without the worker:** every row is delivered at the end of the call (no overlap).
+- **Where it runs:** mostly inside the worker's parse/deblock loop, so keep `fn` short.
+- **Cost:** none when no callback is set beyond a test per deblock segment; 354 B of IRAM with the bench configuration.
+- **Tests:** `host/test_rows.c` (in `make check`, every configuration, clean and damaged streams). It checks every row of
+  every returned frame, the last delivery against the final picture and `changed_mb`, and that the output is identical
+  with and without a callback.
+
 ## 6. Kconfig (menu "VideoJet")
 - `CONFIG_VJ_DEBLOCK_WORKER` (default n; the bench turns it on): the deblocking filter runs on a worker task, one MB row
   behind the decode (rows r filtered once r + 1 is decoded), bit-identical to the sequential decoder on every path

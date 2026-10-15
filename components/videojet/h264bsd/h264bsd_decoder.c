@@ -454,11 +454,16 @@ static u32 DecodeNal(storage_t *pStorage, u8 *byteStrm, u32 len, u32 picId,
                         h264bsdAllocateDpbImage(pStorage->dpb);
 #ifdef VJ_DEBLOCK_WORKER
                     if (pStorage->vjDbw)
+                    {
                         pStorage->vjDbwRowEnd = h264bsdDbwBegin(
                             pStorage->vjDbw, pStorage->currImage,
                             pStorage->vjRec, pStorage->dpb->vjChanged,
                             pStorage->activePps->numSliceGroups,
                             pStorage->activePps->redundantPicCntPresentFlag);
+                        if (pStorage->vjRowsBegin)
+                            pStorage->vjRowsBegin(pStorage,
+                                IS_IDR_NAL_UNIT(&nalUnit));
+                    }
 #endif
                 }
 

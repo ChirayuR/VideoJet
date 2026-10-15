@@ -177,3 +177,11 @@ Every change made for VideoJet is listed here, newest last.
       {00 01 02 03 04 FF} (and 9..13 over smaller alphabets), 10 M random ones and 4000 long ones, each at 4 alignments with
       a varying filler below the buffer. It runs once in `make check` (it does not depend on the worker or the pipeline). A
       read past the end of the buffer is seen only by ASan: an edit of this file must pass `make check-asan` too.
+  - Row-ready hand-over (`h264bsd_deblocking.c/h`, `h264bsd_decoder.c`, `h264bsd_storage.h`; the API is in `src/videojet.c`).
+    When a picture starts and the worker takes part, `storage.vjRowsBegin` (videojet.c) arms the worker
+    (`h264bsdDbwRowsArm`). After each deblock segment, `DbwRun` hands every newly final row to the hook: row r is final
+    once row r + 1 is filtered, since its top edges change r's bottom lines, and the last row goes at the end of the
+    picture. Each row comes with its changed flags as the picture's map will hold them. Those flags are the decode-time
+    flags, the worker's marks, and the changes of pictures decoded since the last one returned; all 1 when the buffer's old
+    content is unknown. `DbwSettle` disarms the hook: the final pass then hands every row over again from videojet.c,
+    after the call's map is final. Nothing the decoder reads or writes changes (`host/test_rows.c`).

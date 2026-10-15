@@ -135,6 +135,11 @@ typedef struct storage
     dbw_t *vjDbw;
     u32 vjDbwRowEnd;
 
+    /* row-ready hook (videojet.c, vj_decoder_set_rows_callback; NULL when off): called on the decoding thread when a
+     * picture starts and the worker takes part, to arm the worker's per-row hand-over (h264bsdDbwRowsArm) */
+    void (*vjRowsBegin)(struct storage *s, u32 idr);
+    void *vjRowsCtx;
+
     /* flag to store noOutputReordering flag set by the application */
     u32 noReordering;
 

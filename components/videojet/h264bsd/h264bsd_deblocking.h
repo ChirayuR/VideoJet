@@ -94,6 +94,9 @@ void h264bsdDbwAbortKeep(dbw_t *d);
 u32 h264bsdDbwResume(dbw_t *d);
 void h264bsdDbwJoin(dbw_t *d);
 void h264bsdDbwFinish(dbw_t *d);
+void h264bsdDbwRowsArm(dbw_t *d, void (*hook)(void *, u32, const u8 *), void *ctx,
+  u32 allChanged, const u32 *lastChanged, u32 lastOut, u32 accumulate);
+u32 h264bsdDbwRowsDone(const dbw_t *d);
 #endif
 
 #endif /* #ifdef H264SWDEC_DEBLOCKING_H */

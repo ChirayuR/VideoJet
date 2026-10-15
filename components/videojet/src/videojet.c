@@ -1,4 +1,5 @@
 /* The public API over the vendored h264bsd decoder (no output reordering: DPB = refs + 1, decode order out). */
+#include <stdlib.h>
 #include <string.h>
 #ifdef ESP_PLATFORM
 #include "sdkconfig.h"
@@ -105,6 +106,7 @@ void vj_decoder_destroy(vj_decoder_t *dec)
 {
     if (!dec)
         return;
+    free(S(dec)->vjRowsCtx);
     h264bsdShutdown(S(dec));
     h264bsdFree(S(dec));
 }
@@ -140,6 +142,71 @@ static int describe(storage_t *s, const u8 *pic, u32 idr, u32 nerr, vj_frame_t *
     f->error_mbs = nerr;
     f->changed_mb = s->dpb->vjChanged;
     return 1;
+}
+
+/* ---- row-ready callback (vj_decoder_set_rows_callback) */
+typedef struct {
+    vj_rows_fn fn;
+    void *ctx;
+    vj_frame_t f;   /* the picture being decoded, as the worker hands its rows over */
+} vj_rows_t;
+
+static void rows_hook(void *p, u32 row, const u8 *changed)
+{
+    vj_rows_t *r = (vj_rows_t *)p;
+    r->fn(r->ctx, &r->f, row, changed);
+}
+
+#ifdef VJ_DEBLOCK_WORKER
+/* A picture starts and the worker takes part: arm its per-row hand-over (decoding thread, before any row is posted) */
+static void rows_begin(storage_t *s, u32 idr)
+{
+    vj_rows_t *r = (vj_rows_t *)s->vjRowsCtx;
+    dpbStorage_t *d = s->dpb;
+
+    if (!h264bsdDbwActive(s->vjDbw) || !describe(s, s->currImage->data, idr, 0, &r->f))
+        return;
+    r->f.changed_mb = NULL;
+    h264bsdDbwRowsArm(s->vjDbw, rows_hook, r, d->currentOut->vjFrameIdx == VJ_IDX_NONE, d->vjLastChanged,
+                      d->vjLastOut, d->vjLastOut != d->vjPicIdx);
+}
+#endif
+
+void vj_decoder_set_rows_callback(vj_decoder_t *dec, vj_rows_fn fn, void *ctx)
+{
+    storage_t *s = S(dec);
+    if (!s)
+        return;
+    s->vjRowsBegin = NULL;
+    if (!fn) {
+        free(s->vjRowsCtx);
+        s->vjRowsCtx = NULL;
+        return;
+    }
+    vj_rows_t *r = (vj_rows_t *)(s->vjRowsCtx ? s->vjRowsCtx : calloc(1, sizeof(vj_rows_t)));
+    if (!r)
+        return;
+    r->fn = fn;
+    r->ctx = ctx;
+    s->vjRowsCtx = r;
+#ifdef VJ_DEBLOCK_WORKER
+    s->vjRowsBegin = rows_begin;
+#endif
+}
+
+/* The picture returned: hand over every row the worker did not (no worker, a final pass, concealment) */
+static void rows_finish(storage_t *s, const vj_frame_t *f)
+{
+    vj_rows_t *r = (vj_rows_t *)s->vjRowsCtx;
+#ifdef VJ_DEBLOCK_WORKER
+    if (h264bsdDbwRowsDone(s->vjDbw))
+        return;
+#endif
+    unsigned W = f->width / 16, H = f->height / 16;
+    vj_frame_t g = *f;
+    g.changed_mb = NULL; /* as for every delivery: the row's flags are the argument */
+    for (unsigned row = 0; row < H; row++)
+        r->fn(r->ctx, &g, row, f->changed_mb + row * W);
 }
 
 static vj_status_t decode_au(vj_decoder_t *dec, uint8_t *au, size_t len, vj_frame_t *out)
@@ -199,6 +266,8 @@ static vj_status_t decode_au(vj_decoder_t *dec, uint8_t *au, size_t len, vj_fram
         for (u32 i = 0; i < d->vjMbs; i++)
             d->vjChanged[i] = d->vjLastChanged[i] > d->vjLastOut;
     d->vjLastOut = d->vjPicIdx;
+    if (s->vjRowsCtx)
+        rows_finish(s, out);
     return VJ_FRAME;
 }
 

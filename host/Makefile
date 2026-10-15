@@ -85,6 +85,12 @@ $(B)/test_nbr: test_nbr.c $(LIB_SRC) $(LIB_HDR) | $(B)
 $(B)/test_sleep: test_worker.c $(LIB_SRC) $(LIB_HDR) $(HASH) | $(B)
 	$(CC) $(CFLAGS) $(VJF) -DVJ_PIPE_STALL_EVERY=40 -DVJ_PIPE_JITTER_US=200 $(INC) $(LIB_INC) -o $@ test_worker.c $(LIB_SRC)
 
+# The row-ready callback's contract (vj_decoder_set_rows_callback): rows delivered before the call returns, last delivery
+# equal to the picture, no effect on the output; clean and damaged streams.
+all: $(B)/test_rows
+$(B)/test_rows: test_rows.c $(LIB_SRC) $(LIB_HDR) | $(B)
+	$(CC) $(CFLAGS) $(VJF) $(INC) $(LIB_INC) -o $@ test_rows.c $(LIB_SRC)
+
 $(B)/vjhash_raw: vjhash_raw.c $(HASH) | $(B)
 	$(CC) $(CFLAGS) $(INC) -o $@ vjhash_raw.c
 
@@ -106,6 +112,7 @@ check-one: all
 	@$(WORKER_TESTS)
 	@$(B)/test_write
 	@$(B)/test_idct
+	@$(B)/test_rows ../streams
 	@./check.sh $(B)/vjdec ../streams
 
 # The same gate under ThreadSanitizer (worker on): any data race between the decoding thread and the worker fails it.

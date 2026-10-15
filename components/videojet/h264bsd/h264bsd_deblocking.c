@@ -1014,6 +1014,13 @@ struct dbw
     /* the worker's while it runs, the decoding thread's when it is idle */
     u32 filtered;       /* rows filtered */
     u32 fmb;            /* next macroblock to filter (a run in progress) */
+    /* row-ready hand-over (h264bsdDbwRowsArm), armed per picture; the worker's while it runs */
+    void (*rowsHook)(void *, u32, const u8 *);
+    void *rowsCtx;
+    u8 *rowBuf;         /* one row of changed flags, capW bytes */
+    const u32 *lastChanged;
+    u32 lastOut, rowsAll, rowsAccum;
+    u32 delivered;      /* rows handed over in this picture */
 #ifdef VJ_DBW_STATS
     unsigned nBegin, nFinish, nErr, nErrUndo, nKeep;
 #endif
@@ -1030,6 +1037,26 @@ struct dbw
  * Returns 1 when the run is complete (filtered == upto), 0 when it wants to be
  * called again with the same upto. fmb is the next macroblock to filter; it is
  * filtered * width whenever no run is in progress. */
+/* Rows [delivered, upto) are final: hand each to the row-ready hook with its changed flags as the picture's map will
+ * hold them (decode-time flags, the worker's deblock marks, and the changes of pictures decoded since the last one
+ * returned; all 1 for a buffer whose old content is unknown) */
+static void DbwDeliver(dbw_t *d, u32 upto)
+{
+    u32 W = d->img.width, r, c;
+
+    for (r = d->delivered; r < upto; r++)
+    {
+        const u8 *chg = d->changed + r * W, *mk = d->marks + r * W;
+        const u32 *last = d->lastChanged + r * W;
+
+        for (c = 0; c < W; c++)
+            d->rowBuf[c] = (u8)(d->rowsAll || chg[c] || mk[c] ||
+                (d->rowsAccum && last[c] > d->lastOut));
+        d->rowsHook(d->rowsCtx, r, d->rowBuf);
+    }
+    d->delivered = upto;
+}
+
 static int DbwRun(void *arg, uint32_t upto)
 {
     dbw_t *d = (dbw_t*)arg;
@@ -1044,6 +1071,14 @@ static int DbwRun(void *arg, uint32_t upto)
     FilterMbRows(&d->img, NULL, 0, d->marks, d->rec, HANTRO_TRUE,
         d->fmb, end, d->rowBank, d->log);
     d->fmb = end;
+    if (d->rowsHook)
+    {
+        /* row r is final once row r + 1 is filtered (its top edges change r's bottom lines); all at the last row */
+        u32 rows = end / W, fin = rows == d->img.height ? rows : rows ? rows - 1 : 0;
+
+        if (fin > d->delivered)
+            DbwDeliver(d, fin);
+    }
     if (end < to)
         return 0;
     d->filtered = upto;
@@ -1112,6 +1147,7 @@ void h264bsdDbwDestroy(dbw_t *d)
         vj_worker_destroy(d->w);
         free(d->marks);
         free(d->log);
+        free(d->rowBuf);
         free(d);
     }
 }
@@ -1128,6 +1164,8 @@ u32 h264bsdDbwBegin(dbw_t *d, image_t *image, deblockRec_t *rec, u8 *changed,
     d->resume = 0;
     d->filtered = d->fmb = 0;
     d->posted = 0;
+    d->rowsHook = NULL;
+    d->delivered = 0;
     if (numSliceGroups != 1 || redundantPicCntPresent ||
         image->height < 3 || ((uintptr_t)image->data & 3))
         return 0;
@@ -1135,16 +1173,20 @@ u32 h264bsdDbwBegin(dbw_t *d, image_t *image, deblockRec_t *rec, u8 *changed,
     {
         free(d->marks);
         free(d->log);
+        free(d->rowBuf);
         d->capMbs = d->capW = 0;
         d->marks = (u8*)vj_alloc_psram(n + image->height);
         d->log = (u32*)vj_alloc_psram((size_t)DBW_BANKS * image->width *
             DBW_SLOT_WORDS * 4);
-        if (!d->marks || !d->log)
+        d->rowBuf = (u8*)malloc(image->width);
+        if (!d->marks || !d->log || !d->rowBuf)
         {
             free(d->marks);
             free(d->log);
+            free(d->rowBuf);
             d->marks = NULL;
             d->log = NULL;
+            d->rowBuf = NULL;
             vj_worker_warn("no memory for the deblock worker's undo log: filtering in the pass");
             return 0;
         }
@@ -1251,6 +1293,7 @@ static void DbwSettle(dbw_t *d, u32 keep)
     d->filtered = d->fmb = 0;
     d->posted = 0;
     d->active = HANTRO_FALSE;
+    d->rowsHook = NULL; /* the final pass hands every row over again (videojet.c) */
 }
 
 /* A slice failed. Put back what the worker filtered under it (rows posted
@@ -1346,6 +1389,28 @@ void h264bsdDbwFinish(dbw_t *d)
     d->filtered = d->fmb = 0;
     d->posted = 0;
     d->active = HANTRO_FALSE;
+}
+
+/* The picture just begun hands its rows to `hook` as the worker makes them final. Call on the decoding thread after
+ * h264bsdDbwBegin, before the first row is posted (the post publishes these fields to the worker) */
+void h264bsdDbwRowsArm(dbw_t *d, void (*hook)(void *, u32, const u8 *), void *ctx,
+    u32 allChanged, const u32 *lastChanged, u32 lastOut, u32 accumulate)
+{
+    if (!d || !d->active)
+        return;
+    d->rowsCtx = ctx;
+    d->rowsAll = allChanged;
+    d->lastChanged = lastChanged;
+    d->lastOut = lastOut;
+    d->rowsAccum = accumulate;
+    d->delivered = 0;
+    d->rowsHook = hook;
+}
+
+/* Every row of the last picture went to the hook from the worker (it finished the picture) */
+u32 h264bsdDbwRowsDone(const dbw_t *d)
+{
+    return d && d->img.height && d->delivered == d->img.height;
 }
 #endif /* VJ_DEBLOCK_WORKER */
 

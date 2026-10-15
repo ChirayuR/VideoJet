@@ -48,6 +48,22 @@ vj_decoder_t *vj_decoder_create(void);
 vj_status_t vj_decode_au(vj_decoder_t *dec, uint8_t *au, size_t len, vj_frame_t *out);
 void vj_decoder_destroy(vj_decoder_t *dec);
 
+/* Rows as they become final (optional). As a picture is decoded, each macroblock row is handed to `fn` once nothing later
+ * in the picture changes it (deblocked, below the rows still being decoded). The display can then convert and send it
+ * while the rest of the picture decodes.
+ * - `f`: the picture being decoded (planes, size, crop, VUI); its rows outside [mb_row * 16, mb_row * 16 + 16) are not
+ *   final yet, and f->changed_mb is NULL here: `changed` holds row mb_row of what f->changed_mb will hold (width / 16
+ *   bytes, 0 = the macroblock is identical to the same one in the previous VJ_FRAME returned).
+ * - Order: increasing within a pass. A row can be delivered again later in the same call (a slice error or concealment
+ *   makes the picture's final pass hand every row over again); the last delivery in a call that returns VJ_FRAME is the
+ *   final one, and every row of a returned picture is delivered before the call returns. Rows delivered in a call that
+ *   returns anything else are not a picture to show.
+ * - Thread: with CONFIG_VJ_DEBLOCK_WORKER mostly the worker's task (the other core), inside its parse/deblock loop, so
+ *   keep `fn` short (convert a strip, queue a transfer, or just record how far it got); otherwise the decoding task.
+ * fn NULL turns it off. Set it between calls, never during one. */
+typedef void (*vj_rows_fn)(void *ctx, const vj_frame_t *f, unsigned mb_row, const uint8_t *changed);
+void vj_decoder_set_rows_callback(vj_decoder_t *dec, vj_rows_fn fn, void *ctx);
+
 /* Length of the first access unit at `data`: up to the next AU's start code, `len` for the last AU, 0 when `data`
  * holds no start code. Constrained baseline without arbitrary slice order or redundant pictures. */
 size_t vj_au_length(const uint8_t *data, size_t len);
