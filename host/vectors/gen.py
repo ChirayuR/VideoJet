@@ -5,7 +5,8 @@ python3 gen.py elide > elide.h264: a redundant slice re-decodes, as a skip, an M
 python3 gen.py slerr > slerr.h264: slices that fail mid-way, then re-decodes, around elidable skips.
 python3 gen.py records > records.h264 (decode one NAL per call): slices rewrite MBs whose deblock records were made.
 python3 gen.py idc2 6 4 > idc2.h264: two slices per picture with idc 2 and no redundant slices, so the deblock worker takes part.
-python3 gen.py nonref 8 4 > nonref.h264: P pictures alternate reference / non-reference (hold: the spare buffer, skip elision)."""
+python3 gen.py nonref 8 4 > nonref.h264: P pictures alternate reference / non-reference (hold: the spare buffer, skip elision).
+python3 gen.py gaps 8 4 > gaps.h264: frame_num gaps (allowed), one reference: the sliding window unmarks the frame returned last."""
 import sys
 
 class BW:
@@ -35,12 +36,12 @@ W, H = int(sys.argv[2]) if len(sys.argv) > 2 else 6, int(sys.argv[3]) if len(sys
 N = W * H
 QP = 36
 
-def sps():
+def sps(gaps=0):
     b = BW(); b.u(8, 66); b.u(8, 0); b.u(8, 30); b.ue(0)
     b.ue(0)            # log2_max_frame_num_minus4 -> 4 bits
     b.ue(2)            # poc type 2
     b.ue(1)            # num_ref_frames
-    b.u(1, 0)          # gaps
+    b.u(1, gaps)       # gaps_in_frame_num_value_allowed_flag
     b.ue(W - 1); b.ue(H - 1)
     b.u(1, 1); b.u(1, 1); b.u(1, 0); b.u(1, 0)
     b.trailing(); return nal(3, 7, b.bytes())
@@ -91,15 +92,30 @@ def p_pcm_slice(first, fn, luma, skip, rpc=0, idc=0, bad_after=False, redundant=
 
 mode = sys.argv[1]
 luma = [100 if (m % W) < 3 else 110 for m in range(N)]   # step between MB 2 and MB 3 of each row
-plain_pps = mode in ('idc2', 'nonref')
-s = sps() + pps(0 if plain_pps else 1) + idr_slice(luma, 0 if plain_pps else 1)
+plain_pps = mode in ('idc2', 'nonref', 'gaps')
+s = sps(1 if mode == 'gaps' else 0) + pps(0 if plain_pps else 1) + idr_slice(luma, 0 if plain_pps else 1)
+if mode == 'gaps':
+    # frame_num jumps by 2, 3, 4 with gaps allowed: h264bsd inserts non-existing frames, and with one reference the
+    # sliding window unmarks the frame just returned, so the next picture would reuse its buffer (with hold: the spare).
+    # After a gap the only reference is a non-existing frame: the P slices fail and the pictures are concealed.
+    for fn, pcm in [(1, None), (3, (2, 150)), (4, None), (7, None), (8, (5, 40)), (12, None), (13, None), (14, (0, 220))]:
+        if pcm is None:
+            s += p_slice(0, fn, N, redundant=0)
+            continue
+        m, lum = pcm
+        if m:
+            s += p_slice(0, fn, m, redundant=0)
+        s += p_pcm_slice(m, fn, lum, N - m - 1, redundant=0)
+    sys.stdout.buffer.write(s)
+    sys.exit()
 if mode == 'nonref':
     # P pictures alternate reference / non-reference (nal_ref_idc 0; frame_num as the standard numbers them, POC type 2
     # never has two non-reference pictures in a row), no redundant slices. Mostly skips, so skip elision runs; an I_PCM MB
-    # (at MB m: skip m, then a slice from m) changes now and then. A non-reference picture is still the last frame
-    # returned when the next picture starts, in the buffer that picture would reuse: with hold on, the spare takes over.
+    # changes now and then (at MB m < N - 1: skip m, then a slice from m; a slice cannot end on a skip run of 0). A
+    # non-reference picture is still the last frame returned when the next picture starts, in the buffer that picture
+    # would reuse: with hold on, the spare takes over.
     for fn, ref, pcm in [(1, 2, None), (2, 0, (0, 200)), (2, 2, None), (3, 0, None), (3, 2, (5, 60)), (4, 0, None),
-                         (4, 2, None), (5, 0, (N - 1, 30)), (5, 2, (9, 180)), (6, 0, None), (6, 2, None), (7, 0, (3, 90)),
+                         (4, 2, None), (5, 0, (N - 2, 30)), (5, 2, (9, 180)), (6, 0, None), (6, 2, None), (7, 0, (3, 90)),
                          (7, 2, None), (8, 0, None)]:
         if pcm is None:
             s += p_slice(0, fn, N, redundant=0, ref=ref)
