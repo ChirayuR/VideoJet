@@ -19,7 +19,7 @@ LIB_INC := -I$(VJ)/include -I$(VJ)/src -I$(DEC)
 INC := -I$(VJ)/include -I../components/vj_hash/include
 HASH := ../components/vj_hash/include/vj_hash.h
 
-all: $(B)/vjdec $(B)/vjhash_raw $(B)/test_api $(B)/test_mc $(B)/test_cavlc $(B)/test_write $(B)/test_idct $(B)/test_nbr $(B)/fz $(WORKER_BINS)
+all: $(B)/vjdec $(B)/vjhash_raw $(B)/test_api $(B)/test_hold $(B)/test_mc $(B)/test_cavlc $(B)/test_write $(B)/test_idct $(B)/test_nbr $(B)/fz $(WORKER_BINS)
 
 $(B):
 	mkdir -p $@
@@ -33,6 +33,11 @@ $(B)/fz: fz.c $(LIB_SRC) $(LIB_HDR) | $(B)
 
 $(B)/test_api: test_api.c $(LIB_SRC) $(LIB_HDR) $(HASH) | $(B)
 	$(CC) $(CFLAGS) $(VJF) $(INC) $(LIB_INC) -o $@ test_api.c $(LIB_SRC)
+
+# vj_decoder_set_hold: hold off and hold on in lockstep over every stream (repo, vectors, crafted), clean and damaged, and
+# across picture-size changes. --wrap=malloc: allocations over 8 MB fail (a damaged SPS can ask for gigabytes).
+$(B)/test_hold: test_hold.c $(LIB_SRC) $(LIB_HDR) $(HASH) | $(B)
+	$(CC) $(CFLAGS) $(VJF) $(INC) $(LIB_INC) -Wl,--wrap=malloc -o $@ test_hold.c $(LIB_SRC)
 
 # Motion compensation against the standard's interpolation equations, exhaustive over positions, partitions, edges.
 $(B)/test_mc: test_mc.c $(LIB_SRC) $(LIB_HDR) | $(B)
@@ -96,10 +101,11 @@ check:
 	$(MAKE) B=$(B)-pipe0 WORKER=1 PIPE=0 check-one
 	$(MAKE) B=$(B)-pipe1 WORKER=1 PIPE=1 check-one
 
-# One configuration: API unit tests, the MC, CAVLC, neighbour and IDCT oracles, the worker contracts, then every stream
-# with a .golden decodes bit-exact.
-check-one: all
+# One configuration: API unit tests, the hold test, the MC, CAVLC, neighbour and IDCT oracles, the worker contracts, then
+# every stream with a .golden decodes bit-exact.
+check-one: all $(B)/crafted/.stamp
 	@$(B)/test_api ../streams vectors
+	@$(B)/test_hold ../streams vectors $(B)/crafted
 	@$(B)/test_mc
 	@$(B)/test_cavlc
 	@$(B)/test_nbr
