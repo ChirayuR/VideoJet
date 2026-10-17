@@ -8,3 +8,5 @@ managed_components/
 dependencies.lock
 .superpowers/
 __pycache__/
+# Real Android Auto captures (the user's map and route): never committed
+streams/heldout/aa_*
