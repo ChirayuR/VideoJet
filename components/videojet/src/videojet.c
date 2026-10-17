@@ -59,8 +59,8 @@ static void autoload_arm(const storage_t *s)
         al_span(&lo, &hi, s->mb, mbs * sizeof *s->mb);
         al_span(&lo, &hi, s->sliceGroupMap, mbs * sizeof *s->sliceGroupMap);
         al_span(&lo, &hi, d->vjLastChanged, mbs * sizeof *d->vjLastChanged);
-        for (u32 i = 0; i <= d->dpbSize; i++) /* h264bsdInitDpb: dpbSize + 1 pictures of 384 B per MB */
-            al_span(&lo, &hi, d->buffer[i].data, mbs * 384);
+        for (u32 i = 0; i <= d->dpbSize + d->vjHold; i++) /* h264bsdInitDpb: dpbSize + 1 pictures (+ 1 with hold) */
+            al_span(&lo, &hi, d->buffer[i].data, mbs * (384 + d->vjHold)); /* of 384 B per MB, + 1 with hold */
     }
     if (hi > lo) {
         lo &= ~(uintptr_t)(AL_LINE - 1);
@@ -109,6 +109,14 @@ void vj_decoder_destroy(vj_decoder_t *dec)
     h264bsdFree(S(dec));
 }
 
+bool vj_decoder_set_hold(vj_decoder_t *dec, bool on)
+{
+    if (!dec || S(dec)->dpb->vjLocked)
+        return false;
+    S(dec)->dpb->vjHold = on;
+    return true;
+}
+
 /* Fill *f for the picture just decoded. 0 when the frame cannot be described (its fields are 16 bit). */
 static int describe(storage_t *s, const u8 *pic, u32 idr, u32 nerr, vj_frame_t *f)
 {
@@ -147,7 +155,10 @@ static vj_status_t decode_au(vj_decoder_t *dec, uint8_t *au, size_t len, vj_fram
     if (!dec || !au || !len || !out || len > 0xffffffffu)
         return VJ_ERR_ARG;
     storage_t *s = S(dec);
+    dpbStorage_t *d = s->dpb;
     autoload_arm(s);
+    if (d->vjOrphan) /* hold: a frame a DPB reset spared */
+        h264bsdHoldRelease(d);
     s->prevBufNotFinished = HANTRO_FALSE; /* a call never continues the last: no stale "resume at this pointer" */
     u8 *p = au;
     u32 left = (u32)len;
@@ -194,16 +205,19 @@ static vj_status_t decode_au(vj_decoder_t *dec, uint8_t *au, size_t len, vj_fram
         return VJ_NO_FRAME;
     /* changed_mb holds the changes since the previous picture decoded. Make them the changes since the last picture
      * returned when some were decoded in between and not returned (dropped, or completed by a call that failed). */
-    dpbStorage_t *d = s->dpb;
     if (d->vjLastOut + 1 != d->vjPicIdx)
         for (u32 i = 0; i < d->vjMbs; i++)
             d->vjChanged[i] = d->vjLastChanged[i] > d->vjLastOut;
     d->vjLastOut = d->vjPicIdx;
+    if (d->vjHold) /* the frame is held from now on (h264bsd_dpb.h), with its own copy of changed_mb */
+        out->changed_mb = h264bsdHoldFrame(d, (u8 *)(uintptr_t)out->y);
     return VJ_FRAME;
 }
 
 vj_status_t vj_decode_au(vj_decoder_t *dec, uint8_t *au, size_t len, vj_frame_t *out)
 {
+    if (dec)
+        S(dec)->dpb->vjLocked = 1; /* vj_decoder_set_hold() only before the first call */
     vj_status_t r = decode_au(dec, au, len, out);
 #ifdef VJ_DEBLOCK_WORKER
     /* whatever the status: no deblock work in flight when a call returns. The worker waits on posted rows only, so this

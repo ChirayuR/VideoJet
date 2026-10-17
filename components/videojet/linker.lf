@@ -10,5 +10,15 @@ entries:
         h264bsd_vui (default)
         # NAL extraction: once per NAL (one call per slice), its word loop runs from the I-cache. The internal RAM budget (R12).
         h264bsd_byte_stream (default)
+        # DPB set-up and teardown (once per SPS activation, reset or destroy) and hold (vj_decoder_set_hold: once per
+        # decoder, per frame returned, per non-reference frame, per reset), so that hold costs no internal RAM.
+        h264bsd_dpb:h264bsdInitDpb (default)
+        h264bsd_dpb:h264bsdResetDpb (default)
+        h264bsd_dpb:h264bsdFreeDpb (default)
+        h264bsd_dpb:h264bsdHoldSwap (default)
+        h264bsd_dpb:h264bsdHoldFrame (default)
+        h264bsd_dpb:h264bsdHoldRelease (default)
+        h264bsd_decoder:h264bsdShutdown (default)
+        videojet:vj_decoder_set_hold (default)
     else:
         * (default)

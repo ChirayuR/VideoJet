@@ -3,8 +3,10 @@ IsEndOfPicture with two adjacent untouched MBs (double counting via failed redun
 host/vectors: python3 gen.py attack > attack.h264; python3 gen.py attack2 > attack2.h264 (6x2 MBs, I_PCM IDR).
 python3 gen.py elide > elide.h264: a redundant slice re-decodes, as a skip, an MB that its primary slice changed.
 python3 gen.py slerr > slerr.h264: slices that fail mid-way, then re-decodes, around elidable skips.
-python3 gen.py records > records.h264 (decode one NAL per call): slices rewrite MBs whose deblock records were made."""
+python3 gen.py records > records.h264 (decode one NAL per call): slices rewrite MBs whose deblock records were made.
 python3 gen.py idc2 6 4 > idc2.h264: two slices per picture with idc 2 and no redundant slices, so the deblock worker takes part.
+python3 gen.py nonref 8 4 > nonref.h264: P pictures alternate reference / non-reference (hold: the spare buffer, skip elision).
+python3 gen.py gaps 8 4 > gaps.h264: frame_num gaps (allowed), one reference: the sliding window unmarks the frame returned last."""
 import sys
 
 class BW:
@@ -34,12 +36,12 @@ W, H = int(sys.argv[2]) if len(sys.argv) > 2 else 6, int(sys.argv[3]) if len(sys
 N = W * H
 QP = 36
 
-def sps():
+def sps(gaps=0):
     b = BW(); b.u(8, 66); b.u(8, 0); b.u(8, 30); b.ue(0)
     b.ue(0)            # log2_max_frame_num_minus4 -> 4 bits
     b.ue(2)            # poc type 2
     b.ue(1)            # num_ref_frames
-    b.u(1, 0)          # gaps
+    b.u(1, gaps)       # gaps_in_frame_num_value_allowed_flag
     b.ue(W - 1); b.ue(H - 1)
     b.u(1, 1); b.u(1, 1); b.u(1, 0); b.u(1, 0)
     b.trailing(); return nal(3, 7, b.bytes())
@@ -53,7 +55,7 @@ def pps(redundant=1):
     b.u(1, redundant)  # redundant_pic_cnt_present
     b.trailing(); return nal(3, 8, b.bytes())
 
-def hdr(b, first, stype, fn, idr, rpc, idc, redundant=1):
+def hdr(b, first, stype, fn, idr, rpc, idc, redundant=1, ref=True):
     b.ue(first); b.ue(stype); b.ue(0); b.u(4, fn)
     if idr: b.ue(0)
     if redundant: b.ue(rpc)
@@ -61,7 +63,7 @@ def hdr(b, first, stype, fn, idr, rpc, idc, redundant=1):
         b.u(1, 0)      # num_ref_idx_active_override
         b.u(1, 0)      # ref_pic_list_reordering_flag_l0
     if idr: b.u(1, 0); b.u(1, 0)
-    else: b.u(1, 0)    # adaptive_ref_pic_marking_mode_flag
+    elif ref: b.u(1, 0) # adaptive_ref_pic_marking_mode_flag (dec_ref_pic_marking: nal_ref_idc != 0 only)
     b.se(0)            # slice_qp_delta
     b.ue(idc)
     if idc != 1: b.se(0); b.se(0)
@@ -74,23 +76,56 @@ def idr_slice(luma, redundant=1):
         for _ in range(128): b.u(8, 128)
     b.trailing(); return nal(3, 5, b.bytes())
 
-def p_slice(first, fn, skip, rpc=0, idc=0, bad_after=False, redundant=1):
-    b = BW(); hdr(b, first, 0, fn, False, rpc, idc, redundant); b.ue(skip)
+def p_slice(first, fn, skip, rpc=0, idc=0, bad_after=False, redundant=1, ref=2):
+    b = BW(); hdr(b, first, 0, fn, False, rpc, idc, redundant, ref != 0); b.ue(skip)
     if bad_after: b.ue(31)             # invalid P mb_type -> macroblock_layer error
-    b.trailing(); return nal(2, 1, b.bytes())
+    b.trailing(); return nal(ref, 1, b.bytes())
 
-def p_pcm_slice(first, fn, luma, skip, rpc=0, idc=0, bad_after=False, redundant=1):
-    b = BW(); hdr(b, first, 0, fn, False, rpc, idc, redundant); b.ue(0)
+def p_pcm_slice(first, fn, luma, skip, rpc=0, idc=0, bad_after=False, redundant=1, ref=2):
+    b = BW(); hdr(b, first, 0, fn, False, rpc, idc, redundant, ref != 0); b.ue(0)
     b.ue(30); b.align0()               # I_PCM in a P slice: mb_type 5 + 25
     for _ in range(256): b.u(8, luma)
     for _ in range(128): b.u(8, 128)
     b.ue(skip)
     if bad_after: b.ue(31)             # invalid P mb_type -> macroblock_layer error
-    b.trailing(); return nal(2, 1, b.bytes())
+    b.trailing(); return nal(ref, 1, b.bytes())
 
 mode = sys.argv[1]
 luma = [100 if (m % W) < 3 else 110 for m in range(N)]   # step between MB 2 and MB 3 of each row
-s = sps() + pps(0 if mode == 'idc2' else 1) + idr_slice(luma, 0 if mode == 'idc2' else 1)
+plain_pps = mode in ('idc2', 'nonref', 'gaps')
+s = sps(1 if mode == 'gaps' else 0) + pps(0 if plain_pps else 1) + idr_slice(luma, 0 if plain_pps else 1)
+if mode == 'gaps':
+    # frame_num jumps by 2, 3, 4 with gaps allowed: h264bsd inserts non-existing frames, and with one reference the
+    # sliding window unmarks the frame just returned, so the next picture would reuse its buffer (with hold: the spare).
+    # After a gap the only reference is a non-existing frame: the P slices fail and the pictures are concealed.
+    for fn, pcm in [(1, None), (3, (2, 150)), (4, None), (7, None), (8, (5, 40)), (12, None), (13, None), (14, (0, 220))]:
+        if pcm is None:
+            s += p_slice(0, fn, N, redundant=0)
+            continue
+        m, lum = pcm
+        if m:
+            s += p_slice(0, fn, m, redundant=0)
+        s += p_pcm_slice(m, fn, lum, N - m - 1, redundant=0)
+    sys.stdout.buffer.write(s)
+    sys.exit()
+if mode == 'nonref':
+    # P pictures alternate reference / non-reference (nal_ref_idc 0; frame_num as the standard numbers them, POC type 2
+    # never has two non-reference pictures in a row), no redundant slices. Mostly skips, so skip elision runs; an I_PCM MB
+    # changes now and then (at MB m < N - 1: skip m, then a slice from m; a slice cannot end on a skip run of 0). A
+    # non-reference picture is still the last frame returned when the next picture starts, in the buffer that picture
+    # would reuse: with hold on, the spare takes over.
+    for fn, ref, pcm in [(1, 2, None), (2, 0, (0, 200)), (2, 2, None), (3, 0, None), (3, 2, (5, 60)), (4, 0, None),
+                         (4, 2, None), (5, 0, (N - 2, 30)), (5, 2, (9, 180)), (6, 0, None), (6, 2, None), (7, 0, (3, 90)),
+                         (7, 2, None), (8, 0, None)]:
+        if pcm is None:
+            s += p_slice(0, fn, N, redundant=0, ref=ref)
+            continue
+        m, lum = pcm
+        if m:
+            s += p_slice(0, fn, m, redundant=0, ref=ref)
+        s += p_pcm_slice(m, fn, lum, N - m - 1, redundant=0, ref=ref)
+    sys.stdout.buffer.write(s)
+    sys.exit()
 if mode == 'idc2':
     # python3 gen.py idc2 6 4 > idc2.h264: 6x4 MBs, no redundant slices (so the deblock worker takes part), every picture
     # in two slices [0,12) [12,24) with disable_deblocking_filter_idc 2 (no filtering across the slice boundary, filtering

@@ -111,6 +111,18 @@ typedef struct {
     u32 *vjLastChanged; /* per MB: the last picture that may have changed it */
     u8 *vjChanged;      /* per MB, this picture: 1 = may differ from the
                            previous picture. Exported as changed_mb */
+    /* hold (vj_decoder_set_hold): no picture is decoded into vjHeld, the
+     * frame returned last, and no reset frees it. One more frame buffer,
+     * buffer[dpbSize + 1] (UNUSED, outside the sort), stands in for it in
+     * h264bsdAllocateDpbImage, and every frame buffer has vjMbs more bytes
+     * after its 32 B of slack, for its copy of changed_mb (videojet.c) */
+    u8 vjHold;
+    u8 vjLocked;        /* vj_decode_au() was called: vjHold is fixed */
+    u8 *vjHeld;         /* data of the frame returned last; NULL: none, or
+                           hold off */
+    u8 *vjOrphan;       /* vjHeld's pAllocatedData after a reset freed the
+                           rest of its DPB; freed once another frame is
+                           returned (videojet.c) or at shutdown */
 } dpbStorage_t;
 
 /*------------------------------------------------------------------------------
@@ -165,6 +177,12 @@ void h264bsdFlushDpb(dpbStorage_t *dpb);
 void h264bsdRecordChanges(dpbStorage_t *dpb, u32 numConcealedMbs);
 
 void h264bsdFreeDpb(dpbStorage_t *dpb);
+
+void h264bsdHoldSwap(dpbStorage_t *dpb);
+
+u8 *h264bsdHoldFrame(dpbStorage_t *dpb, u8 *pic);
+
+void h264bsdHoldRelease(dpbStorage_t *dpb);
 
 #endif /* #ifdef H264SWDEC_DPB_H */
 

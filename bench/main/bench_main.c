@@ -78,6 +78,12 @@ static void run_stream(const esp_partition_t *part, const vj_entry_t *e, int run
         printf("VJ run=%d set=%s stream=%s error=init\n", run, set, e->name);
         goto out;
     }
+#ifdef VJ_BENCH_HOLD
+    if (!vj_decoder_set_hold(dec, true)) { /* built with -DVJ_BENCH_HOLD=1: every row is a hold-on decode */
+        printf("VJ run=%d set=%s stream=%s error=init\n", run, set, e->name);
+        goto out;
+    }
+#endif
 
     uint32_t n = 0, fails = 0;
     int first_fail = -1;

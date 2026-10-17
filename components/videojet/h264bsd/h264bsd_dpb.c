@@ -888,6 +888,8 @@ u8* h264bsdAllocateDpbImage(dpbStorage_t *dpb)
     ASSERT(dpb->fullness <=  dpb->dpbSize);
 
     dpb->currentOut = dpb->buffer + dpb->dpbSize;
+    if (dpb->currentOut->data == dpb->vjHeld) /* hold, never NULL here */
+        h264bsdHoldSwap(dpb);
 
     /* a new picture: every MB changed until a pure copy shows otherwise */
     memset(dpb->vjChanged, 1, dpb->vjMbs);
@@ -993,7 +995,7 @@ u32 h264bsdInitDpb(
 
 /* Variables */
 
-    u32 i;
+    u32 i, n;
 
 /* Code */
 
@@ -1015,20 +1017,24 @@ u32 h264bsdInitDpb(
     dpb->numRefFrames        = 0;
     dpb->prevRefFrameNum     = 0;
 
-    ALLOCATE(dpb->buffer, MAX_NUM_REF_IDX_L0_ACTIVE + 1, dpbPicture_t);
+    /* hold: the spare buffer[dpbSize + 1] fits in the 17 entries unless
+     * dpbSize is 16 */
+    n = MAX(MAX_NUM_REF_IDX_L0_ACTIVE + 1, dpb->dpbSize + 1 + dpb->vjHold);
+    ALLOCATE(dpb->buffer, n, dpbPicture_t);
     if (dpb->buffer == NULL)
         return(MEMORY_ALLOCATION_ERROR);
-    memset(dpb->buffer, 0,
-            (MAX_NUM_REF_IDX_L0_ACTIVE + 1)*sizeof(dpbPicture_t));
-    for (i = 0; i < dpb->dpbSize + 1; i++)
+    memset(dpb->buffer, 0, n*sizeof(dpbPicture_t));
+    for (i = 0; i < dpb->dpbSize + 1 + dpb->vjHold; i++)
     {
         /* Allocate needed amount of memory, which is:
          * image size + 32 + 15, where 32 cames from the fact that in ARM OpenMax
          * DL implementation Functions may read beyond the end of an array,
          * by a maximum of 32 bytes. And +15 cames for the need to align memory
          * to 16-byte boundary. The PIE kernels (src/vj_mc_pie.S) read up to 16 B past Cr,
-         * so this slack is load-bearing even without OpenMAX DL */
-        ALLOCATE(dpb->buffer[i].pAllocatedData, (picSizeInMbs*384 + 32+15), u8);
+         * so this slack is load-bearing even without OpenMAX DL. With hold, the
+         * frame's changed_mb copy follows the slack: one byte per MB */
+        ALLOCATE(dpb->buffer[i].pAllocatedData,
+            (picSizeInMbs*(384 + dpb->vjHold) + 32+15), u8);
         if (dpb->buffer[i].pAllocatedData == NULL)
             return(MEMORY_ALLOCATION_ERROR);
 
@@ -1554,9 +1560,14 @@ void h264bsdFreeDpb(dpbStorage_t *dpb)
 
     if (dpb->buffer)
     {
-        for (i = 0; i < dpb->dpbSize+1; i++)
+        for (i = 0; i < dpb->dpbSize+1+dpb->vjHold; i++)
         {
-            FREE(dpb->buffer[i].pAllocatedData);
+            /* hold: a reset spares the frame returned last (videojet.c
+             * frees it). An older orphan is vjHeld itself, in no DPB */
+            if (dpb->vjHeld && dpb->buffer[i].data == dpb->vjHeld)
+                dpb->vjOrphan = dpb->buffer[i].pAllocatedData;
+            else
+                FREE(dpb->buffer[i].pAllocatedData);
         }
     }
     FREE(dpb->buffer);
@@ -1595,7 +1606,7 @@ void h264bsdRecordChanges(dpbStorage_t *dpb, u32 numConcealedMbs)
     n = ++dpb->vjPicIdx;
     if (n == VJ_IDX_NEVER) /* out of numbers: forget every buffer, from 1 */
     {
-        for (i = 0; i < dpb->dpbSize + 1; i++)
+        for (i = 0; i < dpb->dpbSize + 1 + dpb->vjHold; i++)
             dpb->buffer[i].vjFrameIdx = VJ_IDX_NONE;
         n = dpb->vjPicIdx = 1;
         dpb->vjLastOut = VJ_IDX_NONE;
@@ -1609,6 +1620,51 @@ void h264bsdRecordChanges(dpbStorage_t *dpb, u32 numConcealedMbs)
             dpb->vjLastChanged[i] = n;
 
     dpb->currentOut->vjFrameIdx = n;
+}
+
+/*------------------------------------------------------------------------------
+
+    Function: h264bsdHoldSwap
+
+        Functional description:
+            Hold (vj_decoder_set_hold): the slot a new picture is decoded
+            into, buffer[dpbSize], holds the frame returned last, which the
+            consumer may still read. Trade it for the spare,
+            buffer[dpbSize + 1]. Both are UNUSED and not to be displayed
+            (the sort leaves the unused at the end; the spare is never
+            sorted, marked or listed), and data, pAllocatedData and
+            vjFrameIdx move together, so skip elision still knows which
+            picture each buffer holds. The spare is never vjHeld: vjHeld
+            was just in the slot.
+
+------------------------------------------------------------------------------*/
+
+void h264bsdHoldSwap(dpbStorage_t *dpb)
+{
+    dpbPicture_t *p = dpb->buffer + dpb->dpbSize, t = p[0];
+
+    p[0] = p[1];
+    p[1] = t;
+}
+
+/* Hold: videojet.c returns pic now, so it is held from here on. It gets its
+ * own copy of changed_mb, after its slack (h264bsdInitDpb), which no later
+ * picture writes. Returns the copy */
+u8 *h264bsdHoldFrame(dpbStorage_t *dpb, u8 *pic)
+{
+    u8 *changed = pic + dpb->vjMbs * 384 + 32;
+
+    memcpy(changed, dpb->vjChanged, dpb->vjMbs);
+    dpb->vjHeld = pic;
+    return changed;
+}
+
+/* Hold, at the start of a call: the frame a reset spared (h264bsdFreeDpb) is
+ * freed once a later one was returned */
+void h264bsdHoldRelease(dpbStorage_t *dpb)
+{
+    if (ALIGN(dpb->vjOrphan, 16) != dpb->vjHeld)
+        FREE(dpb->vjOrphan);
 }
 
 /*------------------------------------------------------------------------------

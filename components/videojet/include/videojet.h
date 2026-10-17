@@ -7,7 +7,8 @@
  * VJ_ERR_STREAM instead. No decode work is left running when any call returns. Pictures come out in decode
  * order (no output reordering), which is display order for baseline streams that never reorder.
  * Byte-stream sources split their buffer with vj_au_length(). One decoder per task: calls on one decoder must not
- * overlap. Frame buffers live in PSRAM (about 1.5 x width x height bytes each, refs + 1 of them). */
+ * overlap. Frame buffers live in PSRAM (about 1.5 x width x height bytes each, refs + 1 of them, refs + 2 with
+ * vj_decoder_set_hold()). */
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -29,7 +30,8 @@ typedef enum {
 } vj_status_t;
 
 typedef struct {
-    const uint8_t *y, *u, *v;   /* I420 planes, valid until the next vj_decode_au() or vj_decoder_destroy() */
+    const uint8_t *y, *u, *v;   /* I420 planes, valid until the next vj_decode_au() or vj_decoder_destroy(); with hold
+                                 * on, until the next VJ_FRAME has been returned (vj_decoder_set_hold()) */
     uint16_t y_stride, uv_stride;
     uint16_t width, height;     /* coded size, multiples of 16 */
     uint16_t crop_x, crop_y, crop_w, crop_h; /* the picture to show (SPS cropping), else the whole frame */
@@ -47,6 +49,25 @@ typedef struct {
 vj_decoder_t *vj_decoder_create(void);
 vj_status_t vj_decode_au(vj_decoder_t *dec, uint8_t *au, size_t len, vj_frame_t *out);
 void vj_decoder_destroy(vj_decoder_t *dec);
+
+/* Hold (default off): keep the last frame returned intact while later AUs decode, so another task can read frame k while
+ * vj_decode_au() decodes k + 1. With hold on, the y, u, v planes and changed_mb of a frame returned with VJ_FRAME stay
+ * valid and unchanged through every later vj_decode_au() call up to and including the one that returns the next
+ * VJ_FRAME, whatever the calls in between return (VJ_NO_FRAME, an error, a new SPS with another picture size), and until
+ * vj_decoder_destroy() if no other frame comes. The call after the next VJ_FRAME may overwrite or free them. Every frame
+ * qualifies: reference or not, IDR, concealed, after MMCO or frame_num gaps, the last one before a resolution change
+ * (whose buffer outlives the old DPB until then: PSRAM for both at once).
+ * Output equals hold off (statuses, frames, pixels) but for two cases. changed_mb may mark more macroblocks changed, never
+ * fewer: on a frame decoded into the extra buffer while it holds no known picture, in practice the frame after the first
+ * non-reference frame of a stream or picture size (streams whose pictures are all references never use it). And with
+ * redundant slices (redundant_pic_cnt_present_flag), a failing one can make the decoder finish a picture with macroblocks
+ * no slice decoded, which show the buffer's old contents: with hold that can be another buffer's, and frames predicted
+ * from them differ too, up to the next IDR.
+ * Cost: one more frame buffer in PSRAM (589,828 B at 800x480 with the IDF heap), no internal RAM; changed_mb then lives
+ * in the frame's buffer (PSRAM), copied there when the frame is returned (one byte per macroblock).
+ * Call it after vj_decoder_create() and before the first vj_decode_au() on dec. Returns true when applied, false (and
+ * changes nothing) for a NULL dec or once vj_decode_au() has been called on dec, whatever that call returned. */
+bool vj_decoder_set_hold(vj_decoder_t *dec, bool on);
 
 /* Length of the first access unit at `data`: up to the next AU's start code, `len` for the last AU, 0 when `data`
  * holds no start code. Constrained baseline without arbitrary slice order or redundant pictures. */
