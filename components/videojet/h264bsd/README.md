@@ -225,3 +225,13 @@ Every change made for VideoJet is listed here, newest last.
     - `h264bsdCopyMb`, the direct copy, is shared by both paths: word loads and stores when the source is word-aligned
       (x a multiple of 8, `ASSERT`ed), else the old `memcpy` rows.
     - `host/fz.c` hashes the storage fields by value, so storage hashes stay comparable with trees before the narrowing.
+  - CAVLC residual per macroblock (`h264bsd_cavlc.c/h`, `h264bsd_macroblock_layer.c`, `h264bsd_neighbour.h`).
+    `h264bsdDecodeResidualCavlc` replaces `DecodeResidual`, `DetermineNc` and the per-block
+    `h264bsdDecodeResidualBlockCavlc` (kept in `host/test_cavlc.c` as the oracle): one call per macroblock, the
+    `strmData_t` window (`strmBuffReadBits`, `cache[0..1]`) in registers, a funnel-shift peek (`ssl` + `src` on the
+    S3) and a skip per symbol, nC from two 24-entry tables, a level as the top bits of the window less its prefix
+    zeros, the levels after a block's first from `vjLevelTab` when their code fits in 6 bits, and run_before placing
+    the levels from the highest position down. Same symbols, tables, arithmetic, checks and stored levels; the
+    end-of-buffer check is per block (positions only grow, so the old check at each refill gave the same
+    `HANTRO_NOK`), and on an error the levels hold an unspecified part of the block (a failed macroblock is never
+    reconstructed). `neighbour_t` holds its `neighbourMb_e` in a `u8`: the neighbour tables take 2 B an entry, not 8.

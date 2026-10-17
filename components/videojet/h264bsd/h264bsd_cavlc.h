@@ -35,6 +35,7 @@
 
 #include "basetype.h"
 #include "h264bsd_stream.h"
+#include "h264bsd_macroblock_layer.h"
 
 /*------------------------------------------------------------------------------
     2. Module defines
@@ -49,11 +50,9 @@
     4. Function prototypes
 ------------------------------------------------------------------------------*/
 
-u32 h264bsdDecodeResidualBlockCavlc(
-  strmData_t *pStrmData,
-  i32 *coeffLevel,
-  i32 nc,
-  u32 maxNumCoeff);
+/* VideoJet: residual() of one macroblock (every coded block's residual_block_cavlc()), h264bsd_cavlc.c */
+u32 h264bsdDecodeResidualCavlc(strmData_t *pStrmData, residual_t *pResidual,
+    const vjTc_t *tcA, const vjTc_t *tcB, u32 is16x16, u32 codedBlockPattern);
 
 #endif /* #ifdef H264SWDEC_CAVLC_H */
 

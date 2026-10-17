@@ -31,8 +31,8 @@
           h264bsdNumSubMbPart
           DecodeMbPred
           DecodeSubMbPred
-          DecodeResidual
-          DetermineNc
+          DecodeResidual (OMXDL only; h264bsd_cavlc.c otherwise)
+          DetermineNc (OMXDL only)
           CbpIntra16x16
           h264bsdPredModeIntra16x16
           h264bsdDecodeMacroblock
@@ -93,11 +93,6 @@ static u32 DecodeSubMbPred(strmData_t *pStrmData, subMbPred_t *pSubMbPred,
 static u32 DecodeResidual(strmData_t *pStrmData, residual_t *pResidual,
     mbStorage_t *pMb, mbType_e mbType, u32 codedBlockPattern);
 static u32 DetermineNc(mbStorage_t *pMb, u32 blockIndex, u8 *pTotalCoeff);
-#else
-static u32 DecodeResidual(strmData_t *pStrmData, residual_t *pResidual,
-    const vjTc_t *tcA, const vjTc_t *tcB, mbType_e mbType, u32 codedBlockPattern);
-static u32 DetermineNc(const vjTc_t *tcA, const vjTc_t *tcB, u32 blockIndex,
-    const i16 *pTotalCoeff);
 #endif
 
 static u32 CbpIntra16x16(mbType_e mbType);
@@ -162,8 +157,8 @@ u32 h264bsdDecodeMacroblockLayer(strmData_t *pStrmData,
      * their totalCoeff. Any other level[] block is read beyond [0] only when its
      * coeffMap is nonzero: an uncoded I16x16-luma or chroma-AC block with a DC
      * reaches h264bsdProcessBlock, whose coeffMap == 0 path reads data[0] alone
-     * (h264bsd_transform.c). So DecodeResidual zeroes only the coded blocks,
-     * before the CAVLC decoder writes their levels. A transform that ignores
+     * (h264bsd_transform.c). So h264bsdDecodeResidualCavlc zeroes only the
+     * coded blocks, before it writes their levels. A transform that ignores
      * coeffMap must zero the blocks itself. */
     pMbLayer->mbQpDelta = 0;
     memset(pMbLayer->mbPred.refIdxL0, 0, sizeof(pMbLayer->mbPred.refIdxL0));
@@ -250,8 +245,11 @@ u32 h264bsdDecodeMacroblockLayer(strmData_t *pStrmData,
                 return(HANTRO_NOK);
             pMbLayer->mbQpDelta = itmp;
 
-            tmp = DecodeResidual(pStrmData, &pMbLayer->residual, tcA, tcB,
-                pMbLayer->mbType, pMbLayer->codedBlockPattern);
+            /* VideoJet: the whole residual in h264bsd_cavlc.c (it was
+             * DecodeResidual + DetermineNc here, one call per block) */
+            tmp = h264bsdDecodeResidualCavlc(pStrmData, &pMbLayer->residual,
+                tcA, tcB, (u32)(partMode == PRED_MODE_INTRA16x16),
+                pMbLayer->codedBlockPattern);
 
             if (tmp != HANTRO_OK)
                 return(tmp);
@@ -707,116 +705,6 @@ u32 DecodeResidual(strmData_t *pStrmData, residual_t *pResidual,
 
 }
 
-#else
-/*------------------------------------------------------------------------------
-
-    Function: DecodeResidual
-
-        Functional description:
-          Parse residual information from bit stream and store in 'pResidual'.
-
-------------------------------------------------------------------------------*/
-
-u32 DecodeResidual(strmData_t *pStrmData, residual_t *pResidual,
-    const vjTc_t *tcA, const vjTc_t *tcB, mbType_e mbType, u32 codedBlockPattern)
-{
-
-/* Variables */
-
-    u32 i, j, tmp;
-    i32 nc;
-    u32 blockCoded;
-    u32 blockIndex;
-    u32 is16x16;
-    i32 (*level)[16];
-
-/* Code */
-
-    ASSERT(pStrmData);
-    ASSERT(pResidual);
-
-    level = pResidual->level;
-
-    /* luma DC is at index 24 */
-    if (h264bsdMbPartPredMode(mbType) == PRED_MODE_INTRA16x16)
-    {
-        nc = (i32)DetermineNc(tcA, tcB, 0, pResidual->totalCoeff);
-        tmp = h264bsdDecodeResidualBlockCavlc(pStrmData, level[24], nc, 16);
-        if ((tmp & 0xF) != HANTRO_OK)
-            return(tmp);
-        pResidual->totalCoeff[24] = (tmp >> 4) & 0xFF;
-        is16x16 = HANTRO_TRUE;
-    }
-    else
-        is16x16 = HANTRO_FALSE;
-
-    for (i = 4, blockIndex = 0; i--;)
-    {
-        /* luma cbp in bits 0-3 */
-        blockCoded = codedBlockPattern & 0x1;
-        codedBlockPattern >>= 1;
-        if (blockCoded)
-        {
-            /* lazy clear: CAVLC writes only the nonzero levels */
-            memset(level[blockIndex], 0, 4 * sizeof(*level));
-            for (j = 4; j--; blockIndex++)
-            {
-                nc = (i32)DetermineNc(tcA, tcB, blockIndex, pResidual->totalCoeff);
-                if (is16x16)
-                {
-                    tmp = h264bsdDecodeResidualBlockCavlc(pStrmData,
-                        level[blockIndex] + 1, nc, 15);
-                    pResidual->coeffMap[blockIndex] = tmp >> 15;
-                }
-                else
-                {
-                    tmp = h264bsdDecodeResidualBlockCavlc(pStrmData,
-                        level[blockIndex], nc, 16);
-                    pResidual->coeffMap[blockIndex] = tmp >> 16;
-                }
-                if ((tmp & 0xF) != HANTRO_OK)
-                    return(tmp);
-                pResidual->totalCoeff[blockIndex] = (tmp >> 4) & 0xFF;
-            }
-        }
-        else
-            blockIndex += 4;
-    }
-
-    /* chroma DC block are at indices 25 and 26 */
-    blockCoded = codedBlockPattern & 0x3;
-    if (blockCoded)
-    {
-        tmp = h264bsdDecodeResidualBlockCavlc(pStrmData, level[25], -1, 4);
-        if ((tmp & 0xF) != HANTRO_OK)
-            return(tmp);
-        pResidual->totalCoeff[25] = (tmp >> 4) & 0xFF;
-        tmp = h264bsdDecodeResidualBlockCavlc(pStrmData, level[25]+4, -1, 4);
-        if ((tmp & 0xF) != HANTRO_OK)
-            return(tmp);
-        pResidual->totalCoeff[26] = (tmp >> 4) & 0xFF;
-    }
-
-    /* chroma AC */
-    blockCoded = codedBlockPattern & 0x2;
-    if (blockCoded)
-    {
-        memset(level[16], 0, 8 * sizeof(*level)); /* lazy clear, as luma */
-        for (i = 8; i--;blockIndex++)
-        {
-            nc = (i32)DetermineNc(tcA, tcB, blockIndex, pResidual->totalCoeff);
-            tmp = h264bsdDecodeResidualBlockCavlc(pStrmData,
-                level[blockIndex] + 1, nc, 15);
-            if ((tmp & 0xF) != HANTRO_OK)
-                return(tmp);
-            pResidual->totalCoeff[blockIndex] = (tmp >> 4) & 0xFF;
-            pResidual->coeffMap[blockIndex] = (tmp >> 15);
-        }
-    }
-
-    return(HANTRO_OK);
-
-}
 #endif
 
 /*------------------------------------------------------------------------------
@@ -883,70 +771,6 @@ u32 DetermineNc(mbStorage_t *pMb, u32 blockIndex, u8 *pTotalCoeff)
                 n = (n + pMb->mbB->totalCoeff[neighbourBindex] + 1) >> 1;
             else
                 n = pMb->mbB->totalCoeff[neighbourBindex];
-        }
-    }
-    return((u32)n);
-/*lint +e702 */
-}
-#else
-/* VideoJet: the neighbours' totalCoeff arrive as tcA / tcB (NULL = not available: outside the picture or slice): the
- * parser's own shadow with the parse pipeline (the reconstruction side writes mbStorage), the storage's array without it.
- * Same arithmetic as the original reading mbStorage. */
-u32 DetermineNc(const vjTc_t *tcA, const vjTc_t *tcB, u32 blockIndex,
-    const i16 *pTotalCoeff)
-{
-/*lint -e702 */
-/* Variables */
-
-    u32 tmp;
-    i32 n;
-    const neighbour_t *neighbourA, *neighbourB;
-    u8 neighbourAindex, neighbourBindex;
-
-/* Code */
-
-    ASSERT(blockIndex < 24);
-
-    /* neighbour block in the current macroblock -> pTotalCoeff */
-    neighbourA = h264bsdNeighbour4x4BlockA(blockIndex);
-    neighbourB = h264bsdNeighbour4x4BlockB(blockIndex);
-    neighbourAindex = neighbourA->index;
-    neighbourBindex = neighbourB->index;
-    if (neighbourA->mb == MB_CURR && neighbourB->mb == MB_CURR)
-    {
-        n = (pTotalCoeff[neighbourAindex] +
-             pTotalCoeff[neighbourBindex] + 1)>>1;
-    }
-    else if (neighbourA->mb == MB_CURR)
-    {
-        n = pTotalCoeff[neighbourAindex];
-        if (tcB)
-        {
-            n = (n + tcB[neighbourBindex] + 1) >> 1;
-        }
-    }
-    else if (neighbourB->mb == MB_CURR)
-    {
-        n = pTotalCoeff[neighbourBindex];
-        if (tcA)
-        {
-            n = (n + tcA[neighbourAindex] + 1) >> 1;
-        }
-    }
-    else
-    {
-        n = tmp = 0;
-        if (tcA)
-        {
-            n = tcA[neighbourAindex];
-            tmp = 1;
-        }
-        if (tcB)
-        {
-            if (tmp)
-                n = (n + tcB[neighbourBindex] + 1) >> 1;
-            else
-                n = tcB[neighbourBindex];
         }
     }
     return((u32)n);
