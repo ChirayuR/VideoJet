@@ -218,8 +218,8 @@ What to know before enabling it:
   including slice errors and concealment (undo log of the rows the failed slice touched; `h264bsd/h264bsd_deblocking.c` has
   the argument; the host gate runs it threaded, `make -C host check-tsan` under ThreadSanitizer).
   - **Core and priority:** `vj_decoder_create()` creates a FreeRTOS task "vjdbw" pinned to `CONFIG_VJ_WORKER_CORE`, at the
-    creating task's own priority, with a 2 KB internal stack (3 KB with the parse pipeline; 988 B / 1,132 B used).
-    `vj_decoder_destroy()` stops it.
+    creating task's own priority (or `CONFIG_VJ_WORKER_PRIORITY` when that is not 0), with a 2 KB internal stack (3 KB with
+    the parse pipeline; 988 B / 1,132 B used). `vj_decoder_destroy()` stops it.
   - **Rules:** create, decode and destroy from one task pinned to one core (the worker takes the other core); never delete that
     task while a `vj_decode_au()` is in flight. `vj_decode_au()` returns with the worker idle on every path.
   - **Starvation:** if a task on the worker's core at or above its priority keeps it from starting a run, `vj_decode_au()`
@@ -264,6 +264,9 @@ What to know before enabling it:
   - **Sleeps:** the worker sleeps when a long record (a skip run of a hundred macroblocks) keeps the ring full for 200 us:
     on the bench 0.1 to 3 times per frame (9 on test_640x360), each with one wake and no effect on the frame rate.
 - `CONFIG_VJ_WORKER_CORE` (-1, 0 or 1; default -1 = the core other than the creating task's): the worker's core.
+- `CONFIG_VJ_WORKER_PRIORITY` (0-24; default 0 = the creating task's priority): the worker's priority, for a consumer that
+  shares the worker's core. Below a task that must never wait for it (a network reader that a busy worker would starve,
+  so the phone buffers), above work that can trail the decode (a display conversion of the previous frame).
 - `CONFIG_VJ_IRAM` (default y): run the decoder from internal RAM (hot code + tables: 49,071 + 7,695 B without the pipeline,
   section 4).
 - `CONFIG_VJ_PIE` (default y, ESP32-S3 only): motion compensation, residual write-out and the 4x4 inverse transform in PIE SIMD assembly (MC for 8 and 16 wide partitions),

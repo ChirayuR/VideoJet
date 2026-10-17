@@ -125,6 +125,17 @@ config VJ_WORKER_CORE
         -1 puts the worker on the other core than the task calling vj_decoder_create() (core 0 on a single-core
         build). 0 or 1 pins it there; 1 on a single-core build (FREERTOS_UNICORE) is clamped to 0.
 
+config VJ_WORKER_PRIORITY
+    int "Priority of the deblock worker (0: the priority of the task that creates the decoder)"
+    depends on VJ_DEBLOCK_WORKER
+    range 0 24
+    default 0
+    help
+        0 runs the worker at the creating task's priority (the bench). A consumer with other work on the worker's
+        core places it there: below a task that must never wait for it (a network reader), above work that can trail
+        the decode (a display conversion). A task above the worker that delays the start of a run makes the decoding
+        task take the run back after 50 ms; one that preempts a started run stalls the decode while it runs.
+
 config VJ_PARSE_PIPELINE
     bool "Parse macroblocks on the other core, ahead of the decoding task"
     depends on VJ_DEBLOCK_WORKER && !FREERTOS_UNICORE
