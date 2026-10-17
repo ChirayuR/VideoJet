@@ -1069,6 +1069,10 @@ u32 h264bsdDecodeMacroblock(mbStorage_t *pMb, macroblockLayer_t *pMbLayer,
 
     mbType = pMbLayer->mbType;
     pMb->mbType = mbType;
+    /* totalCoeff, refPic and mv are rewritten below (h264bsdInterPrediction
+     * sets it again for a zero-MV skip). The P_Skip path of this function is
+     * mirrored in DecodeSkipRun (h264bsd_slice_data.c): change both */
+    pMb->vjZero = 0;
 
     pMb->decoded++;
 
@@ -1188,6 +1192,7 @@ u32 h264bsdDecodeMacroblock(mbStorage_t *pMb, macroblockLayer_t *pMbLayer,
         }
         else
         {
+            /* mirrored in DecodeSkipRun (h264bsd_slice_data.c) */
             memset(pMb->totalCoeff, 0, 27*sizeof(*pMb->totalCoeff));
             pMb->qpY = (u32)*qpY;
         }

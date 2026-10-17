@@ -1,6 +1,7 @@
 /*
  * Copyright (C) 2009 The Android Open Source Project
  * Modified for use by h264bsd standalone library
+ * Modified for VideoJet: see h264bsd/README.md, Local changes.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -52,6 +53,8 @@
 
 u32 h264bsdInterPrediction(mbStorage_t *pMb, macroblockLayer_t *pMbLayer,
     dpbStorage_t *dpb, u32 mbNum, image_t *image, u8 *data);
+
+void h264bsdCopyMb(image_t *image, const u8 *ref, u32 x, u32 y);
 
 #endif /* #ifdef H264SWDEC_INTER_PREDICTION_H */
 

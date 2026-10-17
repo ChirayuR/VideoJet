@@ -326,6 +326,8 @@ u32 ConcealMb(mbStorage_t *pMb, image_t *currImage, u32 row, u32 col,
     /* mbType set to intra to perform filtering despite the values of other
      * boundary strength determination fields */
     pMb->mbType = I_4x4;
+    /* no longer a zero-MV skip (its totalCoeff, refPic, mv are untouched) */
+    pMb->vjZero = 0;
     pMb->filterOffsetA = 0;
     pMb->filterOffsetB = 0;
     pMb->chromaQpIndexOffset = 0;

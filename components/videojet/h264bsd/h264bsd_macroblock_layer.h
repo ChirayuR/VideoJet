@@ -160,30 +160,53 @@ typedef struct
     residual_t residual;
 } macroblockLayer_t;
 
+/* VideoJet: the fields a skipped macroblock writes or its neighbours look up come first, so that one whose motion vector
+ * is 0 and whose other fields already hold those of such a skip (vjZero) is decoded touching the first cache line only
+ * (the skip-run path in h264bsd_slice_data.c). mb[] is 64-byte aligned and the struct is 192 B on the S3, mbType..mbD in
+ * its first 64 B (h264bsd_storage.c asserts it). The 8-bit fields hold every value they can get: qp 0..51, idc 0..2,
+ * offsets -12..12 and refIdx 0..15, checked when parsed. */
 typedef struct mbStorage
 {
     mbType_e mbType;
     u32 sliceId;
-    u32 disableDeblockingFilterIdc;
-    i32 filterOffsetA;
-    i32 filterOffsetB;
-    u32 qpY;
-    i32 chromaQpIndexOffset;
+    u32 decoded;
+    u8* refAddr[4];
+    u8 qpY;
+    u8 disableDeblockingFilterIdc;
+    i8 filterOffsetA;
+    i8 filterOffsetB;
+    i8 chromaQpIndexOffset;
+    /* this is a P_Skip with motion vector 0 and its totalCoeff, refPic and mv are all 0. Cleared by every
+     * h264bsdDecodeMacroblock (whose call tree and the skip-run path are the only writers of those fields) and by
+     * ConcealMb (which makes the MB intra), set when such a skip has written them */
+    u8 vjZero;
+    u8 refPic[4];
+    struct mbStorage *mbA;
+    struct mbStorage *mbB;
+    struct mbStorage *mbC;
+    struct mbStorage *mbD;
 #ifdef H264DEC_OMXDL
     u8 totalCoeff[27];
 #else
     i16 totalCoeff[27];
 #endif
     u8 intra4x4PredMode[16];
-    u32 refPic[4];
-    u8* refAddr[4];
-    mv_t mv[16];
-    u32 decoded;
-    struct mbStorage *mbA;
-    struct mbStorage *mbB;
-    struct mbStorage *mbC;
-    struct mbStorage *mbD;
-} mbStorage_t;
+    mv_t mv[16] __attribute__((aligned(4))); /* whole mvs move as words */
+} __attribute__((aligned(64))) mbStorage_t;
+
+/* what vjZero claims (for ASSERTs) */
+static inline u32 h264bsdZeroSkipFields(const mbStorage_t *mb)
+{
+    u32 i, nz = 0;
+
+    for (i = 0; i < 27; i++)
+        nz |= (u32)mb->totalCoeff[i];
+    for (i = 0; i < 4; i++)
+        nz |= mb->refPic[i];
+    for (i = 0; i < 16; i++)
+        nz |= (u32)(u16)mb->mv[i].hor | (u32)(u16)mb->mv[i].ver;
+    return !nz;
+}
 
 /*------------------------------------------------------------------------------
     4. Function prototypes
