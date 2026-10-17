@@ -401,8 +401,8 @@ The skip-run fast path and the real Android Auto capture (2026-10-17):
     cross-boot readings of -2.4 to -3.6 % on BA2 / BA_MW_D / MIDR were boot-to-boot).
 - **Internal RAM** (`components/videojet/README.md` section 3): 99,641 B worker on with autoload, 99,243 B without
   (the bar's), 95,979 B bench default; 359 B under the 100 KB budget at the tightest.
-- **Pending:** `docs/baseline-m3.jsonl` is still `m3-unescape`. `compare.py` needs a search-set record, so the next M3
-  session scores f1e9b24 with `tools/score.sh` and makes that record the baseline (R8).
+- **Baseline:** `docs/baseline-m3.jsonl` is now `m3-skiprun` (search set, tuning 5, ELF 2afdeff87, app 2ea6242):
+  155.21 / 36.23 / 17.54 fps, KEEP against `m3-unescape` at +54.40 / +7.79 / +1.23 % (R8).
 
 The parse pipeline (2026-10-12):
 - **Records in PSRAM, as a standalone step:** `m3-recpsram`, 8e75095, scored DROP at −3.31 / −1.18 / −0.92 %. It only frees the 18 KB of internal RAM that the ring needs, so it was never merged on its own.
