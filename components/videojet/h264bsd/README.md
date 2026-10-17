@@ -177,3 +177,21 @@ Every change made for VideoJet is listed here, newest last.
       {00 01 02 03 04 FF} (and 9..13 over smaller alphabets), 10 M random ones and 4000 long ones, each at 4 alignments with
       a varying filler below the buffer. It runs once in `make check` (it does not depend on the worker or the pipeline). A
       read past the end of the buffer is seen only by ASan: an edit of this file must pass `make check-asan` too.
+  - Hold (`vj_decoder_set_hold`; `h264bsd_dpb.c/h`, `h264bsd_decoder.c`). The frame returned last, `dpbStorage_t.vjHeld`
+    (set by `src/videojet.c`), is neither decoded into nor freed until another frame is returned.
+    - `h264bsdInitDpb` makes one more frame buffer, the spare `buffer[dpbSize + 1]` (the array keeps its 17 entries unless
+      dpbSize is 16), and every frame buffer gets `picSizeInMbs` more bytes after its slack: the frame's copy of
+      changed_mb, made when it is returned (`h264bsdHoldFrame`).
+    - `h264bsdAllocateDpbImage`: when `buffer[dpbSize]` holds vjHeld (a non-reference frame, or a reference that MMCO or a
+      frame_num gap unmarked), it trades places with the spare (`h264bsdHoldSwap`, whole entries: both are UNUSED, and
+      data, pAllocatedData and vjFrameIdx move together, so skip elision still knows what each buffer holds). The spare is
+      outside ShellSort, the marking and the reference lists.
+    - `h264bsdFreeDpb` on a reset frees every buffer but vjHeld's, which becomes `vjOrphan`: `h264bsdHoldRelease` frees it at
+      the start of the first call after another frame was returned, `h264bsdShutdown` at the latest.
+    - `h264bsdRecordChanges`' renumbering restart includes the spare.
+    - Hold off: vjHeld stays NULL and there is no spare, so nothing else changes.
+    - `h264bsdInitDpb`, `h264bsdResetDpb`, `h264bsdFreeDpb`, `h264bsdShutdown` and the three hold functions run from flash
+      (`linker.lf`, symbol entries): once per SPS activation, reset or destroy, and with hold once per frame returned or
+      non-reference frame. IRAM went down by 388 B (bench configuration).
+    - `host/test_hold.c` decodes every stream (clean, one NAL per call, damaged, across picture-size changes) with hold off
+      and on in lockstep and checks the held frame after every call; it runs in `make check`, `check-asan`, `check-tsan`.

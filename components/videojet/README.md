@@ -40,6 +40,25 @@ for (size_t off = 0, n; off < len; off += n) {           /* buf: the byte stream
 vj_decoder_destroy(dec);
 ```
 
+### Reading a frame while the next one decodes (hold)
+By default a frame lives until the next `vj_decode_au()`, so it must be read (converted, shown) before that call. With hold
+on, the decoder leaves the last frame it returned alone until it returns the next one, so another task can convert frame k
+while `vj_decode_au()` decodes frame k + 1:
+```c
+vj_decoder_t *dec = vj_decoder_create();
+vj_decoder_set_hold(dec, true);                          /* before the first vj_decode_au() */
+...
+    vj_status_t st = vj_decode_au(dec, buf + off, n, &f); /* the converter may still be reading the last frame */
+    if (st == VJ_FRAME) {
+        wait_converter_done();                           /* the last frame is safe until here, not after */
+        start_converter(&f);                             /* f is intact until the next VJ_FRAME has been returned */
+    }
+```
+The rule: a frame's planes and `changed_mb` stay valid and unchanged through every later call up to and including the one
+that returns the next `VJ_FRAME`, whatever the calls in between return. So wait only when a new frame arrives; a call that
+returns `VJ_NO_FRAME` or an error needs no wait. Section 5 has the details and the exceptions; the cost is one more frame
+buffer in PSRAM (section 3) and one copy of `changed_mb` into PSRAM per frame.
+
 ## 3. Requirements
 - PSRAM in the heap: `CONFIG_SPIRAM=y` with `CONFIG_SPIRAM_USE_MALLOC` (the default) or `CONFIG_SPIRAM_USE_CAPS_ALLOC`.
   `CONFIG_SPIRAM_USE_MEMMAP` leaves the library no PSRAM to allocate from, so the frames fail with `VJ_ERR_NOMEM`.
@@ -50,14 +69,19 @@ vj_decoder_destroy(dec);
 
   | configuration | static | heap | internal total | PSRAM |
   |---|---|---|---|---|
-  | `CONFIG_VJ_DEBLOCK_WORKER` (the library default is off; pipeline off) | 57,158 B | 42,392 B | **99,550 B** | 1,625,620 B |
-  | + `CONFIG_VJ_PARSE_PIPELINE` | 58,881 B | 36,952 B | **95,833 B** | 1,644,056 B |
+  | `CONFIG_VJ_DEBLOCK_WORKER` (the library default is off; pipeline off) | 56,774 B | 42,392 B | **99,166 B** | 1,625,620 B |
+  | + `CONFIG_VJ_PARSE_PIPELINE` | 58,493 B | 36,952 B | **95,445 B** | 1,644,056 B |
 
   The NAL extraction (`h264bsd_byte_stream`: one call per NAL, 645 B of code that runs from the I-cache) is mapped to flash
   with the other once-per-NAL-or-less code (`linker.lf`), which took 325 B off both static figures (328 B in the image, alignment
-  included); the heap figures did not change. The worker off was not remeasured since the worker tip (93,488 B). The PSRAM holds the frames (about
-  1.5 x width x height bytes each, refs + 1 of them, so 2 for a one-reference stream) and the per-macroblock state
-  (1500 MBs x 216 B). Each extra reference frame adds 589,828 B. IDF's heap rounds every block up to its size class, so
+  included); the heap figures did not change. The DPB set-up and teardown, the decoder's shutdown and hold's own code
+  (`vj_decoder_set_hold`) went to flash too (once per SPS activation, reset or destroy; with hold, once per frame or
+  non-reference frame), which took 384 B (pipeline off) and 388 B (on) off the static figures. The heap and PSRAM figures
+  are from before hold, which changes no allocation while it is off (the decoder's storage grew by 12 B inside its heap
+  block); the hold board score re-measures them. The worker off was not remeasured since the worker tip (93,488 B). The PSRAM holds the frames (about
+  1.5 x width x height bytes each, refs + 1 of them, so 2 for a one-reference stream, refs + 2 with hold) and the
+  per-macroblock state (1500 MBs x 216 B). Each extra reference frame adds 589,828 B, and so does hold
+  (`vj_decoder_set_hold`), which costs no internal RAM. IDF's heap rounds every block up to its size class, so
   the PSRAM figure is a little above the sum of the structure sizes. Internal RAM includes 17 B per macroblock:
   - 5 B for skip elision and `changed_mb` (7,500 B here; each of its two blocks moves to PSRAM above 16 KiB);
   - 12 B of deblock records (18,000 B here), which are internal first whatever their size, so they scale with resolution:
@@ -83,12 +107,12 @@ off by default and came later.
   code in IRAM it gained +19 / +11 / +7 %.
 - **D-cache 64 KB** (`CONFIG_ESP32S3_DATA_CACHE_64KB=y`): another +8 / +6 / +7 % on top of the 64 B line, for 32 KB of
   internal RAM (31,996 B less heap, measured).
-- **Decoder code and tables in internal RAM** (`CONFIG_VJ_IRAM=y`, the default): 49,455 B IRAM + 7,695 B DRAM (the bench
+- **Decoder code and tables in internal RAM** (`CONFIG_VJ_IRAM=y`, the default): 49,071 B IRAM + 7,695 B DRAM (the bench
   config with the deblock worker and the PIE kernels, without the pipeline; the string literals that sit in DRAM are in the
   DRAM figure; `CONFIG_VJ_ERROR_PRINT=y` adds ~0.8 KB of strings). The code in IRAM gained +1 / +11 / +21 % over flash code with
   the default 16 KB I-cache (step 0), and with it moving the code changed fps by at most 0.11 %. The tables in DRAM gained
   another +0.7 / +1.4 / +2.0 % on top of that (in flash they cost up to ~2,350 cache misses per frame).
-- The small-RAM alternative, 16 KB of internal RAM instead of 57,150 B: `CONFIG_VJ_IRAM=n` with
+- The small-RAM alternative, 16 KB of internal RAM instead of 56,766 B: `CONFIG_VJ_IRAM=n` with
   `CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y`. At step 0 it stayed within 1 % of code-in-IRAM (22.17 / 12.60 / 7.63; flash code
   has no layout pin), but it keeps the tables in flash too, so expect it about 1 / 2 / 3 % below the default (estimate).
 - With 64 B lines, a PSRAM buffer that DMA reads or writes needs 64 B alignment in address and size
@@ -149,11 +173,34 @@ What to know before enabling it:
 - One decoder per task: calls on one decoder must not overlap.
 - With `CONFIG_VJ_DEBLOCK_WORKER` the decoder owns a worker task from `vj_decoder_create()` to `vj_decoder_destroy()`: call both
   from the decoding task, which must not be deleted while a `vj_decode_au()` is in flight. Every call returns with the worker idle.
-- `f.y`, `f.u` and `f.v` are valid until the next `vj_decode_au()` or `vj_decoder_destroy()`.
+- `f.y`, `f.u` and `f.v` are valid until the next `vj_decode_au()` or `vj_decoder_destroy()`, longer with hold:
+- **Hold** (`vj_decoder_set_hold(dec, true)`, off by default). Call it after `vj_decoder_create()` and before the first
+  `vj_decode_au()` on `dec`; it returns false and changes nothing for a NULL decoder or once `vj_decode_au()` has been
+  called on it, whatever that call returned.
+  - Guarantee: the planes and `changed_mb` of a frame returned with `VJ_FRAME` stay valid and unchanged through every later
+    `vj_decode_au()` call up to and including the one that returns the next `VJ_FRAME`, whatever the calls in between
+    return (`VJ_NO_FRAME`, `VJ_ERR_*`, a new SPS with another picture size), and until `vj_decoder_destroy()` if no other
+    frame comes. The call after the next `VJ_FRAME` may overwrite or free them. Every frame qualifies: reference or not,
+    IDR, concealed (`error_mbs`), after MMCO or frame_num gaps, the last one before a resolution change.
+  - How: one more frame buffer. No picture is decoded into the buffer of the frame returned last: when the DPB would reuse
+    it (a non-reference frame, or a reference that MMCO or a frame_num gap unmarked), the extra buffer takes its place. A
+    new SPS frees the old frame buffers but the held one, which is freed at the start of the first call after the next
+    `VJ_FRAME` (or by destroy): a resolution change needs PSRAM for the new buffers while the old frame is held.
+    `changed_mb` is a copy in the frame's own buffer (PSRAM), made when the frame is returned.
+  - Output: the statuses, frames and pixels of hold off, with two exceptions. `changed_mb` may mark more macroblocks
+    changed than hold off, never fewer, so it stays correct: on a frame decoded into the extra buffer while that holds no
+    known picture, in practice the frame after the first non-reference frame of a stream or picture size (streams whose
+    pictures are all references, as Android Auto's are, never use the extra buffer). And with redundant slices
+    (`redundant_pic_cnt_present_flag`, which constrained baseline encoders do not use) a failing redundant slice can make
+    h264bsd finish a picture with macroblocks no slice decoded: they show what the frame buffer held, which with hold can
+    be another buffer's old contents, and the frames predicted from them differ too, up to the next IDR.
+  - Cost: one frame buffer more in PSRAM (589,828 B at 800x480), no internal RAM; per frame returned, a copy of
+    `changed_mb` (width x height / 256 bytes) into PSRAM; a picture decoded into the extra buffer may write macroblocks
+    that skip elision would have left in place, as that buffer holds an older picture.
 - The call rewrites the AU in place (it removes emulation-prevention bytes): pass writable RAM, never flash-mapped data, and
   decode each AU once.
 - `f.changed_mb` has one byte per 16x16 macroblock of the coded frame, `(width / 16) x (height / 16)`, row by row, valid
-  as long as `f.y`. 0 means the macroblock is bit-identical to the same macroblock in the previous `VJ_FRAME` this
+  as long as `f.y` (with hold, it lives in the frame's buffer, in PSRAM). 0 means the macroblock is bit-identical to the same macroblock in the previous `VJ_FRAME` this
   decoder returned, so a consumer that converted that frame can skip it; 1 means it may differ. Frames decoded in between
   but never returned (an error call, a dropped concealed picture) are accounted for. If you skip converting a `VJ_FRAME`,
   copy its map (it lives only until the next call) and OR it into the next frame's: the result is the change since the
@@ -207,7 +254,7 @@ What to know before enabling it:
     waiter that lands on the worker's core sleeps a tick instead of spinning (1 ms at `CONFIG_FREERTOS_HZ=1000`, the bench's;
     10 ms at IDF's default 100; with `CONFIG_VJ_PIE` a task that calls `vj_decode_au` is pinned at its first PIE
     instruction anyway).
-  - **Budget:** **95,833 B** internal, against 99,550 B without the pipeline (section 3): the heap is 5.4 KB lower because the
+  - **Budget:** **95,445 B** internal, against 99,166 B without the pipeline (section 3): the heap is 5.4 KB lower because the
     18,000 B of deblock records move to PSRAM, even though the ring (6 x 2,112 B), the neighbour shadow (1,275 B) and a 3 KB
     worker stack (against 2 KB) are added; the code is 1.7 KB of IRAM larger. The worker's stack high water with the parser
     is 1,132 B on every bench stream (and 4 KB are reserved with `CONFIG_VJ_ERROR_PRINT`, which prints from the worker).
@@ -217,7 +264,7 @@ What to know before enabling it:
   - **Sleeps:** the worker sleeps when a long record (a skip run of a hundred macroblocks) keeps the ring full for 200 us:
     on the bench 0.1 to 3 times per frame (9 on test_640x360), each with one wake and no effect on the frame rate.
 - `CONFIG_VJ_WORKER_CORE` (-1, 0 or 1; default -1 = the core other than the creating task's): the worker's core.
-- `CONFIG_VJ_IRAM` (default y): run the decoder from internal RAM (hot code + tables: 49,455 + 7,695 B without the pipeline,
+- `CONFIG_VJ_IRAM` (default y): run the decoder from internal RAM (hot code + tables: 49,071 + 7,695 B without the pipeline,
   section 4).
 - `CONFIG_VJ_PIE` (default y, ESP32-S3 only): motion compensation, residual write-out and the 4x4 inverse transform in PIE SIMD assembly (MC for 8 and 16 wide partitions),
   bit-exact with the C kernels (which every other case and the host build use). About 3 KB of IRAM.
