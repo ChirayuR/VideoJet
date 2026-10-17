@@ -195,3 +195,33 @@ Every change made for VideoJet is listed here, newest last.
       non-reference frame. IRAM went down by 388 B (bench configuration).
     - `host/test_hold.c` decodes every stream (clean, one NAL per call, damaged, across picture-size changes) with hold off
       and on in lockstep and checks the held frame after every call; it runs in `make check`, `check-asan`, `check-tsan`.
+  - Skip-run path (`h264bsd_slice_data.c`, `h264bsd_macroblock_layer.c/h`, `h264bsd_inter_prediction.c/h`,
+    `h264bsd_deblocking.c/h`, `h264bsd_storage.c`, `h264bsd_conceal.c`, `src/vj_alloc.c/h`). A skipped MB whose motion
+    vector the P_Skip rule makes 0 without a median (its left or upper neighbour is unavailable, or is a skip of the same
+    slice with MV 0) is decoded by `DecodeSkipRun`: the lazy `decoded` clear and `SetMbParams`, the P_Skip fields, the
+    skip elision or direct copy and the deblock record, with the generic loop's results. The MBs of a run before its last
+    go through it in one loop, without the generic loop's head and tail (they fetch and consume no record and the next
+    address is + 1); the first and last MB of a run go through it one at a time inside the generic iteration (not
+    retried for an MB the run loop just stopped at). It stops at an MB the generic loop would fail on (decoded already)
+    and leaves it to the generic path; one slice group, primary P slices, reference 0 present. It mirrors four generic
+    sites, each marked "mirrored in DecodeSkipRun": `SetMbParams`, the P_Skip path of `h264bsdDecodeMacroblock` with the
+    stores of `MvPrediction16x16`, the elision/copy decision of `h264bsdInterPrediction`, and the loop's record and row
+    posting.
+    - `mbStorage_t` is reordered: what such an MB writes or its neighbours look up comes first (`mbType`, `sliceId`,
+      `decoded`, `refAddr`, then `qpY`, `disableDeblockingFilterIdc`, `filterOffsetA/B`, `chromaQpIndexOffset` and
+      `refPic` narrowed to 8 bits, which hold every value they get: qp 0..51, idc 0..2, offsets -12..12, refIdx 0..15, all
+      checked when parsed; then `mbA`..`mbD`). The struct is `aligned(64)`, 192 B on the S3 (216 before), `mv` stays
+      4-aligned, and `mb[]` comes from `vj_alloc_aligned64`, so those fields are one cache line per MB.
+    - `vjZero`: the MB is a zero-MV P_Skip and its `totalCoeff`, `refPic` and `mv` are all 0. `h264bsdDecodeMacroblock`
+      (whose call tree and the skip-run path are the only writers of those fields) and `ConcealMb` (which makes the MB
+      intra) clear it, the P_Skip branch of `h264bsdInterPrediction` sets it again for MV 0 and refIdx 0, and the skip-run
+      path writes the three only when it is clear. An MB that was such a skip in the picture before is then decoded
+      touching its first line only.
+    - `h264bsdDeblockRecord`'s P_Skip branch is `h264bsdDeblockRecordSkip` (the generic record calls it for a P_Skip just
+      decoded, the skip-run path directly): it tests the MB edges with `SkipEdgeBs` (the edge test for a skip's uniform
+      mv and reference, as before) and reads neither a zero-MV skip's own mv nor a zero-MV skip neighbour's totalCoeff
+      and mvs (all 0): on such an edge only the references and the MB's mv can differ. `ASSERT`s
+      (`h264bsdZeroSkipFields`) check the claim.
+    - `h264bsdCopyMb`, the direct copy, is shared by both paths: word loads and stores when the source is word-aligned
+      (x a multiple of 8, `ASSERT`ed), else the old `memcpy` rows.
+    - `host/fz.c` hashes the storage fields by value, so storage hashes stay comparable with trees before the narrowing.

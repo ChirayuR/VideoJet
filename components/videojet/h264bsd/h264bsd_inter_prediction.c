@@ -394,8 +394,16 @@ u32 h264bsdInterPrediction(mbStorage_t *pMb, macroblockLayer_t *pMbLayer,
             if (MvPrediction16x16(pMb, &pMbLayer->mbPred, dpb) != HANTRO_OK)
                 return(HANTRO_NOK);
             VJP_END(VJP_MVPRED); }
+            /* a skip's totalCoeff is 0 (h264bsdDecodeMacroblock), its 16
+             * mvs and 4 refPics one value: with MV 0 and refIdx 0 all three
+             * hold what the skip-run path would write */
+            pMb->vjZero = pMb->mbType == P_Skip && !pMb->refPic[0] &&
+                !pMb->mv[0].hor && !pMb->mv[0].ver;
+            ASSERT(!pMb->vjZero || h264bsdZeroSkipFields(pMb));
             refImage.data = pMb->refAddr[0];
-            /* skip elision. First write of a pure copy (MV (0,0), no
+            /* (this decision, for P_Skip and mv 0, is mirrored in
+             * DecodeSkipRun, h264bsd_slice_data.c: change both)
+             * skip elision. First write of a pure copy (MV (0,0), no
              * residual) of the reference R = list[refPic[0]], whose data is
              * refAddr[0]. If the MB is unchanged since R's picture it stays
              * unchanged in this one; if it is also unchanged since the
@@ -429,26 +437,8 @@ u32 h264bsdInterPrediction(mbStorage_t *pMb, macroblockLayer_t *pMbLayer,
                 if (xInt >= 0 && yInt >= 0 && (u32)xInt + 16 <= width &&
                     (u32)yInt + 16 <= height)
                 {
-                    u32 cw = width >> 1;
-                    const u8 *rl = refImage.data +
-                        (u32)yInt * width + (u32)xInt;
-                    const u8 *rcb = refImage.data + width * height +
-                        (u32)(yInt >> 1) * cw + (u32)(xInt >> 1);
-                    const u8 *rcr = rcb + width * height / 4;
-                    u8 *dl = currImage->luma;
-                    u8 *dcb = currImage->cb;
-                    u8 *dcr = currImage->cr;
-
-                    { VJP_BEGIN(VJP_COPY);
-                    for (i = 0; i < 16; i++, rl += width, dl += width)
-                        memcpy(dl, rl, 16);
-                    for (i = 0; i < 8; i++, rcb += cw, rcr += cw, dcb += cw,
-                        dcr += cw)
-                    {
-                        memcpy(dcb, rcb, 8);
-                        memcpy(dcr, rcr, 8);
-                    }
-                    VJP_END(VJP_COPY); }
+                    h264bsdCopyMb(currImage, refImage.data, (u32)xInt,
+                        (u32)yInt);
                     return HANTRO_OK;
                 }
             }
@@ -553,6 +543,74 @@ u32 h264bsdInterPrediction(mbStorage_t *pMb, macroblockLayer_t *pMbLayer,
 
 /*------------------------------------------------------------------------------
 
+    Function: h264bsdCopyMb
+
+        Functional description:
+          The direct skip copy (VideoJet): the macroblock at the image's
+          macroblock pointers (h264bsdSetCurrImageMbPointers) takes the 16x16
+          luma block at (x, y) of the reference picture data ref, which lies
+          inside the picture, and the co-located chroma blocks (x and y even).
+          With x a multiple of 8 every source row is word-aligned (picture
+          data is 16-aligned, rows are multiples of 16), as the destination
+          rows always are: word copies, as h264bsdWriteMacroblock does.
+
+------------------------------------------------------------------------------*/
+
+void h264bsdCopyMb(image_t *image, const u8 *ref, u32 x, u32 y)
+{
+    u32 i;
+    u32 width = 16 * image->width;
+    u32 height = 16 * image->height;
+    u32 cw = width >> 1;
+    const u8 *rl = ref + y * width + x;
+    const u8 *rcb = ref + width * height + (y >> 1) * cw + (x >> 1);
+    const u8 *rcr = rcb + width * height / 4;
+    u8 *dl = image->luma;
+    u8 *dcb = image->cb;
+    u8 *dcr = image->cr;
+
+    { VJP_BEGIN(VJP_COPY);
+    if (!(x & 7))
+    {
+        ASSERT(!(((uintptr_t)rl | (uintptr_t)dl | (uintptr_t)rcb |
+            (uintptr_t)rcr | (uintptr_t)dcb | (uintptr_t)dcr) & 3));
+        for (i = 0; i < 16; i++, rl += width, dl += width)
+        {
+            const u32 *s = (const u32 *)rl;
+            u32 *d = (u32 *)dl;
+            u32 t0 = s[0], t1 = s[1], t2 = s[2], t3 = s[3];
+
+            d[0] = t0;
+            d[1] = t1;
+            d[2] = t2;
+            d[3] = t3;
+        }
+        for (i = 0; i < 8; i++, rcb += cw, rcr += cw, dcb += cw, dcr += cw)
+        {
+            u32 t0 = ((const u32 *)rcb)[0], t1 = ((const u32 *)rcb)[1];
+            u32 t2 = ((const u32 *)rcr)[0], t3 = ((const u32 *)rcr)[1];
+
+            ((u32 *)dcb)[0] = t0;
+            ((u32 *)dcb)[1] = t1;
+            ((u32 *)dcr)[0] = t2;
+            ((u32 *)dcr)[1] = t3;
+        }
+    }
+    else
+    {
+        for (i = 0; i < 16; i++, rl += width, dl += width)
+            memcpy(dl, rl, 16);
+        for (i = 0; i < 8; i++, rcb += cw, rcr += cw, dcb += cw, dcr += cw)
+        {
+            memcpy(dcb, rcb, 8);
+            memcpy(dcr, rcr, 8);
+        }
+    }
+    VJP_END(VJP_COPY); }
+}
+
+/*------------------------------------------------------------------------------
+
     Function: MvPrediction16x16
 
         Functional description:
@@ -617,6 +675,7 @@ u32 MvPrediction16x16(mbStorage_t *pMb, mbPred_t *mbPred, dpbStorage_t *dpb)
     if (tmp == NULL)
         return(HANTRO_NOK);
 
+    /* for a skip with mv 0, mirrored in DecodeSkipRun (h264bsd_slice_data.c) */
     pMb->mv[0] = pMb->mv[1] = pMb->mv[2] = pMb->mv[3] =
     pMb->mv[4] = pMb->mv[5] = pMb->mv[6] = pMb->mv[7] =
     pMb->mv[8] = pMb->mv[9] = pMb->mv[10] = pMb->mv[11] =

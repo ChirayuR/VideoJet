@@ -21,9 +21,16 @@ static uint64_t fnv(const uint8_t *p, size_t n, uint64_t h)
 }
 
 #ifdef VJ_FZ_STORAGE
+/* a field's value as 4 little-endian bytes, whatever its width in mbStorage_t (they narrowed for the skip-run path) */
+static uint64_t fnv32(uint32_t v, uint64_t h)
+{
+    return fnv((const uint8_t *)&v, 4, h);
+}
+
 /* FNV-1a over every observable field of mb[] and the slice / picture counters, after every call: the differential then
  * compares the decoder's whole storage state, not only what it outputs. It needs only the private headers, so it also
- * builds against an older tree (the base decoder of a differential): copy this file there. */
+ * builds against an older tree (the base decoder of a differential): copy this file there. Fields are hashed by value
+ * (fnv32), so the hash does not depend on the field widths; vjZero, a cache of the other fields, is left out. */
 static uint64_t storage_hash(vj_decoder_t *dec)
 {
     storage_t *st = (storage_t *)(void *)dec;
@@ -39,22 +46,23 @@ static uint64_t storage_hash(vj_decoder_t *dec)
         return h;
     for (unsigned i = 0; i < st->picSizeInMbs; i++) {
         const mbStorage_t *m = st->mb + i;
-        h = fnv((const uint8_t *)&m->mbType, sizeof m->mbType, h);
-        h = fnv((const uint8_t *)&m->sliceId, 4, h);
-        h = fnv((const uint8_t *)&m->disableDeblockingFilterIdc, 4, h);
-        h = fnv((const uint8_t *)&m->filterOffsetA, 4, h);
-        h = fnv((const uint8_t *)&m->filterOffsetB, 4, h);
-        h = fnv((const uint8_t *)&m->qpY, 4, h);
-        h = fnv((const uint8_t *)&m->chromaQpIndexOffset, 4, h);
+        h = fnv32((uint32_t)m->mbType, h);
+        h = fnv32(m->sliceId, h);
+        h = fnv32(m->disableDeblockingFilterIdc, h);
+        h = fnv32((uint32_t)(int32_t)m->filterOffsetA, h);
+        h = fnv32((uint32_t)(int32_t)m->filterOffsetB, h);
+        h = fnv32(m->qpY, h);
+        h = fnv32((uint32_t)(int32_t)m->chromaQpIndexOffset, h);
         h = fnv((const uint8_t *)m->totalCoeff, sizeof m->totalCoeff, h);
         h = fnv(m->intra4x4PredMode, 16, h);
-        h = fnv((const uint8_t *)m->refPic, sizeof m->refPic, h);
+        for (int k = 0; k < 4; k++)
+            h = fnv32(m->refPic[k], h);
         for (int k = 0; k < 4; k++) {
             uint8_t z = m->refAddr[k] != NULL; /* the address itself differs between runs */
             h = fnv(&z, 1, h);
         }
         h = fnv((const uint8_t *)m->mv, sizeof m->mv, h);
-        h = fnv((const uint8_t *)&m->decoded, 4, h);
+        h = fnv32(m->decoded, h);
     }
     return h;
 }

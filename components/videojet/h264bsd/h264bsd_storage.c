@@ -51,6 +51,13 @@
 #include "h264bsd_nal_unit.h"
 #include "h264bsd_slice_header.h"
 #include "h264bsd_seq_param_set.h"
+#include <stddef.h>
+
+#ifdef ESP_PLATFORM
+/* the skip-run path touches only the fields before totalCoeff: on the S3 they share the macroblock's first cache line */
+_Static_assert(offsetof(mbStorage_t, totalCoeff) <= 64 && sizeof(mbStorage_t) == 192,
+    "mbStorage_t: skip fields in the first line, 3 lines");
+#endif
 
 /*------------------------------------------------------------------------------
     2. External compiler flags
@@ -347,7 +354,9 @@ u32 h264bsdActivateParamSets(storage_t *pStorage, u32 ppsId, u32 isIdr)
         FREE(pStorage->sliceGroupMap);
         FREE(pStorage->vjNbr);
 
-        ALLOCATE(pStorage->mb, pStorage->picSizeInMbs, mbStorage_t);
+        /* one cache line holds the fields a skipped MB writes (h264bsd_macroblock_layer.h) */
+        pStorage->mb = vj_alloc_aligned64(
+            pStorage->picSizeInMbs * sizeof(mbStorage_t));
 #ifdef VJ_PARSE_PIPELINE
         /* the parser's shadow of the neighbours' totalCoeff, one entry per MB of a row and one more */
         pStorage->vjNbr = vj_alloc_internal(

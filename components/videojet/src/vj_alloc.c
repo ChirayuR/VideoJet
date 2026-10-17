@@ -47,3 +47,15 @@ void *vj_alloc_aligned16(size_t n)
     return posix_memalign(&p, 16, n) ? NULL : p;
 #endif
 }
+
+void *vj_alloc_aligned64(size_t n)
+{
+#ifdef ESP_PLATFORM
+    uint32_t first = (n > VJ_INTERNAL_MAX ? MALLOC_CAP_SPIRAM : MALLOC_CAP_INTERNAL) | MALLOC_CAP_DEFAULT;
+    void *p = heap_caps_aligned_alloc(64, n, first);
+    return p ? p : heap_caps_aligned_alloc(64, n, MALLOC_CAP_DEFAULT);
+#else
+    void *p;
+    return posix_memalign(&p, 64, n) ? NULL : p;
+#endif
+}

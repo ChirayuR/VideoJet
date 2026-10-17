@@ -5,7 +5,8 @@
  * h264bsd_macroblock_layer.c under H264DEC_OMXDL is dead code: no build defines that.
  * Inside INTER: MVPRED (motion-vector prediction), COPY (the direct skip copy), MC (h264bsdPredictSamples), WRITE
  * (h264bsdWriteOutputBlocks / h264bsdWriteMacroblock). Inside MC: CHROMA and LUMA + the quarter-sample position
- * 4 * xFrac + yFrac (0 = full-sample copy), via VJP_END_AT. */
+ * 4 * xFrac + yFrac (0 = full-sample copy), via VJP_END_AT. The skip-run path (DecodeSkipRun) counts in RECON, all of
+ * it (its deblock records too), and its copies in COPY, outside INTER. */
 #ifdef ESP_PLATFORM
 #include "sdkconfig.h"
 #endif

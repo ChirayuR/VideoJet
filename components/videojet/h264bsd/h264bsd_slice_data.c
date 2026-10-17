@@ -40,6 +40,7 @@
 #include "h264bsd_slice_data.h"
 #include "h264bsd_util.h"
 #include "h264bsd_vlc.h"
+#include "h264bsd_inter_prediction.h"
 #include "vj_prof.h"
 
 #if defined(VJ_PARSE_PIPELINE) && !defined(VJ_DEBLOCK_WORKER)
@@ -629,6 +630,127 @@ static void ParseEnd(vjParse_t *p)
 
 /*------------------------------------------------------------------------------
 
+   5.0c Function name: DecodeSkipRun
+
+        Functional description:
+            The skip-run path (VideoJet). Decodes the skipped macroblocks
+            addr, addr + 1, ... (at most n) of a skip run for as long as the
+            P_Skip rule gives motion vector 0 without a median: the left or
+            the upper neighbour is unavailable (another slice, the picture
+            edge) or is a zero-MV skip of this slice (vjZero). Each gets
+            exactly what the generic loop gives it: the lazy decoded clear and
+            SetMbParams, h264bsdDecodeMacroblock for P_Skip (mv 0, refIdx 0,
+            reference ref, then the skip elision or the direct copy), the
+            deblock record and its row posting. totalCoeff, refPic and mv are
+            written only when vjZero says they do not hold those zeros
+            already, so a macroblock that was such a skip in the picture
+            before costs one cache line. Stops at the first macroblock that
+            does not qualify, or that the generic loop would fail on (decoded
+            already), and leaves it to the generic path.
+            The caller runs the rest of the loop. n > 1: the MBs of a run
+            before its last, for which the rest does nothing (no record is
+            fetched or consumed, and the next address is addr + 1, inside the
+            picture: the parser checked that the run fits). n = 1: one MB
+            inside the generic iteration, after its head (SetMbParams again
+            writes the same values) and before its tail. The caller checks:
+            one slice group, a primary slice, ref is
+            h264bsdGetRefPicData(dpb, 0) and not NULL.
+
+        Returns:
+            the number of macroblocks decoded
+
+------------------------------------------------------------------------------*/
+
+static u32 DecodeSkipRun(storage_t *pStorage, image_t *currImage,
+    const sliceHeader_t *pSliceHeader, u8 *ref, u32 addr, u32 n, u32 qpY)
+{
+    dpbStorage_t *dpb = pStorage->dpb;
+    u32 sliceId = pStorage->slice->sliceId;
+    u32 base = pStorage->picSliceBase;
+    u32 refIdx = dpb->list[0]->vjFrameIdx;
+    u32 curIdx = dpb->currentOut->vjFrameIdx;
+    u32 idc = pSliceHeader->disableDeblockingFilterIdc;
+    i32 offA = pSliceHeader->sliceAlphaC0Offset;
+    i32 offB = pSliceHeader->sliceBetaOffset;
+    i32 chromaQpOff = pStorage->activePps->chromaQpIndexOffset;
+    mbStorage_t *mb = pStorage->mb + addr;
+    u32 i;
+
+    for (i = 0; i < n; i++, addr++, mb++)
+    {
+        mbStorage_t *a = mb->mbA, *b = mb->mbB;
+        u32 last;
+
+        /* touched in this picture and decoded: the generic loop fails */
+        if (mb->sliceId >= base && mb->decoded)
+            break;
+        /* a neighbour available and a zero-MV skip, or one unavailable */
+        if (a && a->sliceId == sliceId && !a->vjZero &&
+            b && b->sliceId == sliceId && !b->vjZero)
+            break;
+        ASSERT(!mb->vjZero || h264bsdZeroSkipFields(mb));
+        ASSERT(!a || a->sliceId != sliceId || !a->vjZero ||
+            (a->mbType == P_Skip && h264bsdZeroSkipFields(a)));
+        ASSERT(!b || b->sliceId != sliceId || !b->vjZero ||
+            (b->mbType == P_Skip && h264bsdZeroSkipFields(b)));
+
+        /* SetMbParams (mirrors it) */
+        mb->sliceId = sliceId;
+        mb->disableDeblockingFilterIdc = (u8)idc;
+        mb->filterOffsetA = (i8)offA;
+        mb->filterOffsetB = (i8)offB;
+        mb->chromaQpIndexOffset = (i8)chromaQpOff;
+        /* mirrors h264bsdDecodeMacroblock's P_Skip path and the stores of
+         * MvPrediction16x16; decoded was 0 (cleared lazily or not) */
+        mb->mbType = P_Skip;
+        mb->decoded = 1;
+        mb->qpY = (u8)qpY;
+        mb->refAddr[0] = mb->refAddr[1] = mb->refAddr[2] = mb->refAddr[3] =
+            ref;
+        if (!mb->vjZero)
+        {
+            memset(mb->totalCoeff, 0, sizeof(mb->totalCoeff));
+            memset(mb->refPic, 0, sizeof(mb->refPic));
+            memset(mb->mv, 0, sizeof(mb->mv));
+            mb->vjZero = 1;
+        }
+
+        /* mirrors h264bsdInterPrediction's skip elision, else the direct
+         * copy */
+        last = dpb->vjLastChanged[addr];
+        if (last <= refIdx)
+            dpb->vjChanged[addr] = 0;
+        if (last > refIdx || last > curIdx)
+        {
+            u32 width = currImage->width;
+
+            h264bsdSetCurrImageMbPointers(currImage, addr);
+            h264bsdCopyMb(currImage, ref, addr % width * 16,
+                addr / width * 16);
+        }
+
+        /* mirrors the generic loop's deblock record and row posting */
+        if (addr == pStorage->vjRecNext)
+        {
+            h264bsdDeblockRecordSkip(mb, pStorage->vjRec + addr, base);
+            pStorage->vjRecNext++;
+#ifdef VJ_DEBLOCK_WORKER
+            if (pStorage->vjRecNext == pStorage->vjDbwRowEnd)
+                pStorage->vjDbwRowEnd = h264bsdDbwRowEnd(pStorage->vjDbw);
+#endif
+        }
+        else
+            pStorage->vjRecNext = VJ_REC_OFF;
+    }
+
+    /* the image's macroblock pointers end where the generic loop leaves them */
+    if (i)
+        h264bsdSetCurrImageMbPointers(currImage, addr - 1);
+    return i;
+}
+
+/*------------------------------------------------------------------------------
+
    5.1  Function name: h264bsdDecodeSliceData
 
         Functional description:
@@ -674,6 +796,8 @@ static u32 DecodeSliceLoop(strmData_t *pStrmData, storage_t *pStorage,
     vjParse_t *parse;
     vjSlot_t *slot;
     macroblockLayer_t *mbLayer;
+    u8 *skipRef;
+    u32 fast, runStop;
 
 /* Code */
 
@@ -728,8 +852,33 @@ static u32 DecodeSliceLoop(strmData_t *pStrmData, storage_t *pStorage,
     /* initial quantization parameter for the slice is obtained as the sum of
      * initial QP for the picture and sliceQpDelta for the current slice */
     qpY = (i32)pStorage->activePps->picInitQp + pSliceHeader->sliceQpDelta;
+    /* the skip-run path's slices: P, one slice group, primary, reference 0
+     * present (without it every skipped MB fails in the generic path) */
+    skipRef = (IS_P_SLICE(pSliceHeader->sliceType) &&
+        pStorage->activePps->numSliceGroups == 1 &&
+        !pSliceHeader->redundantPicCnt) ?
+        h264bsdGetRefPicData(pStorage->dpb, 0) : NULL;
     do
     {
+        /* inside a skip run, before its last MB: as many MBs as the skip-run
+         * path takes, then this iteration does the next one. If it stopped
+         * before the run's last MB, that one does not qualify: the one-MB
+         * try below would fail the same way */
+        runStop = 0;
+        if (skipLeft > 1 && skipRef)
+        {
+            u32 n;
+
+            { VJP_BEGIN(VJP_RECON);
+            n = DecodeSkipRun(pStorage, currImage, pSliceHeader, skipRef,
+                currMbAddr, skipLeft - 1, (u32)qpY);
+            VJP_END(VJP_RECON); }
+            runStop = n < skipLeft - 1;
+            currMbAddr += n;
+            skipLeft -= n;
+            mbCount += n;
+        }
+
         /* first touch of this MB in the picture (its sliceId is older): drop
          * an older picture's decoded count, the per-picture clear done
          * lazily. SetMbParams and decoded++ write both lines anyway. */
@@ -766,10 +915,17 @@ static u32 DecodeSliceLoop(strmData_t *pStrmData, storage_t *pStorage,
             skipLeft--;
         }
 
+        /* a skipped MB (the first or the last of its run, or one the run
+         * path left) goes to the skip-run path alone if its motion vector is
+         * 0 there; it makes the deblock record too */
         { VJP_BEGIN(VJP_RECON);
-        tmp = h264bsdDecodeMacroblock(pStorage->mb + currMbAddr, mbLayer,
-            currImage, pStorage->dpb, &qpY, currMbAddr,
-            pStorage->activePps->constrainedIntraPredFlag, data);
+        fast = (slot->kind == VJ_REC_SKIPRUN && skipRef && !runStop) ?
+            DecodeSkipRun(pStorage, currImage, pSliceHeader, skipRef,
+                currMbAddr, 1, (u32)qpY) : 0;
+        tmp = fast ? HANTRO_OK :
+            h264bsdDecodeMacroblock(pStorage->mb + currMbAddr, mbLayer,
+                currImage, pStorage->dpb, &qpY, currMbAddr,
+                pStorage->activePps->constrainedIntraPredFlag, data);
         VJP_END(VJP_RECON); }
         if (tmp != HANTRO_OK)
         {
@@ -781,8 +937,13 @@ static u32 DecodeSliceLoop(strmData_t *pStrmData, storage_t *pStorage,
          * neighbours' storage is in cache. While the picture's MBs come
          * once each in raster order those neighbours are final and nothing
          * rewrites them or this MB before the deblock pass; the first MB
-         * out of that order turns the picture's records off */
-        if (currMbAddr == pStorage->vjRecNext)
+         * out of that order turns the picture's records off. Mirrored in
+         * DecodeSkipRun: change both */
+        if (fast)
+        {
+            /* made by DecodeSkipRun */
+        }
+        else if (currMbAddr == pStorage->vjRecNext)
         {
             h264bsdDeblockRecord(pStorage->mb + currMbAddr,
                 pStorage->vjRec + currMbAddr, pStorage->picSliceBase, 1);
@@ -860,7 +1021,8 @@ u32 h264bsdDecodeSliceData(strmData_t *pStrmData, storage_t *pStorage,
    5.2  Function: SetMbParams
 
         Functional description:
-            Set macroblock parameters that remain constant for this slice
+            Set macroblock parameters that remain constant for this slice.
+            Mirrored in DecodeSkipRun (VideoJet): change both.
 
         Inputs:
             pSlice      pointer to current slice header

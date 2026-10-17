@@ -69,6 +69,8 @@ typedef struct dbw dbw_t;
 
 void h264bsdDeblockRecord(mbStorage_t *mb, deblockRec_t *rec,
   u32 picSliceBase, u32 justDecoded);
+void h264bsdDeblockRecordSkip(mbStorage_t *mb, deblockRec_t *rec,
+  u32 picSliceBase);
 
 void h264bsdFilterPicture(
   image_t *image,

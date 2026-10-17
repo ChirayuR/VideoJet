@@ -558,6 +558,97 @@ u32 EdgeBoundaryStrengthLeft(mbStorage_t *mb1, mbStorage_t *mb2)
 }
 #endif /* H264DEC_OMXDL */
 #ifndef H264DEC_OMXDL
+/* EdgeBoundaryStrength(mb1, mb2, ind1, ind2) for a P_Skip mb1 just decoded:
+ * totalCoeff 0, every refAddr ref and every mv (hor, ver) */
+static u32 SkipEdgeBs(const u8 *ref, i32 hor, i32 ver, const mbStorage_t *mb2,
+  u32 ind2)
+{
+    if (mb2->totalCoeff[ind2])
+        return 2;
+    return (ref != mb2->refAddr[ind2 >> 2]) ||
+        ((u32)ABS(hor - mb2->mv[ind2].hor) >= 4) ||
+        ((u32)ABS(ver - mb2->mv[ind2].ver) >= 4);
+}
+
+/*------------------------------------------------------------------------------
+
+    Function: h264bsdDeblockRecordSkip
+
+        Functional description:
+          h264bsdDeblockRecord(mb, rec, picSliceBase, 1) for a P_Skip just
+          decoded: totalCoeff is all 0 and the 16 mvs and 4 refAddrs are one
+          value, so the inner edges are bS 0 and only the MB edges need a
+          look, with the same tests as GetBoundaryStrengths (SkipEdgeBs). Not
+          for storage of unknown history (a failed decode leaves stale mvs).
+          A zero-MV skip's (vjZero) mv is 0 unread, and so are a zero-MV skip
+          neighbour's totalCoeff and mvs: on that edge only the references
+          and this MB's mv can differ. The skip-run path calls it directly
+          and then reads the first cache lines alone.
+
+------------------------------------------------------------------------------*/
+void h264bsdDeblockRecordSkip(mbStorage_t *mb, deblockRec_t *rec,
+  u32 picSliceBase)
+{
+    u32 flags = GetMbFilteringFlags(mb, picSliceBase);
+    u32 top = 0, left = 0;
+
+    ASSERT(mb->mbType == P_Skip);
+    if (flags)
+    {
+        const u8 *ref = mb->refAddr[0];
+        i32 hor = 0, ver = 0;
+        u32 far;
+
+        ASSERT(!mb->vjZero || h264bsdZeroSkipFields(mb));
+        if (!mb->vjZero)
+        {
+            hor = mb->mv[0].hor;
+            ver = mb->mv[0].ver;
+        }
+        far = ((u32)ABS(hor) >= 4) || ((u32)ABS(ver) >= 4);
+        if (flags & FILTER_TOP_EDGE)
+        {
+            mbStorage_t *b = mb->mbB;
+
+            ASSERT(!b->vjZero || h264bsdZeroSkipFields(b));
+            if (IS_INTRA_MB(*b))
+                top = 0xFF;
+            else if (b->vjZero) /* blocks 10 11 use refAddr[2], 14 15 [3] */
+                top = ((far || ref != b->refAddr[2]) ? 0x05U : 0) |
+                    ((far || ref != b->refAddr[3]) ? 0x50U : 0);
+            else
+                top = SkipEdgeBs(ref, hor, ver, b, 10) |
+                    (SkipEdgeBs(ref, hor, ver, b, 11) << 2) |
+                    (SkipEdgeBs(ref, hor, ver, b, 14) << 4) |
+                    (SkipEdgeBs(ref, hor, ver, b, 15) << 6);
+        }
+        if (flags & FILTER_LEFT_EDGE)
+        {
+            mbStorage_t *a = mb->mbA;
+
+            ASSERT(!a->vjZero || h264bsdZeroSkipFields(a));
+            if (IS_INTRA_MB(*a))
+                left = (3 << 0) | (3 << 8) | (3 << 16) | (3 << 24);
+            else if (a->vjZero) /* blocks 5 7 use refAddr[1], 13 15 [3] */
+                left = ((far || ref != a->refAddr[1]) ? 0x00000101U : 0) |
+                    ((far || ref != a->refAddr[3]) ? 0x01010000U : 0);
+            else
+                left = SkipEdgeBs(ref, hor, ver, a, 5) |
+                    (SkipEdgeBs(ref, hor, ver, a, 7) << 8) |
+                    (SkipEdgeBs(ref, hor, ver, a, 13) << 16) |
+                    (SkipEdgeBs(ref, hor, ver, a, 15) << 24);
+        }
+    }
+
+    rec->bs[0] = top;
+    rec->bs[1] = left;
+    rec->qp = (u8)mb->qpY;
+    rec->offA = (i8)mb->filterOffsetA;
+    rec->offB = (i8)mb->filterOffsetB;
+    rec->chromaQpOff = (i8)mb->chromaQpIndexOffset;
+
+}
+
 /*------------------------------------------------------------------------------
 
     Function: h264bsdDeblockRecord
@@ -586,42 +677,18 @@ void h264bsdDeblockRecord(mbStorage_t *mb, deblockRec_t *rec,
     ASSERT(mb);
     ASSERT(rec);
 
+    /* P_Skip just decoded (justDecoded) */
+    if (justDecoded && mb->mbType == P_Skip)
+    {
+        h264bsdDeblockRecordSkip(mb, rec, picSliceBase);
+        return;
+    }
+
     flags = GetMbFilteringFlags(mb, picSliceBase);
 
-    /* P_Skip just decoded (justDecoded): totalCoeff is all 0 and the 16 mvs
-     * and 4 refAddrs are one value, so the inner edges are bS 0 and only
-     * the MB edges need a look, with the same tests as GetBoundaryStrengths.
-     * Not for storage of unknown history (a failed decode leaves stale mvs) */
-    if (justDecoded && flags && mb->mbType == P_Skip)
-    {
-        if (flags & FILTER_TOP_EDGE)
-        {
-            mbStorage_t *b = mb->mbB;
-
-            if (IS_INTRA_MB(*b))
-                top = 0xFF;
-            else
-                top = EdgeBoundaryStrength(mb, b, 0, 10) |
-                    (EdgeBoundaryStrength(mb, b, 1, 11) << 2) |
-                    (EdgeBoundaryStrength(mb, b, 4, 14) << 4) |
-                    (EdgeBoundaryStrength(mb, b, 5, 15) << 6);
-        }
-        if (flags & FILTER_LEFT_EDGE)
-        {
-            mbStorage_t *a = mb->mbA;
-
-            if (IS_INTRA_MB(*a))
-                left = (3 << 0) | (3 << 8) | (3 << 16) | (3 << 24);
-            else
-                left = EdgeBoundaryStrength(mb, a, 0, 5) |
-                    (EdgeBoundaryStrength(mb, a, 2, 7) << 8) |
-                    (EdgeBoundaryStrength(mb, a, 8, 13) << 16) |
-                    (EdgeBoundaryStrength(mb, a, 10, 15) << 24);
-        }
-    }
     /* GetBoundaryStrengths function returns non-zero value if any of
      * the bS values for the macroblock being processed was non-zero */
-    else if (flags && GetBoundaryStrengths(mb, bS, flags))
+    if (flags && GetBoundaryStrengths(mb, bS, flags))
     {
         for (i = 16; i--;)
         {
