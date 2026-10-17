@@ -53,9 +53,11 @@ typedef enum {
     3. Data types
 ------------------------------------------------------------------------------*/
 
+/* VideoJet: mb holds a neighbourMb_e in a u8 (0..4, MB_NA 0xFF), so the tables (here and the sub-partition ones in
+ * h264bsd_inter_prediction.c) take 2 B an entry, not 8: 2,112 B less DRAM */
 typedef struct
 {
-    neighbourMb_e   mb;
+    u8             mb;
     u8             index;
 } neighbour_t;
 
