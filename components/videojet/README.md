@@ -62,27 +62,31 @@ buffer in PSRAM (section 3) and one copy of `changed_mb` into PSRAM per frame.
 ## 3. Requirements
 - PSRAM in the heap: `CONFIG_SPIRAM=y` with `CONFIG_SPIRAM_USE_MALLOC` (the default) or `CONFIG_SPIRAM_USE_CAPS_ALLOC`.
   `CONFIG_SPIRAM_USE_MEMMAP` leaves the library no PSRAM to allocate from, so the frames fail with `VJ_ERR_NOMEM`.
-- Memory at 800x480, measured on the board with the bench configuration (slow PSRAM class). Internal RAM is the library's
-  static part (`CONFIG_VJ_IRAM`, the default: hot code in IRAM, tables and the string literals that sit with them in DRAM,
-  from the linker map by `tools/ram_static.py`) plus the heap high-water mark of one decoder (`int_used` in the bench rows,
-  which includes the deblock worker task's stack), against the 100,000 B budget:
+- Memory at 800x480, measured on the board (slow PSRAM class). Internal RAM is the library's static part (`CONFIG_VJ_IRAM`,
+  the default: hot code in IRAM, tables and the string literals that sit with them in DRAM, from the linker map by
+  `tools/ram_static.py`) plus the heap high-water mark of one decoder (`int_used` in the bench rows, which includes the
+  deblock worker task's stack), against the 100,000 B budget:
 
   | configuration | static | heap | internal total | PSRAM |
   |---|---|---|---|---|
-  | `CONFIG_VJ_DEBLOCK_WORKER` (the library default is off; pipeline off) | 56,774 B | 42,392 B | **99,166 B** | 1,625,620 B |
-  | + `CONFIG_VJ_PARSE_PIPELINE` | 58,493 B | 36,952 B | **95,445 B** | 1,644,056 B |
+  | `CONFIG_VJ_DEBLOCK_WORKER` (the library default is off), pipeline off, autoload on | 57,249 B | 42,392 B | **99,641 B** | 1,585,940 B |
+  | the same, autoload off | 56,851 B | 42,392 B | **99,243 B** | 1,585,940 B |
+  | + `CONFIG_VJ_PARSE_PIPELINE`, autoload on (the bench default) | 59,027 B | 36,952 B | **95,979 B** | 1,604,376 B |
+  | no worker, autoload off | 53,707 B | 39,636 B | **93,343 B** | 1,467,660 B |
 
+  Static is from each configuration's linker map; heap and PSRAM are from the bench rows of the skip-run path's board runs
+  (2026-10-17, hold off). The autoload code allocates nothing, so the heap and PSRAM figures do not depend on it. The
+  skip-run path (`h264bsd/README.md`, Local changes) added 452 to 534 B of static code and took 39,680 B off PSRAM: the
+  per-macroblock state is now 192 B per MB (216 B before).
   The NAL extraction (`h264bsd_byte_stream`: one call per NAL, 645 B of code that runs from the I-cache) is mapped to flash
-  with the other once-per-NAL-or-less code (`linker.lf`), which took 325 B off both static figures (328 B in the image, alignment
-  included); the heap figures did not change. The DPB set-up and teardown, the decoder's shutdown and hold's own code
-  (`vj_decoder_set_hold`) went to flash too (once per SPS activation, reset or destroy; with hold, once per frame or
-  non-reference frame), which took 384 B (pipeline off) and 388 B (on) off the static figures. The heap and PSRAM figures
-  are from before hold, which changes no allocation while it is off (the decoder's storage grew by 12 B inside its heap
-  block); the hold board score re-measures them. The worker off was not remeasured since the worker tip (93,488 B). The PSRAM holds the frames (about
-  1.5 x width x height bytes each, refs + 1 of them, so 2 for a one-reference stream, refs + 2 with hold) and the
-  per-macroblock state (1500 MBs x 216 B). Each extra reference frame adds 589,828 B, and so does hold
-  (`vj_decoder_set_hold`), which costs no internal RAM. IDF's heap rounds every block up to its size class, so
-  the PSRAM figure is a little above the sum of the structure sizes. Internal RAM includes 17 B per macroblock:
+  with the other once-per-NAL-or-less code (`linker.lf`), which took 325 B off the static figures (328 B in the image,
+  alignment included). The DPB set-up and teardown, the decoder's shutdown and hold's own code (`vj_decoder_set_hold`) went
+  to flash too (once per SPS activation, reset or destroy; with hold, once per frame or non-reference frame), which took
+  384 B (pipeline off) and 388 B (on) off the static figures. The PSRAM holds the frames (about 1.5 x width x height bytes
+  each, refs + 1 of them, so 2 for a one-reference stream, refs + 2 with hold) and the per-macroblock state (1500 MBs x
+  192 B, 64-byte aligned). Each extra reference frame adds 589,828 B, and so does hold (`vj_decoder_set_hold`), which
+  costs no internal RAM. IDF's heap rounds every block up to its size class, so the PSRAM figure is a little above the
+  sum of the structure sizes. Internal RAM includes 17 B per macroblock:
   - 5 B for skip elision and `changed_mb` (7,500 B here; each of its two blocks moves to PSRAM above 16 KiB);
   - 12 B of deblock records (18,000 B here), which are internal first whatever their size, so they scale with resolution:
     about 43 KB at 720p and 98 KB at 1080p. With `CONFIG_VJ_PARSE_PIPELINE` they are PSRAM first instead (the ring needs
