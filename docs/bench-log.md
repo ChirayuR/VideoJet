@@ -389,6 +389,22 @@ are copied into `.superpowers/sdd/2026-10-10-videojet-m3-speed/baseline-t{3,6c}.
 | word-at-a-time NAL extraction, run from flash for the budget (R12) (1202574..db02b06; host/test_nal.c) | `m3-unescape` | 5 | 2173cead8 | 100.5256 / 33.6082 / 17.3268 | +0.18 / +2.69 / +2.14 | 36,952 |
 | skip-run fast path: a zero-MV skipped MB touches one cache line, 192 B storage per MB (95e0dac, docs 45926d6; merge f1e9b24) | `skip-m4-final` (`--set all`; Δ against `skip-m4-main` = main 0e6607f in the same session: 100.5144 / 33.6017 / 17.3279) | 5 | c8873b30d | 155.1966 / 36.2266 / 17.5392 | +54.40 / +7.81 / +1.22 | 36,952 |
 
+| CAVLC rewrite: the residual per MB, bit window in registers, levels from a table, `neighbour_t` in 2 bytes (363f64c, d2989b5, docs 2c0455a) | `heavy-c2-def` (`--set all`; Δ against `heavy-main-def` = main 2ea6242, tuning 5, an earlier boot: 155.19 / 36.22 / 17.54) | 5 | 7c572416a | 155.19 / 36.98 / 17.60 | -0.00 / +2.09 / +0.32 | 36,952 |
+
+The CAVLC rewrite, for the heaviest Android Auto frames (2026-10-17):
+- **What a heavy frame is** (top 10 % of `aa_cluster_heavy`): ~19 KB per AU, ~500 coded MBs with ~25,000 coefficients
+  (136 kbit of CAVLC), ~1,000 skips. On core 0 (bar configuration, profile build) the CAVLC residual parse was 37.9 % of
+  46.7 ms; inter 12.1, residual dequant + IDCT 4.1, intra 2.5 (10.2 ms on the I4x4-heavy maximum frame), the worker
+  wait 0.75 ms. CAVLC cost 613 cycles per 4x4 block.
+- **Bar configuration** (worker, autoload off, hold on), aa_cluster_heavy, every hash PASS: p95 44.85 -> 41.18 ms,
+  max 67.81 -> 59.16 ms, 53.18 -> 56.12 fps; every stream up in both timed configurations. Internal RAM -661 to -679 B.
+- **Equivalence:** host/test_cavlc.c keeps the original decoder as an oracle and runs 400,000 random residual streams
+  (biased bits, escape codes, buffers ending mid-block, stale bytes) for status, bits consumed and coefficients.
+- **Next levers, measured sizes:** intra I4x4 (~12 k cycles per I4x4 MB, ~-3 ms on the maximum frame), CAVLC in
+  assembly (~-8 to -10 ms on the maximum frame), and the IDR: 155 ms, 107 of them the whole I picture filtered after the
+  decode, because I slices post no rows to the worker. Branch history: `m3/heavy`; the measurement patch is
+  `meas-instr.patch` in that session's scratchpad (not kept).
+
 The skip-run fast path and the real Android Auto capture (2026-10-17):
 - **The capture:** `streams/heldout/aa_cluster_heavy` (gitignored: the user's map and route; never committed). 663 pictures,
   800x480 with the 640x172 UI box at (80,154), 1.1 Mbit/s, the map moving; recorded on the bar hardware

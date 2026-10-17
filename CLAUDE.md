@@ -158,6 +158,10 @@ h264bsd: Android's Hantro baseline decoder, Apache-2.0, plain C (github.com/onea
 - `$WORK/the consumer project` (CLAUDE.md, docs/) + its memory dir.
 
 ## Status
+- 2026-10-17 (night): **CAVLC rewrite merged** (m3/heavy: residual per MB, bit window in registers, table levels).
+  Heaviest AA frames in the bar's configuration: p95 44.8 -> 41.2 ms, max 67.8 -> 59.2 ms; every stream up. Next levers
+  in bench-log ("The CAVLC rewrite"): intra I4x4, CAVLC in asm, the 155 ms IDR (its deblock runs after the decode).
+  Pending: a search-set `tools/score.sh` record of the merge for `docs/baseline-m3.jsonl` (R8).
 - 2026-10-17 (evening): **skip-run fast path merged** (f1e9b24) and **`CONFIG_VJ_WORKER_PRIORITY`** (0e6607f).
   - First real Android Auto capture: held-out `aa_cluster_heavy` (gitignored, private). Bench-log "M3 frontier" has the numbers.
   - **Tip (slow class, bench default): 155.1966 / 36.2266 / 17.5392** (aux_card / aux_map / full_map); aa_cluster_heavy
