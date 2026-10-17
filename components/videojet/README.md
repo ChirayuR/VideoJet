@@ -69,13 +69,15 @@ buffer in PSRAM (section 3) and one copy of `changed_mb` into PSRAM per frame.
 
   | configuration | static | heap | internal total | PSRAM |
   |---|---|---|---|---|
-  | `CONFIG_VJ_DEBLOCK_WORKER` (the library default is off), pipeline off, autoload on | 57,249 B | 42,392 B | **99,641 B** | 1,585,940 B |
-  | the same, autoload off | 56,851 B | 42,392 B | **99,243 B** | 1,585,940 B |
-  | + `CONFIG_VJ_PARSE_PIPELINE`, autoload on (the bench default) | 59,027 B | 36,952 B | **95,979 B** | 1,604,376 B |
-  | no worker, autoload off | 53,707 B | 39,636 B | **93,343 B** | 1,467,660 B |
+  | `CONFIG_VJ_DEBLOCK_WORKER` (the library default is off), pipeline off, autoload on | 56,570 B | 42,392 B | **98,962 B** | 1,585,940 B |
+  | the same, autoload off | 56,172 B | 42,392 B | **98,564 B** | 1,585,940 B |
+  | + `CONFIG_VJ_PARSE_PIPELINE`, autoload on (the bench default) | 58,366 B | 36,952 B | **95,318 B** | 1,604,376 B |
+  | no worker, autoload off | 53,028 B | 39,636 B | **92,664 B** | 1,467,660 B |
 
   Static is from each configuration's linker map; heap and PSRAM are from the bench rows of the skip-run path's board runs
-  (2026-10-17, hold off). The autoload code allocates nothing, so the heap and PSRAM figures do not depend on it. The
+  (2026-10-17, hold off). The CAVLC rewrite (`h264bsd/README.md`, Local changes) made the static figures 661 to 679 B
+  smaller: its code and tables take 1,433 B more than the per-block decoder (bar configuration: 717 B IRAM, 716 B DRAM),
+  and the 2-byte `neighbour_t` frees 2,112 B of DRAM tables. The autoload code allocates nothing, so the heap and PSRAM figures do not depend on it. The
   skip-run path (`h264bsd/README.md`, Local changes) added 452 to 534 B of static code and took 39,680 B off PSRAM: the
   per-macroblock state is now 192 B per MB (216 B before).
   The NAL extraction (`h264bsd_byte_stream`: one call per NAL, 645 B of code that runs from the I-cache) is mapped to flash
