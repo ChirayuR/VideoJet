@@ -194,7 +194,10 @@ h264bsd: Android's Hantro baseline decoder, Apache-2.0, plain C (github.com/onea
       becomes `docs/baseline-m3.jsonl` (R8).
   - Board facts (measure-report): a PSRAM line fill costs 172 cycles (0.72 µs), and a dirtied line ~307. The two cores share
     one fill engine. `EXTMEM_DBUS_ACS_SPIRAM_MISS_CNT` counts D-cache misses. Autoload traps: a region ending at 0x3E000000
-    panics, and IDF flash operations clear the enable bit.
+    panics, and IDF flash operations clear the enable bit. **With WiFi DMA into PSRAM** (a consumer's
+    `SPIRAM_TRY_ALLOCATE_WIFI_LWIP`) `VJ_DCACHE_AUTOLOAD` hangs the bus about 1 s into a live stream: interrupt-WDT system
+    reset (`TG1WDT_SYS_RST`, PC at the first stack store of `xt_highint4`), no panic text. 6 of 6 bar sessions with it,
+    none without (2026-10-17). Consumers with WiFi keep it off; the bench (no WiFi) is unaffected.
   - The user wants the maximum fps, not just the 30 fps gate (2026-10-12). Queue (ledger, measure4-report.md, brainstorm2.md):
     1. N, the word-at-a-time NAL scan: done, `m3-unescape`, +2.69 % aux_map; R12 runs it from flash;
     2. R, the deblock records in a rolling internal ring (task-R-brief.md);
