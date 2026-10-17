@@ -158,6 +158,14 @@ h264bsd: Android's Hantro baseline decoder, Apache-2.0, plain C (github.com/onea
 - `$WORK/the consumer project` (CLAUDE.md, docs/) + its memory dir.
 
 ## Status
+- 2026-10-17: **`vj_decoder_set_hold` merged** (c6d1a8e, API extension approved by the user). Opt-in; with hold on, a
+  returned frame outlives the calls up to and including the one returning the next VJ_FRAME, for one more PSRAM frame
+  buffer (589,828 B at 800x480).
+  - Board: hold off +0.012 / -0.013 / +0.007 % with every hash; hold on bit-exact on all 22 rows, -0.31 / -0.08 / -0.05 %.
+  - Host: check-asan 33/33, check-tsan 11/11, `host/test_hold` (lockstep hold off/on).
+  - Static internal RAM is now 58,493 B with the pipeline on and 56,774 B with it off: cold DPB code moved to flash.
+  - First consumer: the bar bar (`the consumer project/bar firmware`). It converts frame k while k + 1 decodes and runs
+    live Android Auto at 30 fps.
 - 2026-10-12: **M3 speed sprint in progress.** The full resume procedure is the "RESUME HERE" block at the end of the ledger
   `.superpowers/sdd/2026-10-10-videojet-m3-speed/progress.md` (gitignored, on disk). The plan is
   `docs/superpowers/plans/2026-10-10-videojet-m3-speed.md` (queue revision R5). Every score is in the `docs/bench-log.md`
