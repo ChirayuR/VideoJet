@@ -11,8 +11,10 @@
  *  - B's changed_mb marks every macroblock A's marks (a picture decoded into the extra buffer while that holds no known
  *    picture marks them all), and every macroblock it calls unchanged equals the one in B's previous frame;
  *  - clean runs match the .golden, if any.
- * And it is not vacuous: A decodes into the frame it has just returned (non-reference pictures) and B keeps a frame through
- * a DPB reset. Failures name the stream, mode, seed and call. ASan sees a frame freed while held. */
+ * And after every call, in both: every frame buffer (the spare included) holds no known picture or one already numbered.
+ * It is not vacuous: A decodes into the frame it has just returned (non-reference pictures) and B keeps a frame through
+ * a DPB reset. Failures name the stream, mode, seed and call. ASan sees a frame freed while held, and a spared one that
+ * destroy forgets (test_destroy_spared). */
 #undef NDEBUG
 #include <assert.h>
 #include <dirent.h>
@@ -114,6 +116,16 @@ static void compare(run_t *r, const vj_frame_t *a, const vj_frame_t *b)
     st.more_changed += memcmp(a->changed_mb, b->changed_mb, nc) != 0;
 }
 
+/* Skip elision's labels: every frame buffer, the spare included, holds no known picture or one already numbered (a buffer
+ * left out of a renumbering restart keeps a number from before it) */
+static void labels(vj_decoder_t *d)
+{
+    const dpbStorage_t *p = ((storage_t *)(void *)d)->dpb;
+    if (p->buffer)
+        for (u32 i = 0; i < p->dpbSize + 1 + p->vjHold; i++)
+            CHECK(p->buffer[i].vjFrameIdx == VJ_IDX_NONE || p->buffer[i].vjFrameIdx <= p->vjPicIdx);
+}
+
 static void feed(run_t *r, const uint8_t *src, size_t n)
 {
     if (!n)
@@ -130,6 +142,8 @@ static void feed(run_t *r, const uint8_t *src, size_t n)
     st.calls++;
     CHECK(sa == sb);
     hold_check(&r->held);
+    labels(r->a);
+    labels(r->b);
     st.orphan_calls += ((storage_t *)(void *)r->b)->dpb->vjOrphan != NULL;
     if (sb != VJ_FRAME)
         return;
@@ -151,8 +165,8 @@ static void feed(run_t *r, const uint8_t *src, size_t n)
     s->y = fb.y;
     s->c = fb.changed_mb;
     st.frames++;
-    if (++r->frames % 7 == 0 && r->restart) /* both decoders: the next pictures renumber from 1 */
-        ((storage_t *)(void *)r->a)->dpb->vjPicIdx = ((storage_t *)(void *)r->b)->dpb->vjPicIdx = VJ_IDX_NEVER - 2;
+    if (++r->frames % 7 == 0 && r->restart) /* both decoders: 4 pictures later, the numbers restart from 1 */
+        ((storage_t *)(void *)r->a)->dpb->vjPicIdx = ((storage_t *)(void *)r->b)->dpb->vjPicIdx = VJ_IDX_NEVER - 5;
 }
 
 static uint64_t rs;
@@ -307,6 +321,29 @@ static int by_name(const void *x, const void *y)
     return strcmp(*(char *const *)x, *(char *const *)y);
 }
 
+/* Destroyed while it holds a frame a reset spared: aux_card's IDR is returned, then a QCIF IDR cut short resets the DPB
+ * and leaves its picture unfinished. ASan's leak check sees the spared frame if destroy forgets it. */
+static void test_destroy_spared(const char *dir)
+{
+    char path[1024];
+    size_t l1, l2;
+    snprintf(path, sizeof path, "%s/search/aux_card.h264", dir);
+    uint8_t *a = slurp(path, &l1);
+    snprintf(path, sizeof path, "%s/heldout/BA_MW_D.h264", dir);
+    uint8_t *b = slurp(path, &l2);
+    assert(a && b);
+    vj_frame_t f;
+    vj_decoder_t *d = vj_decoder_create();
+    assert(d && vj_decoder_set_hold(d, true));
+    assert(vj_decode_au(d, a, vj_au_length(a, l1), &f) == VJ_FRAME);
+    size_t n = vj_au_length(b, l2);
+    assert(vj_decode_au(d, b, n - 20, &f) == VJ_ERR_STREAM);
+    assert(((storage_t *)(void *)d)->dpb->vjOrphan);
+    vj_decoder_destroy(d);
+    free(a);
+    free(b);
+}
+
 /* The setting is fixed by the first vj_decode_au() call, whatever it returns */
 static void test_rules(void)
 {
@@ -328,6 +365,7 @@ int main(int argc, char **argv)
     const char *env = getenv("HOLD_SEEDS");
     unsigned seeds = env ? (unsigned)atoi(env) : 2;
     test_rules();
+    test_destroy_spared(dir);
     for (int i = 1; i < argc; i++)
         collect(argv[i]);
     if (argc < 2)
