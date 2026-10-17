@@ -1,10 +1,18 @@
 /* test_cavlc: the CAVLC symbol decoders of h264bsd_cavlc.c (coeff_token, total_zeros, run_before) against the original
  * h264bsd routines below, over every input: every 16-bit window x every nC of -1..16, every 9-bit window x totalCoeff
  * 1..15 (luma) and 1..3 (chroma DC), every 11-bit window x zerosLeft 0..31 (decoded: 1..15). The whole information
- * word is compared: the symbol, the code length, and 0 for an invalid code. Prints the case count; exit 0 when every
- * case matches. */
+ * word is compared: the symbol, the code length, and 0 for an invalid code.
+ * Then the macroblock residual decoder h264bsdDecodeResidualCavlc against the per-block decoder it replaced (main
+ * 2ea6242's DecodeResidual, DetermineNc and h264bsdDecodeResidualBlockCavlc, below), on random streams (argv[1] cases,
+ * default 400,000): uniform and biased bits, zero runs (escape codes), buffers that end mid-block, random start bits,
+ * neighbour totalCoeff, cbp and Intra16x16. The status must match, and for a decoded residual the whole residual_t
+ * (levels, totalCoeff, coeffMap) and the bit position and window after it.
+ * Prints the case counts; exit 0 when every case matches. */
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include "h264bsd_cavlc.c" /* the decoders under test are static */
+#include "h264bsd_neighbour.h"
 
 /* The reference: DecodeCoeffToken, DecodeTotalZeros and DecodeRunBefore and their tables from h264bsd_cavlc.c at
  * b6f006c, before the table-driven decode; only the names carry a ref/Ref prefix. */
@@ -510,6 +518,434 @@ static u32 RefDecodeRunBefore(u32 bits, u32 zerosLeft)
 
 }
 
+
+/* ---- The macroblock residual oracle: h264bsdDecodeResidualBlockCavlc and its macros (h264bsd_cavlc.c), DecodeResidual
+ * and DetermineNc (h264bsd_macroblock_layer.c), as of main 2ea6242; names prefixed, the neighbour tables of
+ * h264bsd_neighbour.c inlined, DecodeResidual given is16x16 instead of the mbType it tested. ---- */
+
+#define REF_BUFFER_INIT(value, bits) \
+{ \
+    bits = 32; \
+    value = h264bsdShowBits32(pStrmData); \
+}
+
+#define REF_BUFFER_SHOW(value, bits, outVal, numBits) \
+{ \
+    if (bits < (numBits)) \
+    { \
+        if(h264bsdFlushBits(pStrmData,32-bits) == END_OF_STREAM) \
+            return(HANTRO_NOK); \
+        value = h264bsdShowBits32(pStrmData); \
+        bits = 32; \
+    } \
+    (outVal) = value >> (32 - (numBits)); \
+}
+
+#define REF_BUFFER_FLUSH(value, bits, numBits) \
+{ \
+    value <<= (numBits); \
+    bits -= (numBits); \
+}
+
+#define REF_BUFFER_GET(value, bits, outVal, numBits) \
+{ \
+    if (bits < (numBits)) \
+    { \
+        if(h264bsdFlushBits(pStrmData,32-bits) == END_OF_STREAM) \
+            return(HANTRO_NOK); \
+        value = h264bsdShowBits32(pStrmData); \
+        bits = 32; \
+    } \
+    (outVal) = value >> (32 - (numBits)); \
+    value <<= (numBits); \
+    bits -= (numBits); \
+}
+
+static u32 RefDecodeLevelPrefix(u32 bits)
+{
+    if (!bits)
+        return(VLC_NOT_FOUND);
+    return((u32)__builtin_clz(bits) - 16);
+}
+
+/* coverage of the oracle's decodes: level_prefix 14 and 15, suffixLength reaching 6, total_zeros, long run_before */
+static unsigned long covPrefix14, covPrefix15, covSuffix6, covTz, covRunLong;
+
+static u32 RefBlockCavlc(strmData_t *pStrmData, i32 *coeffLevel, i32 nc, u32 maxNumCoeff)
+{
+    u32 i, tmp, totalCoeff, trailingOnes, suffixLength, levelPrefix;
+    u32 levelSuffix, zerosLeft, bit;
+    i32 level[16];
+    u32 run[16];
+    u32 bufferValue;
+    u32 bufferBits;
+
+    REF_BUFFER_INIT(bufferValue, bufferBits);
+
+    REF_BUFFER_SHOW(bufferValue, bufferBits, bit, 16);
+    tmp = DecodeCoeffToken(bit, (u32)nc);
+    if (!tmp)
+        return(HANTRO_NOK);
+    REF_BUFFER_FLUSH(bufferValue, bufferBits, LENGTH_TC(tmp));
+
+    totalCoeff = TOTAL_COEFF(tmp);
+    if (totalCoeff > maxNumCoeff)
+        return(HANTRO_NOK);
+    trailingOnes = TRAILING_ONES(tmp);
+
+    if (totalCoeff != 0)
+    {
+        i = 0;
+        if (trailingOnes)
+        {
+            REF_BUFFER_GET(bufferValue, bufferBits, bit, trailingOnes);
+            tmp = 1 << (trailingOnes - 1);
+            for (; tmp; i++)
+            {
+                level[i] = bit & tmp ? -1 : 1;
+                tmp >>= 1;
+            }
+        }
+
+        if (totalCoeff > 10 && trailingOnes < 3)
+            suffixLength = 1;
+        else
+            suffixLength = 0;
+
+        for (; i < totalCoeff; i++)
+        {
+            REF_BUFFER_SHOW(bufferValue, bufferBits, bit, 16);
+            levelPrefix = RefDecodeLevelPrefix(bit);
+            if (levelPrefix == VLC_NOT_FOUND)
+                return(HANTRO_NOK);
+            REF_BUFFER_FLUSH(bufferValue, bufferBits, levelPrefix+1);
+            covPrefix14 += levelPrefix == 14;
+            covPrefix15 += levelPrefix == 15;
+            covSuffix6 += suffixLength == 6;
+
+            if (levelPrefix < 14)
+                tmp = suffixLength;
+            else if (levelPrefix == 14)
+            {
+                tmp = suffixLength ? suffixLength : 4;
+            }
+            else
+            {
+                if (!suffixLength)
+                    suffixLength = 1;
+                tmp = 12;
+            }
+
+            if (suffixLength)
+                levelPrefix <<= suffixLength;
+
+            if (tmp)
+            {
+                REF_BUFFER_GET(bufferValue, bufferBits, levelSuffix, tmp);
+                levelPrefix += levelSuffix;
+            }
+
+            tmp = levelPrefix;
+
+            if (i == trailingOnes && trailingOnes < 3)
+                tmp += 2;
+
+            level[i] = (tmp+2)>>1;
+
+            if (suffixLength == 0)
+                suffixLength = 1;
+
+            if ((level[i] > (3 << (suffixLength - 1))) && suffixLength < 6)
+                suffixLength++;
+
+            if (tmp & 0x1)
+                level[i] = -level[i];
+        }
+
+        if (totalCoeff < maxNumCoeff)
+        {
+            REF_BUFFER_SHOW(bufferValue, bufferBits, bit,9);
+            zerosLeft = DecodeTotalZeros(bit, totalCoeff,
+                                        (u32)(maxNumCoeff == 4));
+            if (!zerosLeft)
+                return(HANTRO_NOK);
+            covTz++;
+            REF_BUFFER_FLUSH(bufferValue, bufferBits, LENGTH(zerosLeft));
+            zerosLeft = INFO(zerosLeft);
+        }
+        else
+            zerosLeft = 0;
+
+        for (i = 0; i < totalCoeff - 1; i++)
+        {
+            if (zerosLeft > 0)
+            {
+                REF_BUFFER_SHOW(bufferValue, bufferBits, bit,11);
+                tmp = DecodeRunBefore(bit, zerosLeft);
+                if (!tmp)
+                    return(HANTRO_NOK);
+                covRunLong += LENGTH(tmp) > 3;
+                REF_BUFFER_FLUSH(bufferValue, bufferBits, LENGTH(tmp));
+                run[i] = INFO(tmp);
+                zerosLeft -= run[i]++;
+            }
+            else
+            {
+                run[i] = 1;
+            }
+        }
+
+        tmp = zerosLeft;
+        coeffLevel[tmp] = level[totalCoeff-1];
+        levelSuffix = 1 << tmp;
+        for (i = totalCoeff-1; i--;)
+        {
+            tmp += run[i];
+            levelSuffix |= 1 << tmp;
+            coeffLevel[tmp] = level[i];
+        }
+
+    }
+    else
+        levelSuffix = 0;
+
+    if (h264bsdFlushBits(pStrmData, 32-bufferBits) != HANTRO_OK)
+        return(HANTRO_NOK);
+
+    return((totalCoeff << 4) | (levelSuffix << 16));
+}
+
+/* h264bsd_neighbour.c's left and upper neighbours of the 4x4 blocks */
+static const neighbour_t refNA[24] = {
+    {MB_A,5},    {MB_CURR,0}, {MB_A,7},    {MB_CURR,2},
+    {MB_CURR,1}, {MB_CURR,4}, {MB_CURR,3}, {MB_CURR,6},
+    {MB_A,13},   {MB_CURR,8}, {MB_A,15},   {MB_CURR,10},
+    {MB_CURR,9}, {MB_CURR,12},{MB_CURR,11},{MB_CURR,14},
+    {MB_A,17},   {MB_CURR,16},{MB_A,19},   {MB_CURR,18},
+    {MB_A,21},   {MB_CURR,20},{MB_A,23},   {MB_CURR,22} };
+static const neighbour_t refNB[24] = {
+    {MB_B,10},   {MB_B,11},   {MB_CURR,0}, {MB_CURR,1},
+    {MB_B,14},   {MB_B,15},   {MB_CURR,4}, {MB_CURR,5},
+    {MB_CURR,2}, {MB_CURR,3}, {MB_CURR,8}, {MB_CURR,9},
+    {MB_CURR,6}, {MB_CURR,7}, {MB_CURR,12},{MB_CURR,13},
+    {MB_B,18},   {MB_B,19},   {MB_CURR,16},{MB_CURR,17},
+    {MB_B,22},   {MB_B,23},   {MB_CURR,20},{MB_CURR,21} };
+
+static u32 RefDetermineNc(const vjTc_t *tcA, const vjTc_t *tcB, u32 blockIndex, const i16 *pTotalCoeff)
+{
+    u32 tmp;
+    i32 n;
+    const neighbour_t *neighbourA, *neighbourB;
+    u8 neighbourAindex, neighbourBindex;
+
+    neighbourA = refNA + blockIndex;
+    neighbourB = refNB + blockIndex;
+    neighbourAindex = neighbourA->index;
+    neighbourBindex = neighbourB->index;
+    if (neighbourA->mb == MB_CURR && neighbourB->mb == MB_CURR)
+    {
+        n = (pTotalCoeff[neighbourAindex] +
+             pTotalCoeff[neighbourBindex] + 1)>>1;
+    }
+    else if (neighbourA->mb == MB_CURR)
+    {
+        n = pTotalCoeff[neighbourAindex];
+        if (tcB)
+        {
+            n = (n + tcB[neighbourBindex] + 1) >> 1;
+        }
+    }
+    else if (neighbourB->mb == MB_CURR)
+    {
+        n = pTotalCoeff[neighbourBindex];
+        if (tcA)
+        {
+            n = (n + tcA[neighbourAindex] + 1) >> 1;
+        }
+    }
+    else
+    {
+        n = tmp = 0;
+        if (tcA)
+        {
+            n = tcA[neighbourAindex];
+            tmp = 1;
+        }
+        if (tcB)
+        {
+            if (tmp)
+                n = (n + tcB[neighbourBindex] + 1) >> 1;
+            else
+                n = tcB[neighbourBindex];
+        }
+    }
+    return((u32)n);
+}
+
+static u32 RefDecodeResidual(strmData_t *pStrmData, residual_t *pResidual,
+    const vjTc_t *tcA, const vjTc_t *tcB, u32 is16x16, u32 codedBlockPattern)
+{
+    u32 i, j, tmp;
+    i32 nc;
+    u32 blockCoded;
+    u32 blockIndex;
+    i32 (*level)[16];
+
+    level = pResidual->level;
+
+    if (is16x16)
+    {
+        nc = (i32)RefDetermineNc(tcA, tcB, 0, pResidual->totalCoeff);
+        tmp = RefBlockCavlc(pStrmData, level[24], nc, 16);
+        if ((tmp & 0xF) != HANTRO_OK)
+            return(tmp);
+        pResidual->totalCoeff[24] = (tmp >> 4) & 0xFF;
+    }
+
+    for (i = 4, blockIndex = 0; i--;)
+    {
+        blockCoded = codedBlockPattern & 0x1;
+        codedBlockPattern >>= 1;
+        if (blockCoded)
+        {
+            memset(level[blockIndex], 0, 4 * sizeof(*level));
+            for (j = 4; j--; blockIndex++)
+            {
+                nc = (i32)RefDetermineNc(tcA, tcB, blockIndex, pResidual->totalCoeff);
+                if (is16x16)
+                {
+                    tmp = RefBlockCavlc(pStrmData,
+                        level[blockIndex] + 1, nc, 15);
+                    pResidual->coeffMap[blockIndex] = tmp >> 15;
+                }
+                else
+                {
+                    tmp = RefBlockCavlc(pStrmData,
+                        level[blockIndex], nc, 16);
+                    pResidual->coeffMap[blockIndex] = tmp >> 16;
+                }
+                if ((tmp & 0xF) != HANTRO_OK)
+                    return(tmp);
+                pResidual->totalCoeff[blockIndex] = (tmp >> 4) & 0xFF;
+            }
+        }
+        else
+            blockIndex += 4;
+    }
+
+    blockCoded = codedBlockPattern & 0x3;
+    if (blockCoded)
+    {
+        tmp = RefBlockCavlc(pStrmData, level[25], -1, 4);
+        if ((tmp & 0xF) != HANTRO_OK)
+            return(tmp);
+        pResidual->totalCoeff[25] = (tmp >> 4) & 0xFF;
+        tmp = RefBlockCavlc(pStrmData, level[25]+4, -1, 4);
+        if ((tmp & 0xF) != HANTRO_OK)
+            return(tmp);
+        pResidual->totalCoeff[26] = (tmp >> 4) & 0xFF;
+    }
+
+    blockCoded = codedBlockPattern & 0x2;
+    if (blockCoded)
+    {
+        memset(level[16], 0, 8 * sizeof(*level));
+        for (i = 8; i--;blockIndex++)
+        {
+            nc = (i32)RefDetermineNc(tcA, tcB, blockIndex, pResidual->totalCoeff);
+            tmp = RefBlockCavlc(pStrmData,
+                level[blockIndex] + 1, nc, 15);
+            if ((tmp & 0xF) != HANTRO_OK)
+                return(tmp);
+            pResidual->totalCoeff[blockIndex] = (tmp >> 4) & 0xFF;
+            pResidual->coeffMap[blockIndex] = (tmp >> 15);
+        }
+    }
+
+    return(HANTRO_OK);
+}
+
+/* ---- the random differential ---- */
+static u32 rngState = 0x2545F491u;
+static u32 Rnd(void)
+{
+    rngState ^= rngState << 13;
+    rngState ^= rngState >> 17;
+    rngState ^= rngState << 5;
+    return rngState;
+}
+
+/* a byte of one of five flavours: uniform, mostly zero bits, mostly one bits, zero, or uniform with rare zero runs */
+static u8 StreamByte(u32 mode)
+{
+    switch (mode)
+    {
+        case 0: return (u8)Rnd();
+        case 1: return (u8)(Rnd() & Rnd() & Rnd());
+        case 2: return (u8)(Rnd() | Rnd());
+        case 3: return (u8)(Rnd() % 7 ? Rnd() & Rnd() : 0);
+        default: return (u8)(Rnd() % 13 ? Rnd() : 0);
+    }
+}
+
+static unsigned long resCases, resOk, resCoeffs, resBad;
+
+static void ResidualCase(void)
+{
+    static u8 buf[160];
+    static residual_t r1, r2;
+    vjTc_t tcA[24], tcB[24];
+    strmData_t s1, s2;
+    u32 size = 1 + Rnd() % 150, mode = Rnd() % 5, i, is16x16, cbp, st1, st2;
+    const vjTc_t *pA, *pB;
+
+    for (i = 0; i < size; i++)
+        buf[i] = StreamByte(Rnd() % 4 ? mode : Rnd() % 5);
+    for (i = 0; i < 24; i++)
+    {
+        tcA[i] = (vjTc_t)(Rnd() % 17);
+        tcB[i] = (vjTc_t)(Rnd() % 17);
+    }
+    pA = Rnd() % 3 ? tcA : NULL;
+    pB = Rnd() % 3 ? tcB : NULL;
+    is16x16 = Rnd() & 1;
+    cbp = Rnd() % 48;
+    /* stale bytes from "an earlier macroblock", then the caller's lazy clear */
+    for (i = 0; i < sizeof r1; i++)
+        ((u8 *)&r1)[i] = (u8)Rnd();
+    memset(r1.totalCoeff, 0, sizeof r1.totalCoeff);
+    memset(r1.level[24], 0, 2 * sizeof r1.level[24]);
+    memset(r1.coeffMap, 0, sizeof r1.coeffMap);
+    r2 = r1;
+    s1.pStrmBuffStart = buf;
+    s1.strmBuffSize = size;
+    s1.strmBuffReadBits = Rnd() % (8 * size + 8);
+    h264bsdStrmFill(&s1);
+    s2 = s1;
+
+    st1 = h264bsdDecodeResidualCavlc(&s1, &r1, pA, pB, is16x16, cbp);
+    st2 = RefDecodeResidual(&s2, &r2, pA, pB, is16x16, cbp);
+    resCases++;
+    if (st1 != st2)
+    {
+        if (resBad++ < 5)
+            printf("test_cavlc: residual case %lu: status %u, want %u\n", resCases, st1, st2);
+        return;
+    }
+    if (st1 != HANTRO_OK)
+        return;
+    resOk++;
+    for (i = 0; i < 27; i++)
+        resCoeffs += (unsigned long)r2.totalCoeff[i];
+    if (s1.strmBuffReadBits != s2.strmBuffReadBits || s1.cache[0] != s2.cache[0] || s1.cache[1] != s2.cache[1] ||
+        memcmp(&r1, &r2, sizeof r1))
+    {
+        if (resBad++ < 5)
+            printf("test_cavlc: residual case %lu: decoded differently (bits %u, want %u)\n", resCases,
+                s1.strmBuffReadBits, s2.strmBuffReadBits);
+    }
+}
+
 static unsigned long cases, bad;
 
 static void check(const char *what, int arg, u32 bits, u32 got, u32 want)
@@ -519,7 +955,7 @@ static void check(const char *what, int arg, u32 bits, u32 got, u32 want)
         printf("test_cavlc: %s %d, bits %04x: info %04x, want %04x\n", what, arg, bits, got, want);
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
     for (i32 nc = -1; nc <= 16; nc++)
         for (u32 b = 0; b < 0x10000; b++)
@@ -533,5 +969,10 @@ int main(void)
         for (u32 b = 0; b < 2048; b++)
             check("run_before zerosLeft", (int)zl, b, DecodeRunBefore(b, zl), RefDecodeRunBefore(b, zl));
     printf("test_cavlc: %lu cases, %lu mismatches\n", cases, bad);
-    return bad ? 1 : 0;
+    for (unsigned long n = argc > 1 ? strtoul(argv[1], NULL, 0) : 400000; n; n--)
+        ResidualCase();
+    printf("test_cavlc: residual %lu cases (%lu decoded, %lu coefficients; the oracle decoded %lu level_prefix 14, %lu "
+           "15, %lu levels at suffixLength 6, %lu total_zeros, %lu long run_before), %lu mismatches\n", resCases, resOk,
+           resCoeffs, covPrefix14, covPrefix15, covSuffix6, covTz, covRunLong, resBad);
+    return bad || resBad ? 1 : 0;
 }

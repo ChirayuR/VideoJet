@@ -27,10 +27,9 @@
      5. Functions
           DecodeCoeffToken
           CoeffTokenLong
-          DecodeLevelPrefix
           DecodeTotalZeros
           DecodeRunBefore
-          DecodeResidualBlockCavlc
+          h264bsdDecodeResidualCavlc
 
 ------------------------------------------------------------------------------*/
 
@@ -38,8 +37,12 @@
     1. Include headers
 ------------------------------------------------------------------------------*/
 
+#include <string.h>
 #include "h264bsd_cavlc.h"
 #include "h264bsd_util.h"
+
+/* the rare paths stay out of line, so the macroblock's decode keeps its registers */
+#define VJ_NOINLINE_CAVLC __attribute__((noinline))
 
 /*------------------------------------------------------------------------------
     2. External compiler flags
@@ -328,53 +331,6 @@ static const u8 runBefore[8][8] = {
     {0x13,0x23,0x43,0x33,0x63,0x53,0x02,0x02},
     {0x00,0x63,0x53,0x43,0x33,0x23,0x13,0x03}};
 
-/* following four macros are used to handle stream buffer "cache" in the CAVLC
- * decoding function */
-
-/* macro to initialize stream buffer cache, fills the buffer (32 bits) */
-#define BUFFER_INIT(value, bits) \
-{ \
-    bits = 32; \
-    value = h264bsdShowBits32(pStrmData); \
-}
-
-/* macro to read numBits bits from the buffer, bits will be written to
- * outVal. Refills the buffer if not enough bits left */
-#define BUFFER_SHOW(value, bits, outVal, numBits) \
-{ \
-    if (bits < (numBits)) \
-    { \
-        if(h264bsdFlushBits(pStrmData,32-bits) == END_OF_STREAM) \
-            return(HANTRO_NOK); \
-        value = h264bsdShowBits32(pStrmData); \
-        bits = 32; \
-    } \
-    (outVal) = value >> (32 - (numBits)); \
-}
-
-/* macro to flush numBits bits from the buffer */
-#define BUFFER_FLUSH(value, bits, numBits) \
-{ \
-    value <<= (numBits); \
-    bits -= (numBits); \
-}
-
-/* macro to read and flush  numBits bits from the buffer, bits will be written
- * to outVal. Refills the buffer if not enough bits left */
-#define BUFFER_GET(value, bits, outVal, numBits) \
-{ \
-    if (bits < (numBits)) \
-    { \
-        if(h264bsdFlushBits(pStrmData,32-bits) == END_OF_STREAM) \
-            return(HANTRO_NOK); \
-        value = h264bsdShowBits32(pStrmData); \
-        bits = 32; \
-    } \
-    (outVal) = value >> (32 - (numBits)); \
-    value <<= (numBits); \
-    bits -= (numBits); \
-}
-
 /*------------------------------------------------------------------------------
     4. Local function prototypes
 ------------------------------------------------------------------------------*/
@@ -382,8 +338,6 @@ static const u8 runBefore[8][8] = {
 static u32 DecodeCoeffToken(u32 bits, u32 nc);
 
 static u32 CoeffTokenLong(const u16 (*table)[8], u32 bits);
-
-static u32 DecodeLevelPrefix(u32 bits);
 
 static u32 DecodeTotalZeros(u32 bits, u32 totalCoeff, u32 isChromaDC);
 
@@ -498,37 +452,6 @@ u32 CoeffTokenLong(const u16 (*table)[8], u32 bits)
 
 /*------------------------------------------------------------------------------
 
-    Function: DecodeLevelPrefix
-
-        Functional description:
-          Function to decode level_prefix information field from the stream
-
-        Inputs:
-          u32 bits      next 16 stream bits
-
-        Outputs:
-          u32  level_prefix information field or VLC_NOT_FOUND
-
-------------------------------------------------------------------------------*/
-
-u32 DecodeLevelPrefix(u32 bits)
-{
-
-/* Code */
-
-    ASSERT(bits < 0x10000);
-
-    /* more than 15 zeros encountered which is an error */
-    if (!bits)
-        return(VLC_NOT_FOUND);
-
-    /* leading zeros of the 16 bits; __builtin_clz is NSAU on Xtensa */
-    return((u32)__builtin_clz(bits) - 16);
-
-}
-
-/*------------------------------------------------------------------------------
-
     Function: DecodeTotalZeros
 
         Functional description:
@@ -615,195 +538,379 @@ u32 DecodeRunBefore(u32 bits, u32 zerosLeft)
 
 /*------------------------------------------------------------------------------
 
-    Function: DecodeResidualBlockCavlc
+    Function: h264bsdDecodeResidualCavlc
 
         Functional description:
-          Function to decode one CAVLC coded block. This corresponds to
-          syntax elements residual_block_cavlc() in the standard.
+          VideoJet: residual() of one macroblock, CAVLC. Every coded block in
+          the order of the standard (and of the h264bsd DecodeResidual and
+          residual_block_cavlc decoder this replaces, kept as the oracle in
+          host/test_cavlc.c): the Intra16x16 luma DC, the luma blocks of the
+          coded 8x8 blocks, the two chroma DC blocks, the chroma AC blocks.
+          Same symbols, tables, arithmetic and checks, and the same levels
+          stored for a decodable macroblock. What changed is the bit
+          reading: the window of strmData_t (strmBuffReadBits, cache[0..1])
+          stays in registers for the whole macroblock, each symbol is a peek
+          and a skip of the window, and the run_before decode places each
+          level as it goes (the same positions, highest first).
+
+          Errors (every one is HANTRO_NOK, as before): an invalid coeff_token,
+          total_zeros or run_before code, 16 zeros for a level_prefix,
+          totalCoeff above the block's maximum, or a block that ends past the
+          end of the buffer (bits there read as 0, as before). The original
+          also stopped at a refill past the end inside a block; positions only
+          grow, so that block ends past the end too and the result is the same
+          HANTRO_NOK. On an error the levels hold an unspecified part of the
+          block: a failed macroblock's layer is never reconstructed.
 
         Inputs:
-          pStrmData             pointer to stream data structure
-          nc                    nC value
-          maxNumCoeff           maximum number of residual coefficients
+          pStrmData             stream, at the macroblock's residual
+          tcA, tcB              totalCoeff[0..23] of the left and upper
+                                macroblocks for nC, NULL when unavailable
+          is16x16               an Intra16x16 macroblock
+          codedBlockPattern     its cbp
 
         Outputs:
-          coeffLevel            stores decoded coefficient levels
+          pResidual             totalCoeff, coeffMap and level of the coded
+                                blocks (the caller lazily cleared the rest)
+          pStrmData             after the residual
 
         Returns:
-          numCoeffs             on bits [4,11] if successful
-          coeffMap              on bits [16,31] if successful, this is bit map
-                                where each bit indicates if the corresponding
-                                coefficient was zero (0) or non-zero (1)
-          HANTRO_NOK            end of stream or error in stream
+          HANTRO_OK, HANTRO_NOK
 
 ------------------------------------------------------------------------------*/
 
-u32 h264bsdDecodeResidualBlockCavlc(
-  strmData_t *pStrmData,
-  i32 *coeffLevel,
-  i32 nc,
-  u32 maxNumCoeff)
+/* nC neighbours of the 4x4 blocks 0..23 (h264bsd_neighbour.c N_A_4x4B, N_B_4x4B): the block's index in the left (A)
+ * or upper (B) macroblock, or VJ_NC_CUR | its index in the current one */
+#define VJ_NC_CUR 0x80
+static const u8 vjNcA[24] = {
+    5, VJ_NC_CUR | 0, 7, VJ_NC_CUR | 2, VJ_NC_CUR | 1, VJ_NC_CUR | 4, VJ_NC_CUR | 3, VJ_NC_CUR | 6,
+    13, VJ_NC_CUR | 8, 15, VJ_NC_CUR | 10, VJ_NC_CUR | 9, VJ_NC_CUR | 12, VJ_NC_CUR | 11, VJ_NC_CUR | 14,
+    17, VJ_NC_CUR | 16, 19, VJ_NC_CUR | 18, 21, VJ_NC_CUR | 20, 23, VJ_NC_CUR | 22};
+static const u8 vjNcB[24] = {
+    10, 11, VJ_NC_CUR | 0, VJ_NC_CUR | 1, 14, 15, VJ_NC_CUR | 4, VJ_NC_CUR | 5,
+    VJ_NC_CUR | 2, VJ_NC_CUR | 3, VJ_NC_CUR | 8, VJ_NC_CUR | 9, VJ_NC_CUR | 6, VJ_NC_CUR | 7, VJ_NC_CUR | 12,
+    VJ_NC_CUR | 13, 18, 19, VJ_NC_CUR | 16, VJ_NC_CUR | 17, 22, 23, VJ_NC_CUR | 20, VJ_NC_CUR | 21};
+
+/* nC of block blk (DetermineNc): the average of the available neighbours' totalCoeff, rounded up, or the one, or 0 */
+static inline __attribute__((always_inline)) u32 VjNc(const vjTc_t *tcA,
+    const vjTc_t *tcB, const i16 *cur, u32 blk)
 {
+    u32 a = vjNcA[blk], b = vjNcB[blk], nA = 0, nB = 0, av = 0;
 
-/* Variables */
-
-    u32 i, tmp, totalCoeff, trailingOnes, suffixLength, levelPrefix;
-    u32 levelSuffix, zerosLeft, bit;
-    i32 level[16];
-    u32 run[16];
-    /* stream "cache" */
-    u32 bufferValue;
-    u32 bufferBits;
-
-/* Code */
-
-    ASSERT(pStrmData);
-    ASSERT(coeffLevel);
-    ASSERT(nc > -2);
-    ASSERT(maxNumCoeff == 4 || maxNumCoeff == 15 || maxNumCoeff == 16);
-    ASSERT(VLC_NOT_FOUND != END_OF_STREAM);
-
-    /* assume that coeffLevel array has been "cleaned" by caller */
-
-    BUFFER_INIT(bufferValue, bufferBits);
-
-    /*lint -e774 disable lint warning on always false comparison */
-    BUFFER_SHOW(bufferValue, bufferBits, bit, 16);
-    /*lint +e774 */
-    tmp = DecodeCoeffToken(bit, (u32)nc);
-    if (!tmp)
-        return(HANTRO_NOK);
-    BUFFER_FLUSH(bufferValue, bufferBits, LENGTH_TC(tmp));
-
-    totalCoeff = TOTAL_COEFF(tmp);
-    if (totalCoeff > maxNumCoeff)
-        return(HANTRO_NOK);
-    trailingOnes = TRAILING_ONES(tmp);
-
-    if (totalCoeff != 0)
+    if (a & VJ_NC_CUR)
     {
+        nA = (u32)cur[a & 31];
+        av = 1;
+    }
+    else if (tcA)
+    {
+        nA = (u32)tcA[a];
+        av = 1;
+    }
+    if (b & VJ_NC_CUR)
+    {
+        nB = (u32)cur[b & 31];
+        av |= 2;
+    }
+    else if (tcB)
+    {
+        nB = (u32)tcB[b];
+        av |= 2;
+    }
+    /* an unavailable neighbour counts 0 */
+    return av == 3 ? (nA + nB + 1) >> 1 : nA + nB;
+}
+
+/* The bit window in registers: strmData_t's strmBuffReadBits (pos), cache[0] (c0) and cache[1] (c1), and the buffer */
+typedef struct
+{
+    u32 pos, c0, c1;
+    const u8 *buf;
+    u32 size;
+} vjBits_t;
+
+/* the next 32 bits: (c0 << pos % 32) | (c1 >> (32 - pos % 32)), c0 at pos % 32 == 0 */
+static inline __attribute__((always_inline)) u32 VjPeek(u32 c0, u32 c1, u32 pos)
+{
+#if defined(__XTENSA__)
+    u32 r;
+
+    /* ssl reads pos % 32 and gives SAR 32 for 0: one funnel shift. GCC sets SAR in each of its own shift insns, so it
+     * is never live across this one */
+    __asm__("ssl %1\n\tsrc %0, %2, %3" : "=r"(r) : "r"(pos), "r"(c0), "r"(c1));
+    return r;
+#else
+    u32 s = pos & 31;
+
+    return s ? (c0 << s) | (c1 >> (32 - s)) : c0;
+#endif
+}
+
+/* stream word at byte off, h264bsdStrmFill's StrmWord: big-endian, bytes past the end of the buffer read as 0 */
+static VJ_NOINLINE_CAVLC u32 VjWordTail(const u8 *buf, u32 size, u32 off)
+{
+    u32 i, out = 0;
+
+    for (i = 0; i < 4; i++)
+        out = (out << 8) | (off + i < size ? (u32)buf[off + i] : 0);
+    return(out);
+}
+
+static inline __attribute__((always_inline)) u32 VjWord(const u8 *buf, u32 size, u32 off)
+{
+    if (off + 4 <= size)
+        return(((u32)buf[off] << 24) | ((u32)buf[off + 1] << 16) | ((u32)buf[off + 2] << 8) | (u32)buf[off + 3]);
+    return(VjWordTail(buf, size, off));
+}
+
+/* consume n < 32 bits: h264bsdFlushBits, in registers (one word boundary at most) */
+#define VJ_SKIP(n) \
+    do { \
+        u32 np_ = pos + (n); \
+        if ((np_ ^ pos) >= 32) \
+        { \
+            c0 = c1; \
+            c1 = VjWord(buf, size, ((np_ >> 5) << 2) + 4); \
+        } \
+        pos = np_; \
+    } while (0)
+
+#define VJ_BLOCK_ERR 0xFFFFFFFFU
+
+/* a level above vjSuffixUp[suffixLength] raises suffixLength (3 << (suffixLength - 1), never from 6) */
+static const u32 vjSuffixUp[7] = {0, 3, 6, 12, 24, 48, 0xFFFFFFFFU};
+
+/* residual_block_cavlc() of one block into coeffLevel (cleared by the caller): returns totalCoeff with the map of the
+ * coefficients placed in *pMap (bit k: coeffLevel[k]), or VJ_BLOCK_ERR. One copy, out of line: the window passes
+ * through bs once per block, a few loads and stores against hundreds of cycles of symbols (and ~1 KB of IRAM per
+ * inlined copy) */
+static VJ_NOINLINE_CAVLC u32 VjBlock(vjBits_t *bs,
+    i32 *coeffLevel, u32 nc, u32 maxNumCoeff, u32 *pMap)
+{
+    u32 pos = bs->pos, c0 = bs->c0, c1 = bs->c1, size = bs->size;
+    const u8 *buf = bs->buf;
+    u32 w, tok, totalCoeff, trailingOnes, suffixLength, add2, zerosLeft;
+    u32 i, p, map;
+    i32 level[16];
+
+    w = VjPeek(c0, c1, pos);
+    tok = DecodeCoeffToken(w >> 16, nc);
+    if (!tok)
+        return(VJ_BLOCK_ERR);
+    VJ_SKIP(LENGTH_TC(tok));
+    totalCoeff = TOTAL_COEFF(tok);
+    if (totalCoeff > maxNumCoeff)
+        return(VJ_BLOCK_ERR);
+    map = 0;
+
+    if (totalCoeff)
+    {
+        trailingOnes = TRAILING_ONES(tok);
         i = 0;
-        /* nonzero coefficients: +/- 1 */
+        /* nonzero coefficients: +/- 1, a sign bit each */
         if (trailingOnes)
         {
-            BUFFER_GET(bufferValue, bufferBits, bit, trailingOnes);
-            tmp = 1 << (trailingOnes - 1);
-            for (; tmp; i++)
-            {
-                level[i] = bit & tmp ? -1 : 1;
-                tmp >>= 1;
-            }
+            u32 t;
+
+            w = VjPeek(c0, c1, pos) >> (32 - trailingOnes);
+            VJ_SKIP(trailingOnes);
+            for (t = 1u << (trailingOnes - 1); t; t >>= 1, i++)
+                level[i] = w & t ? -1 : 1;
         }
 
-        /* other levels */
-        if (totalCoeff > 10 && trailingOnes < 3)
-            suffixLength = 1;
-        else
-            suffixLength = 0;
-
+        /* other levels: level_prefix (its leading zeros), level_suffix */
+        suffixLength = (totalCoeff > 10 && trailingOnes < 3) ? 1 : 0;
+        /* the first of them, after fewer than 3 trailing ones, is 2 more */
+        add2 = trailingOnes < 3 ? 2 : 0;
         for (; i < totalCoeff; i++)
         {
-            BUFFER_SHOW(bufferValue, bufferBits, bit, 16);
-            levelPrefix = DecodeLevelPrefix(bit);
-            if (levelPrefix == VLC_NOT_FOUND)
-                return(HANTRO_NOK);
-            BUFFER_FLUSH(bufferValue, bufferBits, levelPrefix+1);
+            u32 prefix, len, code, lv;
 
-            if (levelPrefix < 14)
-                tmp = suffixLength;
-            else if (levelPrefix == 14)
+            w = VjPeek(c0, c1, pos);
+            /* more than 15 zeros */
+            if (w < 0x10000)
+                return(VJ_BLOCK_ERR);
+            prefix = (u32)__builtin_clz(w);
+            if (prefix < 14)
             {
-                tmp = suffixLength ? suffixLength : 4;
+                /* the prefix's 1 and the suffixLength suffix bits are the
+                 * top len bits of w less its zeros, x = 2^suffixLength +
+                 * suffix: code = (prefix << suffixLength) + suffix */
+                len = prefix + 1 + suffixLength;
+                code = (w >> (32 - len)) + ((prefix - 1) << suffixLength);
+            }
+            else if (prefix == 14)
+            {
+                u32 n = suffixLength ? suffixLength : 4;
+
+                len = 15 + n;
+                code = (14u << suffixLength) + ((w << 15) >> (32 - n));
             }
             else
             {
-                /* setting suffixLength to 1 here corresponds to adding 15
-                 * to levelCode value if levelPrefix == 15 and
-                 * suffixLength == 0 */
+                /* suffixLength 1 here adds 15 to the code when it was 0 */
                 if (!suffixLength)
                     suffixLength = 1;
-                tmp = 12;
+                len = 28;
+                code = (15u << suffixLength) + ((w << 16) >> 20);
             }
+            VJ_SKIP(len);
 
-            if (suffixLength)
-                levelPrefix <<= suffixLength;
-
-            if (tmp)
-            {
-                BUFFER_GET(bufferValue, bufferBits, levelSuffix, tmp);
-                levelPrefix += levelSuffix;
-            }
-
-            tmp = levelPrefix;
-
-            if (i == trailingOnes && trailingOnes < 3)
-                tmp += 2;
-
-            level[i] = (tmp+2)>>1;
-
-            if (suffixLength == 0)
-                suffixLength = 1;
-
-            if ((level[i] > (3 << (suffixLength - 1))) && suffixLength < 6)
-                suffixLength++;
-
-            if (tmp & 0x1)
-                level[i] = -level[i];
+            code += add2;
+            add2 = 0;
+            lv = (code + 2) >> 1;
+            /* suffixLength at least 1 after a level, one more above its
+             * threshold 3 << (suffixLength - 1), up to 6 */
+            suffixLength += !suffixLength;
+            suffixLength += lv > vjSuffixUp[suffixLength];
+            level[i] = code & 0x1 ? -(i32)lv : (i32)lv;
         }
 
         /* zero runs */
         if (totalCoeff < maxNumCoeff)
         {
-            BUFFER_SHOW(bufferValue, bufferBits, bit,9);
-            zerosLeft = DecodeTotalZeros(bit, totalCoeff,
-                                        (u32)(maxNumCoeff == 4));
+            w = VjPeek(c0, c1, pos);
+            zerosLeft = DecodeTotalZeros(w >> 23, totalCoeff,
+                                         (u32)(maxNumCoeff == 4));
             if (!zerosLeft)
-                return(HANTRO_NOK);
-            BUFFER_FLUSH(bufferValue, bufferBits, LENGTH(zerosLeft));
+                return(VJ_BLOCK_ERR);
+            VJ_SKIP(LENGTH(zerosLeft));
             zerosLeft = INFO(zerosLeft);
         }
         else
             zerosLeft = 0;
 
-        for (i = 0; i < totalCoeff - 1; i++)
+        /* levels from the highest position down: level[0] at totalCoeff - 1
+         * + total_zeros, each next one run_before + 1 below. Positions stay
+         * in 0..15 (total_zeros <= 16 - totalCoeff, run_before <= zerosLeft) */
+        p = totalCoeff - 1 + zerosLeft;
+        coeffLevel[p] = level[0];
+        map = 1u << p;
+        for (i = 1; i < totalCoeff; i++)
         {
-            if (zerosLeft > 0)
+            u32 run = 0;
+
+            if (zerosLeft)
             {
-                BUFFER_SHOW(bufferValue, bufferBits, bit,11);
-                tmp = DecodeRunBefore(bit, zerosLeft);
-                if (!tmp)
-                    return(HANTRO_NOK);
-                BUFFER_FLUSH(bufferValue, bufferBits, LENGTH(tmp));
-                run[i] = INFO(tmp);
-                zerosLeft -= run[i]++;
+                w = VjPeek(c0, c1, pos);
+                run = DecodeRunBefore(w >> 21, zerosLeft);
+                if (!run)
+                    return(VJ_BLOCK_ERR);
+                VJ_SKIP(LENGTH(run));
+                run = INFO(run);
+                zerosLeft -= run;
+            }
+            p -= run + 1;
+            coeffLevel[p] = level[i];
+            map |= 1u << p;
+        }
+    }
+
+    bs->pos = pos;
+    bs->c0 = c0;
+    bs->c1 = c1;
+    /* the block ends inside the buffer (h264bsdFlushBits' END_OF_STREAM) */
+    if (pos > 8 * size)
+        return(VJ_BLOCK_ERR);
+    *pMap = map;
+    return(totalCoeff);
+}
+
+u32 h264bsdDecodeResidualCavlc(strmData_t *pStrmData, residual_t *pResidual,
+    const vjTc_t *tcA, const vjTc_t *tcB, u32 is16x16, u32 codedBlockPattern)
+{
+
+/* Variables */
+
+    vjBits_t bs;
+    i32 (*level)[16] = pResidual->level;
+    i16 *totalCoeff = pResidual->totalCoeff;
+    u32 *coeffMap = pResidual->coeffMap;
+    u32 i, j, blk, tc, map;
+    u32 status = HANTRO_NOK;
+
+/* Code */
+
+    ASSERT(pStrmData);
+    ASSERT(pResidual);
+
+    bs.pos = pStrmData->strmBuffReadBits;
+    bs.c0 = pStrmData->cache[0];
+    bs.c1 = pStrmData->cache[1];
+    bs.buf = pStrmData->pStrmBuffStart;
+    bs.size = pStrmData->strmBuffSize;
+
+    /* luma DC is at index 24 */
+    if (is16x16)
+    {
+        tc = VjBlock(&bs, level[24], VjNc(tcA, tcB, totalCoeff, 0), 16, &map);
+        if (tc == VJ_BLOCK_ERR)
+            goto out;
+        totalCoeff[24] = (i16)tc;
+    }
+
+    /* luma cbp in bits 0-3 */
+    for (i = 4, blk = 0; i--; codedBlockPattern >>= 1)
+    {
+        if (!(codedBlockPattern & 0x1))
+        {
+            blk += 4;
+            continue;
+        }
+        /* lazy clear: CAVLC writes only the nonzero levels */
+        memset(level[blk], 0, 4 * sizeof(*level));
+        for (j = 4; j--; blk++)
+        {
+            u32 nc = VjNc(tcA, tcB, totalCoeff, blk);
+
+            if (is16x16)
+            {
+                tc = VjBlock(&bs, level[blk] + 1, nc, 15, &map);
+                map <<= 1;
             }
             else
-            {
-                run[i] = 1;
-            }
+                tc = VjBlock(&bs, level[blk], nc, 16, &map);
+            if (tc == VJ_BLOCK_ERR)
+                goto out;
+            coeffMap[blk] = map;
+            totalCoeff[blk] = (i16)tc;
         }
-
-        /* combining level and run, levelSuffix variable used to hold coeffMap,
-         * i.e. bit map indicating which coefficients had non-zero value. */
-
-        /*lint -esym(771,level,run) level and run are always initialized */
-        tmp = zerosLeft;
-        coeffLevel[tmp] = level[totalCoeff-1];
-        levelSuffix = 1 << tmp;
-        for (i = totalCoeff-1; i--;)
-        {
-            tmp += run[i];
-            levelSuffix |= 1 << tmp;
-            coeffLevel[tmp] = level[i];
-        }
-
     }
-    else
-        levelSuffix = 0;
 
-    if (h264bsdFlushBits(pStrmData, 32-bufferBits) != HANTRO_OK)
-        return(HANTRO_NOK);
+    /* chroma DC blocks are at indices 25 and 26 */
+    if (codedBlockPattern & 0x3)
+    {
+        tc = VjBlock(&bs, level[25], (u32)-1, 4, &map);
+        if (tc == VJ_BLOCK_ERR)
+            goto out;
+        totalCoeff[25] = (i16)tc;
+        tc = VjBlock(&bs, level[25] + 4, (u32)-1, 4, &map);
+        if (tc == VJ_BLOCK_ERR)
+            goto out;
+        totalCoeff[26] = (i16)tc;
+    }
 
-    return((totalCoeff << 4) | (levelSuffix << 16));
+    /* chroma AC */
+    if (codedBlockPattern & 0x2)
+    {
+        memset(level[16], 0, 8 * sizeof(*level)); /* lazy clear, as luma */
+        for (blk = 16; blk < 24; blk++)
+        {
+            tc = VjBlock(&bs, level[blk] + 1, VjNc(tcA, tcB, totalCoeff, blk),
+                15, &map);
+            if (tc == VJ_BLOCK_ERR)
+                goto out;
+            totalCoeff[blk] = (i16)tc;
+            coeffMap[blk] = map << 1;
+        }
+    }
+    status = HANTRO_OK;
+
+out:
+    pStrmData->strmBuffReadBits = bs.pos;
+    pStrmData->cache[0] = bs.c0;
+    pStrmData->cache[1] = bs.c1;
+    return(status);
+
 }
 
