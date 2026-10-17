@@ -672,7 +672,9 @@ void h264bsdShutdown(storage_t *pStorage)
 
     if(pStorage->conversionBuffer != NULL) FREE(pStorage->conversionBuffer);
 
+    pStorage->dpb->vjHeld = NULL; /* hold: nothing outlives the decoder */
     h264bsdFreeDpb(pStorage->dpb);
+    FREE(pStorage->dpb->vjOrphan);
 
 }
 
