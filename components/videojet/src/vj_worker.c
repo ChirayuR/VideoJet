@@ -150,9 +150,13 @@ vj_worker_t *vj_worker_create(vj_worker_fn fn, void *arg)
     portMUX_INITIALIZE(&w->lock);
     w->idle = xSemaphoreCreateBinary();
     w->exited = xSemaphoreCreateBinary();
-    /* The creating task's own priority: a task on the worker's core below it cannot starve the worker, and if one at
-     * or above it does, vj_worker_wait() takes the run back after VJ_WORKER_WAIT_MS. */
+    /* The creating task's own priority, or CONFIG_VJ_WORKER_PRIORITY: a task on the worker's core below it cannot starve
+     * the worker, and if one at or above it does, vj_worker_wait() takes the run back after VJ_WORKER_WAIT_MS. */
+#if CONFIG_VJ_WORKER_PRIORITY > 0
+    UBaseType_t prio = CONFIG_VJ_WORKER_PRIORITY;
+#else
     UBaseType_t prio = uxTaskPriorityGet(NULL);
+#endif
 #if CONFIG_VJ_WORKER_CORE >= 0
     BaseType_t core = CONFIG_VJ_WORKER_CORE < portNUM_PROCESSORS ? CONFIG_VJ_WORKER_CORE : 0; /* single-core: 0 */
 #else
