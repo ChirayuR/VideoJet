@@ -387,6 +387,22 @@ are copied into `.superpowers/sdd/2026-10-10-videojet-m3-speed/baseline-t{3,6c}.
 | parse pipeline: the parser on the other core, in the worker task, through a ring of MB records, `VJ_PARSE_PIPELINE`; deblock records PSRAM-first with it (8e75095..2f93fb6; check-tsan/asan/diff/poison/storage/depth, test_starve, test_nbr) | `m3-pipeline2` | 5 | d5c425753 | 100.2799 / 31.8626 / 16.6124 | -0.66 / +22.42 / +19.04 | 36,952 |
 | deblock worker segments of 4 MBs, was 10 (c4db5d5) | `m3-seg4` | 5 | 31dcfccb1 | 100.3418 / 32.7286 / 16.9640 | +0.06 / +2.72 / +2.12 | 36,952 |
 | word-at-a-time NAL extraction, run from flash for the budget (R12) (1202574..db02b06; host/test_nal.c) | `m3-unescape` | 5 | 2173cead8 | 100.5256 / 33.6082 / 17.3268 | +0.18 / +2.69 / +2.14 | 36,952 |
+| skip-run fast path: a zero-MV skipped MB touches one cache line, 192 B storage per MB (95e0dac, docs 45926d6; merge f1e9b24) | `skip-m4-final` (`--set all`; Δ against `skip-m4-main` = main 0e6607f in the same session: 100.5144 / 33.6017 / 17.3279) | 5 | c8873b30d | 155.1966 / 36.2266 / 17.5392 | +54.40 / +7.81 / +1.22 | 36,952 |
+
+The skip-run fast path and the real Android Auto capture (2026-10-17):
+- **The capture:** `streams/heldout/aa_cluster_heavy` (gitignored: the user's map and route; never committed). 663 pictures,
+  800x480 with the 640x172 UI box at (80,154), 1.1 Mbit/s, the map moving; recorded on the bar hardware
+  (`CONFIG_BAR_CAPTURE_KB`). Profile on one core before the fast path: parse 5.4, recon 13.6 (inter 9.8), deblock 4.8,
+  other 4.1 ms per picture. A near-static picture cost ~11 ms: 1,020 of AA's 1,500 MBs are margin, always skipped.
+- **aa_cluster_heavy fps, main -> f1e9b24, tuning 5, every hash PASS:**
+  - one core (worker and autoload off): 36.14 -> 45.26;
+  - worker on, autoload off (the bar's configuration): 41.30 -> 53.24; with `vj_decoder_set_hold` on: 41.25 -> 52.40 (c3);
+  - bench default (worker + pipeline + autoload): 49.28 -> 57.85; every stream up, JVT +0.3 to +1.5 % (the earlier
+    cross-boot readings of -2.4 to -3.6 % on BA2 / BA_MW_D / MIDR were boot-to-boot).
+- **Internal RAM** (`components/videojet/README.md` section 3): 99,641 B worker on with autoload, 99,243 B without
+  (the bar's), 95,979 B bench default; 359 B under the 100 KB budget at the tightest.
+- **Pending:** `docs/baseline-m3.jsonl` is still `m3-unescape`. `compare.py` needs a search-set record, so the next M3
+  session scores f1e9b24 with `tools/score.sh` and makes that record the baseline (R8).
 
 The parse pipeline (2026-10-12):
 - **Records in PSRAM, as a standalone step:** `m3-recpsram`, 8e75095, scored DROP at −3.31 / −1.18 / −0.92 %. It only frees the 18 KB of internal RAM that the ring needs, so it was never merged on its own.

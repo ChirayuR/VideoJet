@@ -158,6 +158,13 @@ h264bsd: Android's Hantro baseline decoder, Apache-2.0, plain C (github.com/onea
 - `$WORK/the consumer project` (CLAUDE.md, docs/) + its memory dir.
 
 ## Status
+- 2026-10-17 (evening): **skip-run fast path merged** (f1e9b24) and **`CONFIG_VJ_WORKER_PRIORITY`** (0e6607f).
+  - First real Android Auto capture: held-out `aa_cluster_heavy` (gitignored, private). Bench-log "M3 frontier" has the numbers.
+  - **Tip (slow class, bench default): 155.1966 / 36.2266 / 17.5392** (aux_card / aux_map / full_map); aa_cluster_heavy
+    57.85 fps; the bar's configuration (worker at prio 7, autoload off, hold on) about 53 fps on the capture.
+  - The bar bar runs it live: 29.5 fps with the map moving, 50 ms received -> glass. Its seconds of lag were mostly
+    its TCP receive mailbox (6 against a 45-segment window), not the decoder (bar repo `sdkconfig.defaults`).
+  - Pending: score f1e9b24 with `tools/score.sh` (search set) and make it `docs/baseline-m3.jsonl` (R8).
 - 2026-10-17: **`vj_decoder_set_hold` merged** (c6d1a8e, API extension approved by the user). Opt-in; with hold on, a
   returned frame outlives the calls up to and including the one returning the next VJ_FRAME, for one more PSRAM frame
   buffer (589,828 B at 800x480).
