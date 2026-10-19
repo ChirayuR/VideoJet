@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /* 4x4 inverse transform of h264bsdProcessBlock's full path, in ESP32-S3 PIE (128-bit SIMD) assembly. The C code in
  * h264bsd_transform.c is the oracle: this matches it bit for bit (on-board test, test/idct_pie).
  *

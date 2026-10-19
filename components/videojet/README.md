@@ -288,5 +288,6 @@ What to know before enabling it:
   through `bench/sdkconfig.profile`).
 
 ## 7. Licensing
-The h264bsd core is Apache-2.0 (`h264bsd/LICENSE.md`). The licence for VideoJet's own code is to be chosen by the owner
-before publishing.
+VideoJet's own code is Apache-2.0 (`LICENSE`; its source files carry `SPDX-License-Identifier: Apache-2.0`). The h264bsd
+core keeps its own terms, Apache-2.0 with MIT for its non-AOSP code (`h264bsd/LICENSE.md`); each file VideoJet changed
+says so in its header.

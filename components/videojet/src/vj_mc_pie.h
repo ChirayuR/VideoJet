@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 #pragma once
 /* PIE (ESP32-S3 SIMD) motion-compensation kernels, vj_mc_pie.S. Windows lie inside the picture; see the .S header for
  * the read slack they need. Luma w is 8 or 16, rows go to d with stride 16.

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /* Write-out kernels in ESP32-S3 PIE assembly, the C of h264bsdWriteOutputBlocks
  * (h264bsd_image.c) is the oracle: bit for bit identical for every residual in s16 range (the standard's inverse
  * transform output is within +-512..767 for valid streams; the C reads a 1280-entry clip table at that index).

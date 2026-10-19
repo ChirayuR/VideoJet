@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 #pragma once
 /* VideoJet: fast H.264 constrained-baseline decoding for the ESP32-S3.
  *

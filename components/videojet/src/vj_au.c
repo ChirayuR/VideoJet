@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /* Annex-B access-unit splitting (H.264 7.4.1.2.3, for constrained baseline without arbitrary slice order or
  * redundant pictures). A new AU starts at an AUD/SPS/PPS/SEI or NAL type 14-18, or at a slice whose
  * first_mb_in_slice is 0, once the current AU already holds a slice. first_mb_in_slice is the first ue(v) after the

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /* Motion-compensation kernels in ESP32-S3 PIE (128-bit SIMD) assembly. The C kernels in h264bsd_reconstruct.c are
  * the oracle: these match them bit for bit (on-board test, see components/videojet/h264bsd/README.md).
  *

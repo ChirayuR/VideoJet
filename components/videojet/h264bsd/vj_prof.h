@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 #pragma once
 /* Per-stage cycle counters, CONFIG_VJ_PROFILE builds only (bench: see bench/sdkconfig.profile).
  * Compiled out otherwise, so timed builds are not perturbed. CCOUNT is per core: decode on one core.

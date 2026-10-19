@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /* The public API over the vendored h264bsd decoder (no output reordering: DPB = refs + 1, decode order out). */
 #include <string.h>
 #ifdef ESP_PLATFORM

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 #pragma once
 /* One background worker thread for the deblock worker (VJ_DEBLOCK_WORKER): a FreeRTOS task on ESP, a pthread on the
  * host (so the host gate and ThreadSanitizer run the real threaded path).

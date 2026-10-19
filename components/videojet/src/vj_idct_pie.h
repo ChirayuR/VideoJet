@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 #pragma once
 /* PIE 4x4 inverse transform, vj_idct_pie.S (see its header). PRECONDITION: t and d 16-byte aligned (ee.vld/vst.128
  * silently round an address down, so a misaligned d would corrupt the bytes below it). h264bsdProcessBlock checks d and
