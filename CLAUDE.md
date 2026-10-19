@@ -158,6 +158,11 @@ h264bsd: Android's Hantro baseline decoder, Apache-2.0, plain C (github.com/onea
 - `$WORK/the consumer project` (CLAUDE.md, docs/) + its memory dir.
 
 ## Status
+- 2026-10-19: **esp_h264 and tinyH264 measured on the bench** (merged `bench/alt-decoders`). `VJ_BENCH_DEC=esp_h264` or
+  `tinyh264` in the environment builds the bench against them (`tools/fetch_alt.sh` fetches both, gitignored). Tuning 5,
+  `--set all`: VideoJet two cores over esp_h264 dual task 5.55x / 2.34x / 1.93x, 2.98x on aa_cluster_heavy (60.7 vs
+  20.4 fps). esp_h264 fails the 4-slice aux_map_dark (a board crash with its dual task). bench-log "Other decoders on the
+  same bench".
 - 2026-10-17 (night): **CAVLC rewrite merged** (m3/heavy: residual per MB, bit window in registers, table levels).
   Heaviest AA frames in the bar's configuration: p95 44.8 -> 41.2 ms, max 67.8 -> 59.2 ms; every stream up. Next levers
   in bench-log ("The CAVLC rewrite"): intra I4x4, CAVLC in asm, the 155 ms IDR (its deblock runs after the decode).
