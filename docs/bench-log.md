@@ -570,3 +570,60 @@ worker stack 2,048 B (988 B used at 3,072 in the -O2 bench build); PSRAM 1,625,6
 fps off -> on: 95.30 / 21.89 / 11.65 -> 100.95 / 26.03 / 13.96 (3 boots, `--set all`, PASS).
 
 Worker tip: library internal RAM = libvideojet static 56,528 B (IRAM 49,034 + DRAM 7,486 + bss 8) + heap int_used 42,300 B = 98,828 B of 100,000 B (marks and the 118 KB undo log are PSRAM-first; worker stack 2 KB, call tree <= 736 B at -O0, 464 B at -O2). Take-back after 50 ms if the worker has not started a posted run; a run already started is waited for.
+
+## Other decoders on the same bench: esp_h264 and tinyH264 (2026-10-19)
+Same board, bench app and `bench/sdkconfig.defaults`, tuning 5, `tools/bench.py --set all`, fps = frames·10⁶/total_us,
+mean of run 0 and run 1 (they agree to 0.01 fps). A comparison build sets `VJ_BENCH_DEC=esp_h264` or `tinyh264` in the
+environment: `bench/main/alt_<dec>.c` puts that decoder behind VideoJet's three calls, so `bench_main.c` times and hashes
+it with the same code, and VideoJet is left out of the build (its h264bsd and theirs share symbol names).
+`tools/fetch_alt.sh` fetches both into `bench/alt/` (gitignored). The decoders:
+- VideoJet main 1c8d3f6. Two cores = the bench default (worker + parse pipeline + D-cache autoload); one core = worker and
+  pipeline off, autoload still on.
+- esp_h264 1.4.1 (Espressif registry; its software decoder is a prebuilt, closed tinyH264 fork): IRAM on (its default),
+  dual task off / on (`CONFIG_ESP_H264_DUAL_TASK`: its second task on core 1, priority 17).
+- tinyH264 upstream (udevbe 524a702, Apache-2.0), unmodified, its code in flash.
+
+| stream | VideoJet 2 cores | VideoJet 1 core | esp_h264 dual task | esp_h264 single task | tinyH264 |
+|---|---|---|---|---|---|
+| aux_card | 155.19 | 153.82 | 27.94 | 27.11 | 21.91 |
+| aux_map | 36.98 | 24.76 | 15.77 | 14.79 | 11.05 |
+| full_map | 17.60 | 12.28 | 9.13 | 8.37 | 6.08 |
+| aa_cluster_heavy | 60.72 | 46.31 | 20.35 | 19.32 | 15.48 |
+| aux_map_dark (4 slices per picture) | 36.41 | 26.43 | board crash | decode error | 10.56 |
+| test_640x360 | 33.69 | 26.87 | not reached | 18.53 (hash n/a) | 14.10 |
+| BA1_Sony_D | 88.35 | 71.06 | 81.57 | 65.72 | 60.97 |
+| BA2_Sony_F | 182.62 | 128.52 | 86.52 | 81.29 | 60.66 |
+| BA_MW_D | 189.50 | 135.80 | 88.81 | 82.62 | 62.92 |
+| BANM_MW_D | 217.10 | 155.55 | 95.87 | 88.89 | 66.40 |
+| MIDR_MW_D | 188.63 | 134.74 | 88.88 | 82.70 | 62.97 |
+| NRF_MW_E | 194.89 | 140.54 | 89.38 | 82.25 | 62.19 |
+| record, ELF | `cmp-vj-dual` 8c47d7018 | `cmp-vj-single` feccb3048 | `cmp-esp-dual` 843d199c8 | `cmp-esp-single` 55dc24d2d | `cmp-tiny` fc08ed746 |
+
+The records are versioned, unmodified, in `docs/compare-alt.jsonl`. esp_h264's dual-task held-out rows are run 0 only (the
+crash came first). `cmp-vj-dual` and `cmp-vj-single` read FAIL in bench.py only for the stream count (that checkout lacked
+the gitignored capture file, 11 streams against the board's 12): every row PASSed.
+- **Speed ratios:**
+  - VideoJet 2 cores over esp_h264 dual task: 5.55× / 2.34× / 1.93× (aux_card / aux_map / full_map), 2.98× on
+    aa_cluster_heavy, 1.08 to 2.26× on JVT.
+  - VideoJet 1 core over esp_h264 single task: 5.67× / 1.67× / 1.47×, 2.40× on aa_cluster_heavy.
+  - esp_h264 single task over tinyH264 (its IRAM placement and helpers): 1.24× / 1.34× / 1.38×, 1.25× on aa_cluster_heavy.
+  - The second core: esp_h264's dual task adds 3.1 / 6.6 / 9.1 % (5.3 % on aa_cluster_heavy); VideoJet's worker and
+    pipeline add 0.9 / 49.4 / 43.3 % (31.1 %).
+- **aa_cluster_heavy per frame, run 0** (P p95 / max / first frame with setup, ms): VideoJet 2 cores 34.1 / 48.0 / 149.1,
+  1 core 50.8 / 71.3 / 152.1; esp_h264 dual task 83.0 / 99.6 / 111.8, single task 90.6 / 108.8 / 135.0; tinyH264 116.0 /
+  138.0 / 159.9. The first frame is the one figure esp_h264 wins: VideoJet's IDR lever above.
+- **Memory at 800x480** (full_map run 0, heap int_used / psram_used B): VideoJet 2 cores 36,952 / 1,604,376, 1 core 39,636
+  / 1,467,660; esp_h264 dual task 70,288 / 1,187,680, single task 67,840 / 1,187,680; tinyH264 13,560 / 1,507,340. Static
+  IRAM and DRAM were not compared.
+- **Correctness:**
+  - Every fps in the table comes from rows where every hash PASSed, except esp_h264's test_640x360. It decodes all 73
+    frames, but its API reports no SPS cropping, so the 640x368 coded picture cannot match the 640x360 golden.
+  - esp_h264 fails aux_map_dark from its first AU. That is the corpus's only stream with 4 slices per picture
+    (first_mb_in_slice 0 / 400 / 750 / 1150; every other stream has one).
+    - Single task: `Decode slice data error`.
+    - Dual task: the board reboots inside its `h264bsdDecodeSliceDataMultiTask` (`h264bsd_slice_data.c:694` of its closed
+      build), with the same backtrace in two sessions.
+    - Upstream tinyH264 and VideoJet decode the stream bit-exact, so the fault is in Espressif's changes. The slice layout
+      is the only difference found; that it is the cause is unproven, since there is no source.
+- **Adapters:** esp_h264 consumes an AU over as many `esp_h264_dec_process()` calls as it takes. tinyH264's AU goes through
+  `h264bsdDecodeInternal()`, which is called again after `H264BSD_HDRS_RDY` (0 bytes read on purpose), as its own wrapper does.
