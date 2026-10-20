@@ -15,10 +15,17 @@ Decode only, ESP32-S3 at 240 MHz, 8 MB octal PSRAM at 80 MHz. 800×480, 300 fram
 
 | Stream | What it is | VideoJet | esp_h264 | Speedup | ms/frame |
 |---|---|---|---|---|---|
-| aux_card | near-static turn card | 155.19 fps | 27.94 fps | 5.55× | 6.4 |
-| aux_map | panning map in the top-left 640×172 | 36.98 fps | 15.77 fps | 2.34× | 27.0 |
-| full_map | whole frame changes, worst case | 17.60 fps | 9.13 fps | 1.93× | 56.8 |
-| aa_cluster_heavy | real Android Auto capture | 60.72 fps | 20.35 fps | 2.98× | 16.5 |
+| aux_card | Android Auto turn-by-turn card: mostly still, only the distance text changes | 155.19 fps | 27.94 fps | 5.55× | 6.4 |
+| aux_map | A moving map in the top-left 640×172 corner of an 800×480 frame, black everywhere else. This is what the bar shows | 36.98 fps | 15.77 fps | 2.34× | 27.0 |
+| full_map | The same moving map filling the whole 800×480 frame. The hardest case, every pixel changes | 17.60 fps | 9.13 fps | 1.93× | 56.8 |
+| aa_cluster_heavy | A real recording of an Android Auto session with a moving map (663 frames at about 1.1 Mbit/s) | 60.72 fps | 20.35 fps | 2.98× | 16.5 |
+
+How to read the table:
+- **fps** is frames decoded per second. A phone sends 30 fps, so anything above 30 keeps up.
+- **esp_h264** is Espressif's own software H.264 decoder, run in its two-core mode on the same board.
+- **Speedup** is VideoJet's fps divided by esp_h264's.
+- The first three streams are test videos I made with x264 to imitate what Android Auto sends for a small second screen.
+  The last one is a real capture.
 
 Plain h264bsd, before any of this, did 17.12 / 9.69 / 5.60 fps on the first three.
 
