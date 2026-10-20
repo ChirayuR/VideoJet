@@ -60,8 +60,7 @@ carries `total_us`, the exact sum of the timed µs, and fps is computed from it,
   every reset draws it afresh, so a boot at the odd index has to be re-run, or compared only with its own index.
 - acceptance rules:
   - M2's "fps unchanged" was enforced as the same speed class and |Δ| ≤ 5 % per stream against `docs/baseline-m1.jsonl`
-    (`tools/compare.py`, default `--tol 5`; ruling R1 of the M2 plan, Global Constraints in
-    `docs/superpowers/plans/2026-10-10-videojet-m2-library-api.md`). M1's ≤ 0.6 % sits inside the layout band above: the
+    (`tools/compare.py`, default `--tol 5`; ruling R1 of the M2 plan). M1's ≤ 0.6 % sits inside the layout band above: the
     first M2 build (Task 1, vendored decoder untouched) measured +0.62 % on aux_map and +0.71 % on full_map and missed it.
   - M3 step 0 (done, M3 step 0 section below): libvideojet's code is pinned in IRAM and the noise was re-measured with
     deliberate layout perturbations (`-falign-functions=64`, a +0x26c shift): layout noise at most 0.11 %, same binary at most
@@ -248,7 +247,7 @@ task is not measured by any axis here (the bench task has 16 KiB, `bench/main/be
 | flash (`libvideojet.a` code + rodata) | 58,071 B |
 
 No axis counts the stack, so a candidate that moves state from the heap to the stack would look like an internal-RAM win: M3
-has to measure the decode task's stack high-water mark per stream (`docs/superpowers/m1-carryover.md`).
+has to measure the decode task's stack high-water mark per stream (`docs/m1-decisions.md`).
 
 The spec's library budget is ≤ 100 KB of internal RAM. M3 step 0 would move libvideojet's `.text` into IRAM, which adds 50,981 B
 of internal RAM: 13,544 B + 50,981 B = 64,525 B, under 100 KB whether KB is 1000 or 1024 B, excluding the unmeasured stack.

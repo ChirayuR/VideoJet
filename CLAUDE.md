@@ -8,8 +8,8 @@ real ESP32-S3 hardware. Every optimisation must keep every output frame bit-exac
 - Target: ESP32-S3 only. The ESP32-P4 is out of scope; P4 facts below are reference only.
 - Decode only. Display, USB, protocol, crop/convert/rotate code belongs to consumer projects, never in this repo.
   `bench/` and `host/` are test apparatus.
-- Spec: `docs/superpowers/specs/2026-10-10-videojet-design.md`. Plans: `docs/superpowers/plans/`.
-  Deferred work and the M1 decisions: `docs/superpowers/m1-carryover.md`. Scores: `docs/bench-log.md` ("M3 frontier" table).
+- Design spec: `docs/design.md`.
+  Deferred work and the M1 decisions: `docs/m1-decisions.md`. Scores: `docs/bench-log.md` ("M3 frontier" table).
 - API: the component is `components/videojet`; the vendored decoder is private (`h264bsd/`); consumers see
   `include/videojet.h` only. `vj_decode_au(dec, au, len, &frame)` takes **one** Annex-B access unit and returns one I420
   picture; `vj_au_length()` splits a byte stream into AUs. `vj_decoder_set_hold` (opt-in) keeps a returned frame valid

@@ -31,7 +31,7 @@ Each item carries the commit that closed it (branch `m2-library-api`). What M2 d
   - The hash pass is unchanged since M1 (`components/vj_hash` is untouched), so it still flushes the D-cache between frames.
   - Container identity: **not done**, see the M3 list.
 - **"fps unchanged" acceptance. Closed:** enforced as ±5 % per stream, same speed class (ruling R1 of the M2 plan, Global
-  Constraints in `docs/superpowers/plans/2026-10-10-videojet-m2-library-api.md`: not the M1 ruling R1 below;
+  Constraints in the M2 plan: not the M1 ruling R1 below;
   `tools/compare.py`, default set by `d691aff`), because the ±0.6 % rule sits inside the layout band. The final firmware
   measured −0.06 / −0.21 / −0.36 % (`docs/bench-log.md`, M2 section).
 - **Output reordering** option: not done, and not needed so far. Pictures come out in decode order (`videojet.h`).
