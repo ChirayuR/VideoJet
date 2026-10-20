@@ -174,6 +174,27 @@ What to know before enabling it:
 - **Cost:** 350 B of IRAM and 4 B of DRAM (libvideojet 41,318 B IRAM and 7,014 B DRAM with it on, 40,968 B and 7,010 B off, at the
   T6d tip).
 
+### Measured speed
+
+Decode-only throughput on an ESP32-S3 (240 MHz, octal PSRAM at 80 MHz, the recommended config above, deblock worker and parse
+pipeline on, slow PSRAM class), 800x480 constrained baseline, 300 frames per stream, every frame bit-exact against the golden.
+Records: `docs/baseline-m3.jsonl`, `docs/compare-alt.jsonl`; method and history: `docs/bench-log.md`.
+
+| Stream | What it is | fps | ms/frame |
+|---|---|---|---|
+| aux_card | near-static turn card (mostly skipped MBs) | 155.19 | 6.4 |
+| aux_map | panning map in the top-left 640x172, black margins (the Android Auto workload) | 36.98 | 27.0 |
+| full_map | whole 800x480 frame changes (worst case) | 17.60 | 56.8 |
+| aa_cluster_heavy | real Android Auto capture, 663 frames | 60.72 | 16.5 |
+
+A 30 fps consumer has a 33.3 ms budget per frame. The unmodified h264bsd ran 17.12 / 9.69 / 5.60 fps on the first three
+streams, and Espressif's `esp_h264` dual task runs 27.94 / 15.77 / 9.13 (20.35 on the capture) on the same bench.
+
+The CAVLC rewrite (`h264bsd/README.md`, Local changes) targets the heaviest frames, where residual parsing was 37.9 % of a
+46.7 ms frame. It took aux_map from 36.22 to 36.98 fps (+2.09 %) and full_map from 17.54 to 17.60 (+0.32 %), and on the capture
+in the bar configuration (worker, autoload off, hold on) p95 from 44.85 to 41.18 ms, the maximum from 67.81 to 59.16 ms and
+throughput from 53.18 to 56.12 fps, with 661 to 679 B less internal RAM.
+
 ## 5. Contract
 - One AU per `vj_decode_au()` call; `vj_au_length()` splits a byte stream. Pictures come out in decode order.
 - One decoder per task: calls on one decoder must not overlap.
