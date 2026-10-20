@@ -13,3 +13,7 @@ streams/heldout/aa_*
 # Third-party decoders for the comparison builds (tools/fetch_alt.sh): never committed
 bench/alt/esp_h264/
 bench/alt/tinyh264/native/
+
+# macOS / editor
+.DS_Store
+.vscode/
