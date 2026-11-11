@@ -1347,7 +1347,6 @@ void h264bsdFillBlock(
 /* Variables */
 
     i32 xstop, ystop;
-    void (*fp)(u8*, u8*, i32, i32, i32);
     i32 left, x, right;
     i32 top, y, bottom;
 
@@ -1363,13 +1362,6 @@ void h264bsdFillBlock(
 
     xstop = x0 + (i32)blockWidth;
     ystop = y0 + (i32)blockHeight;
-
-    /* Choose correct function whether overfilling on left-edge or right-edge
-     * is needed or not */
-    if (x0 >= 0 && xstop <= (i32)width)
-        fp = FillRow1;
-    else
-        fp = h264bsdFillRow7;
 
     if (ystop < 0)
         y0 = -(i32)blockHeight;
@@ -1447,7 +1439,6 @@ void h264bsdFillBlock(
     /* Bottom-overfilling */
     for ( ; bottom; bottom-- )
     {
-        //(*fp)(ref, fill, left, x, right);
         if (x0 >= 0 && xstop <= (i32)width)
             FillRow1(ref, fill, left, x, right);
         else

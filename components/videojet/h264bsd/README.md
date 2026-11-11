@@ -235,3 +235,6 @@ Every change made for VideoJet is listed here, newest last.
     end-of-buffer check is per block (positions only grow, so the old check at each refill gave the same
     `HANTRO_NOK`), and on an error the levels hold an unspecified part of the block (a failed macroblock is never
     reconstructed). `neighbour_t` holds its `neighbourMb_e` in a `u8`: the neighbour tables take 2 B an entry, not 8.
+- Warnings under ESP-IDF's `-Wall`: in `h264bsdDecodePicOrderCnt` (`h264bsd_pic_order_cnt.c`), `picOrderCntCycleCnt` and
+  `frameNumInPicOrderCntCycle` start at 0 (every read was already after a write), and the unused `fp` in
+  `h264bsdFillBlock` (`h264bsd_reconstruct.c`) is gone with its commented-out calls (the fill functions are called directly).
